@@ -311,7 +311,11 @@ NvmeService (
     Device->Fatal = TRUE;
   }
 
-  CpuPause ();
+  // Keep every controller poll budget in microseconds.  ANS firmware can
+  // legitimately take hundreds of milliseconds to change state on a cold
+  // boot, and a tight CpuPause loop made the nominal two-second budget depend
+  // on the host CPU generation.
+  MicroSecondDelay (1);
 }
 
 STATIC int
