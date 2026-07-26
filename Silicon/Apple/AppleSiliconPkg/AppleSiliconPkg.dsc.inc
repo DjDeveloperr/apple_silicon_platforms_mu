@@ -263,6 +263,8 @@
 
   # Apple Device Tree (ADT) access library
   AppleDTLib|AppleSiliconPkg/Library/AppleDTLib/AppleDTLib.inf
+  AcpiHelperLib|DynamicTablesPkg/Library/Common/AcpiHelperLib/AcpiHelperLib.inf
+  AmlLib|DynamicTablesPkg/Library/Common/AmlLib/AmlLib.inf
 
 
   # USB Libraries
