@@ -667,7 +667,7 @@
   SecurityPkg/RandomNumberGenerator/RngDxe/RngDxe.inf
 
   # Disk IO
-  #TODO: ANS2/SART drivers 
+  AppleSiliconPkg/Drivers/AppleNANDStorageDxe/AppleNANDStorageDxe.inf
   MdeModulePkg/Universal/Disk/DiskIoDxe/DiskIoDxe.inf
   MdeModulePkg/Universal/Disk/PartitionDxe/PartitionDxe.inf
   MdeModulePkg/Universal/Disk/UnicodeCollation/EnglishDxe/EnglishDxe.inf
