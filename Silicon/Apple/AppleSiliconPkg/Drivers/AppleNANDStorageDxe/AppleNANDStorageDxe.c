@@ -178,7 +178,7 @@ PollService (
   )
 {
   (VOID)Opaque;
-  CpuPause ();
+  MicroSecondDelay (1);
 }
 
 STATIC UINT32
