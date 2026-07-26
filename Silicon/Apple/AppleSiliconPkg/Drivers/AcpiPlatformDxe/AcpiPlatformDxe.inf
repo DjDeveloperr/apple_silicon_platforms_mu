@@ -28,6 +28,7 @@
   MdePkg/MdePkg.dec
   MdeModulePkg/MdeModulePkg.dec
   AppleSiliconPkg/AppleSiliconPkg.dec
+  DynamicTablesPkg/DynamicTablesPkg.dec
 
 [LibraryClasses]
   UefiLib
@@ -35,6 +36,9 @@
   DebugLib
   UefiBootServicesTableLib
   UefiDriverEntryPoint
+  AppleDTLib
+  AmlLib
+  MemoryAllocationLib
 
 [Protocols]
   gEfiAcpiTableProtocolGuid                     ## CONSUMES

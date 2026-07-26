@@ -22,11 +22,289 @@
 #include <Protocol/FirmwareVolume2.h>
 
 #include <Library/BaseLib.h>
+#include <Library/AppleDTLib.h>
+#include <Library/AmlLib/AmlLib.h>
+#include <Library/MemoryAllocationLib.h>
 #include <Library/UefiBootServicesTableLib.h>
 #include <Library/DebugLib.h>
 #include <Library/PcdLib.h>
 
 #include <IndustryStandard/Acpi.h>
+
+#define APPLE_ANS_ACPI_OEM_ID        "NTASP "
+#define APPLE_ANS_ACPI_OEM_TABLE_ID  "APPLEANS"
+
+STATIC
+BOOLEAN
+AppleAnsBoundedContains (
+  IN CONST CHAR8 *Haystack,
+  IN UINTN       HaystackLength,
+  IN CONST CHAR8 *Needle
+  )
+{
+  UINTN  NeedleLength;
+  UINTN  Offset;
+
+  NeedleLength = AsciiStrLen (Needle);
+  if ((NeedleLength == 0) || (NeedleLength > HaystackLength)) {
+    return FALSE;
+  }
+
+  for (Offset = 0; Offset <= HaystackLength - NeedleLength; Offset++) {
+    if (AsciiStrnCmp (Haystack + Offset, Needle, NeedleLength) == 0) {
+      return TRUE;
+    }
+  }
+
+  return FALSE;
+}
+
+STATIC
+BOOLEAN
+AppleAnsPropertyContains (
+  IN dt_node_t   *Node,
+  IN CONST CHAR8 *Property,
+  IN CONST CHAR8 *Needle
+  )
+{
+  CHAR8  *Value;
+  UINTN  Size;
+  UINTN  Offset;
+
+  Value = dt_node_prop (Node, Property, &Size);
+  if (Value == NULL) {
+    return FALSE;
+  }
+
+  for (Offset = 0; Offset < Size;) {
+    UINTN Length = AsciiStrnLenS (Value + Offset, Size - Offset);
+
+    if (AppleAnsBoundedContains (Value + Offset, Length, Needle)) {
+      return TRUE;
+    }
+
+    Offset += Length + 1;
+  }
+
+  return FALSE;
+}
+
+STATIC
+EFI_STATUS
+AppleAnsAddMemoryResource (
+  IN AML_OBJECT_NODE_HANDLE  CrsNode,
+  IN UINT64                  Base,
+  IN UINT64                  Length
+  )
+{
+  if ((Length == 0) || (Base > MAX_UINT64 - (Length - 1))) {
+    return EFI_INVALID_PARAMETER;
+  }
+
+  return AmlCodeGenRdQWordMemory (
+           TRUE,                       // ResourceConsumer
+           TRUE,                       // PosDecode
+           TRUE,                       // MinFixed
+           TRUE,                       // MaxFixed
+           AmlMemoryNonCacheable,
+           TRUE,                       // ReadWrite
+           0,
+           Base,
+           Base + Length - 1,
+           0,
+           Length,
+           0,
+           NULL,
+           AmlAddressRangeMemory,
+           TRUE,
+           CrsNode,
+           NULL
+           );
+}
+
+/**
+  Publish the native Apple ANS controller to Windows.  Addresses and the
+  hardware profile are derived from the live Apple Device Tree so one firmware
+  binary does not bake in a board-specific MMIO map.
+
+  The three memory resources have a stable ABI with the Windows miniport:
+    0: ASC CPU/mailbox aperture (mailbox registers are at +0x8000)
+    1: ANS NVMe aperture (ADT reg[3])
+    2: SART aperture
+**/
+STATIC
+EFI_STATUS
+AcpiPlatformInstallAppleAnsTable (
+  IN EFI_ACPI_TABLE_PROTOCOL  *AcpiTable
+  )
+{
+  EFI_STATUS                   Status;
+  EFI_STATUS                   DeleteStatus;
+  dt_node_t                    *AnsNode;
+  dt_node_t                    *SartNode;
+  AML_ROOT_NODE_HANDLE         RootNode;
+  AML_OBJECT_NODE_HANDLE       ScopeNode;
+  AML_OBJECT_NODE_HANDLE       DeviceNode;
+  AML_OBJECT_NODE_HANDLE       CrsNode;
+  EFI_ACPI_DESCRIPTION_HEADER  *Table;
+  UINTN                        TableHandle;
+  UINT64                       CpuBase;
+  UINT64                       CpuSize;
+  UINT64                       NvmeBase;
+  UINT64                       NvmeSize;
+  UINT64                       SartBase;
+  UINT64                       SartSize;
+  UINT32                       SartVersion;
+  UINT32                       *VersionProperty;
+  UINTN                        PropertySize;
+  BOOLEAN                      Legacy;
+  CONST CHAR8                  *HardwareId;
+
+  RootNode = NULL;
+  Table    = NULL;
+  AnsNode  = dt_get ("/arm-io/ans");
+  SartNode = dt_get ("/arm-io/sart-ans");
+  if ((AnsNode == NULL) || (SartNode == NULL)) {
+    DEBUG ((DEBUG_WARN, "AppleANS ACPI: ANS or SART node is absent\n"));
+    return EFI_NOT_FOUND;
+  }
+
+  if ((dt_node_reg (AnsNode, 0, &CpuBase, &CpuSize) != 0) ||
+      (dt_node_reg (AnsNode, 3, &NvmeBase, &NvmeSize) != 0) ||
+      (dt_node_reg (SartNode, 0, &SartBase, &SartSize) != 0))
+  {
+    return EFI_DEVICE_ERROR;
+  }
+
+  Legacy = AppleAnsPropertyContains (AnsNode, "compatible", "t8015");
+  VersionProperty = dt_node_prop (SartNode, "sart-version", &PropertySize);
+  if ((VersionProperty != NULL) && (PropertySize >= sizeof (*VersionProperty))) {
+    SartVersion = *VersionProperty;
+  } else if (Legacy ||
+             AppleAnsPropertyContains (SartNode, "compatible", "t8015"))
+  {
+    SartVersion = 0;
+  } else {
+    return EFI_UNSUPPORTED;
+  }
+
+  if (Legacy && (SartVersion == 0)) {
+    HardwareId = "NTAS1000";
+  } else if (!Legacy && (SartVersion == 2)) {
+    HardwareId = "NTAS2002";
+  } else if (!Legacy && (SartVersion == 3)) {
+    HardwareId = "NTAS2003";
+  } else {
+    DEBUG ((
+      DEBUG_ERROR,
+      "AppleANS ACPI: unsupported legacy=%d SART v%d profile\n",
+      Legacy,
+      SartVersion
+      ));
+    return EFI_UNSUPPORTED;
+  }
+
+  Status = AmlCodeGenDefinitionBlock (
+             "SSDT",
+             APPLE_ANS_ACPI_OEM_ID,
+             APPLE_ANS_ACPI_OEM_TABLE_ID,
+             1,
+             &RootNode
+             );
+  if (EFI_ERROR (Status)) {
+    goto Exit;
+  }
+
+  Status = AmlCodeGenScope ("\\_SB_", RootNode, &ScopeNode);
+  if (EFI_ERROR (Status)) {
+    goto Exit;
+  }
+
+  Status = AmlCodeGenDevice ("ANS0", ScopeNode, &DeviceNode);
+  if (EFI_ERROR (Status)) {
+    goto Exit;
+  }
+
+  Status = AmlCodeGenNameString ("_HID", HardwareId, DeviceNode, NULL);
+  if (EFI_ERROR (Status)) {
+    goto Exit;
+  }
+
+  Status = AmlCodeGenNameInteger ("_UID", 0, DeviceNode, NULL);
+  if (EFI_ERROR (Status)) {
+    goto Exit;
+  }
+
+  Status = AmlCodeGenNameInteger ("_CCA", 1, DeviceNode, NULL);
+  if (EFI_ERROR (Status)) {
+    goto Exit;
+  }
+
+  Status = AmlCodeGenNameInteger ("_STA", 0x0F, DeviceNode, NULL);
+  if (EFI_ERROR (Status)) {
+    goto Exit;
+  }
+
+  Status = AmlCodeGenNameResourceTemplate ("_CRS", DeviceNode, &CrsNode);
+  if (EFI_ERROR (Status)) {
+    goto Exit;
+  }
+
+  Status = AppleAnsAddMemoryResource (CrsNode, CpuBase, CpuSize);
+  if (EFI_ERROR (Status)) {
+    goto Exit;
+  }
+
+  Status = AppleAnsAddMemoryResource (CrsNode, NvmeBase, NvmeSize);
+  if (EFI_ERROR (Status)) {
+    goto Exit;
+  }
+
+  Status = AppleAnsAddMemoryResource (CrsNode, SartBase, SartSize);
+  if (EFI_ERROR (Status)) {
+    goto Exit;
+  }
+
+  Status = AmlSerializeDefinitionBlock (RootNode, &Table);
+  if (EFI_ERROR (Status)) {
+    goto Exit;
+  }
+
+  TableHandle = 0;
+  Status = AcpiTable->InstallAcpiTable (
+                        AcpiTable,
+                        Table,
+                        Table->Length,
+                        &TableHandle
+                        );
+  if (!EFI_ERROR (Status)) {
+    DEBUG ((
+      DEBUG_INFO,
+      "AppleANS ACPI: %a cpu=%lx/%lx nvme=%lx/%lx sart=%lx/%lx\n",
+      HardwareId,
+      CpuBase,
+      CpuSize,
+      NvmeBase,
+      NvmeSize,
+      SartBase,
+      SartSize
+      ));
+  }
+
+Exit:
+  if (Table != NULL) {
+    FreePool (Table);
+  }
+
+  if (RootNode != NULL) {
+    DeleteStatus = AmlDeleteTree (RootNode);
+    if (!EFI_ERROR (Status) && EFI_ERROR (DeleteStatus)) {
+      Status = DeleteStatus;
+    }
+  }
+
+  return Status;
+}
 
 /**
   Locate the first instance of a protocol.  If the protocol requested is an
@@ -427,7 +705,7 @@ LocateFvInstanceWithGenericTables (
 
 **/
 VOID
-AcpiPlatformChecksum (
+AppleAcpiPlatformChecksum (
   IN UINT8  *Buffer,
   IN UINTN  Size
   )
@@ -538,7 +816,7 @@ AcpiPlatformEntryPoint (
       //
       // Checksum ACPI table
       //
-      AcpiPlatformChecksum ((UINT8 *)CurrentTable, TableSize);
+      AppleAcpiPlatformChecksum ((UINT8 *)CurrentTable, TableSize);
 
       //
       // Install ACPI table
@@ -606,7 +884,7 @@ AcpiPlatformEntryPoint (
       //
       // Checksum ACPI table
       //
-      AcpiPlatformChecksum ((UINT8 *)CurrentTable, TableSize);
+      AppleAcpiPlatformChecksum ((UINT8 *)CurrentTable, TableSize);
 
       //
       // Install ACPI table
@@ -672,7 +950,7 @@ AcpiPlatformEntryPoint (
       //
       // Checksum ACPI table
       //
-      AcpiPlatformChecksum ((UINT8 *)CurrentTable, TableSize);
+      AppleAcpiPlatformChecksum ((UINT8 *)CurrentTable, TableSize);
 
       //
       // Install ACPI table
@@ -737,7 +1015,7 @@ AcpiPlatformEntryPoint (
       //
       // Checksum ACPI table
       //
-      AcpiPlatformChecksum ((UINT8 *)CurrentTable, TableSize);
+      AppleAcpiPlatformChecksum ((UINT8 *)CurrentTable, TableSize);
 
       //
       // Install ACPI table
@@ -775,6 +1053,15 @@ AcpiPlatformEntryPoint (
   // Temporarily disabled - using a static MADT for now
 
   // Status = AcpiPlatformInstallMadtTable();
+
+  // Publish ANS after the static namespace has been installed.  Failure is
+  // fatal when the ADT contains ANS: silently omitting the boot controller
+  // would make the Windows storage driver impossible to bind.
+  Status = AcpiPlatformInstallAppleAnsTable (AcpiTable);
+  if (EFI_ERROR (Status) && (Status != EFI_NOT_FOUND)) {
+    DEBUG ((DEBUG_ERROR, "AppleANS ACPI: SSDT installation failed: %r\n", Status));
+    return EFI_ABORTED;
+  }
 
 
   //
