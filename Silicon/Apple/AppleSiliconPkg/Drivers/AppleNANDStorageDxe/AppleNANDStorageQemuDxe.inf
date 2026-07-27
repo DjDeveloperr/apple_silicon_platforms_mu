@@ -1,0 +1,60 @@
+#
+#  QEMU option-ROM build of the Apple ANS Block I/O driver.
+#
+#  SPDX-License-Identifier: BSD-2-Clause-Patent
+#
+
+[Defines]
+  INF_VERSION                    = 0x0001001c
+  BASE_NAME                      = AppleNANDStorageQemuDxe
+  FILE_GUID                      = 313382f6-ca6d-4a06-a746-17ff25ff58c3
+  MODULE_TYPE                    = DXE_DRIVER
+  VERSION_STRING                 = 1.0
+  ENTRY_POINT                    = AppleNANDStorageDxeInitialize
+
+[Sources]
+  AppleNANDStorageDxe.c
+  limits.h
+  stdbool.h
+  stddef.h
+  stdint.h
+  string.h
+  Shared/AppleAscCore.c
+  Shared/AppleNvmeBlockCore.c
+  Shared/AppleNvmeControllerCore.c
+  Shared/AppleNvmeCore.c
+  Shared/AppleRtkitCore.c
+  Shared/AppleRtkitRuntimeCore.c
+  Shared/AppleSartCore.c
+  Shared/AppleSartRuntimeCore.c
+
+[Packages]
+  ArmPkg/ArmPkg.dec
+  MdeModulePkg/MdeModulePkg.dec
+  MdePkg/MdePkg.dec
+  AppleSiliconPkg/AppleSiliconPkg.dec
+
+[LibraryClasses]
+  ArmLib
+  BaseLib
+  BaseMemoryLib
+  DevicePathLib
+  DxeServicesTableLib
+  IoLib
+  MemoryAllocationLib
+  TimerLib
+  UefiBootServicesTableLib
+  UefiDriverEntryPoint
+
+[Protocols]
+  gEfiBlockIoProtocolGuid      ## PRODUCES
+  gEfiDevicePathProtocolGuid   ## PRODUCES
+
+[Guids]
+  gEfiEventExitBootServicesGuid
+
+[Depex]
+  TRUE
+
+[BuildOptions]
+  *_*_*_CC_FLAGS = -DAPPLE_ANS_QEMU_TEST=1
