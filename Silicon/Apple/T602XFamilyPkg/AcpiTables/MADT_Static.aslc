@@ -26,11 +26,9 @@
 #include "T6020J414sTopology.h"
 
 //
-// J414s has ten active CPUs: four Blizzard cores followed by two three-core
-// Avalanche clusters.  CPU slots 7 and 11 are absent in the ADT and must not
-// be published.  T6020J414sTopology.h combines the live sparse ADT CPU list
-// with Linux's architectural MPIDR encoding; in particular P cores carry both
-// Aff2=1 and their Aff1 cluster number.
+// The Windows bring-up profile intentionally publishes only the four Blizzard
+// efficiency cores.  The Avalanche clusters remain physically available but
+// are omitted until their startup-carrier path is independently validated.
 //
 //
 // ASLC compiles this table outside the normal DXE PCD access path.  PCD-based

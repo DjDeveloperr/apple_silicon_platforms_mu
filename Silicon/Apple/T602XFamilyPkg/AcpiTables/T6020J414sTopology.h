@@ -1,5 +1,5 @@
 /** @file
-  Exact processor topology for the 10-core T6020 J414s.
+  Processor topology for the T6020 J414s Windows bring-up profile.
 
   This is the single source shared by the MADT and PPTT.  Values are grounded
   in two independent firmware/kernel descriptions:
@@ -20,8 +20,8 @@
 #ifndef T6020_J414S_TOPOLOGY_H_
 #define T6020_J414S_TOPOLOGY_H_
 
-#define T6020_J414S_CPU_COUNT              10
-#define T6020_J414S_CLUSTER_COUNT           3
+#define T6020_J414S_CPU_COUNT               4
+#define T6020_J414S_CLUSTER_COUNT           1
 #define T6020_J414S_E_CORE_COUNT            4
 #define T6020_J414S_P0_CORE_COUNT           3
 #define T6020_J414S_P1_CORE_COUNT           3
@@ -66,12 +66,6 @@
   X (0,  0, 0, 0, 0, T6020_J414S_E_EFFICIENCY_CLASS)                         \
   X (1,  1, 0, 0, 1, T6020_J414S_E_EFFICIENCY_CLASS)                         \
   X (2,  2, 0, 0, 2, T6020_J414S_E_EFFICIENCY_CLASS)                         \
-  X (3,  3, 0, 0, 3, T6020_J414S_E_EFFICIENCY_CLASS)                         \
-  X (4,  4, 1, 1, 0, T6020_J414S_P_EFFICIENCY_CLASS)                         \
-  X (5,  5, 1, 1, 1, T6020_J414S_P_EFFICIENCY_CLASS)                         \
-  X (6,  6, 1, 1, 2, T6020_J414S_P_EFFICIENCY_CLASS)                         \
-  X (7,  8, 1, 2, 0, T6020_J414S_P_EFFICIENCY_CLASS)                         \
-  X (8,  9, 1, 2, 1, T6020_J414S_P_EFFICIENCY_CLASS)                         \
-  X (9, 10, 1, 2, 2, T6020_J414S_P_EFFICIENCY_CLASS)
+  X (3,  3, 0, 0, 3, T6020_J414S_E_EFFICIENCY_CLASS)
 
 #endif /* T6020_J414S_TOPOLOGY_H_ */
