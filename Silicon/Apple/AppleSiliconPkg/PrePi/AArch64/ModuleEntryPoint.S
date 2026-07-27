@@ -19,12 +19,29 @@ ASM_FUNC(_ModuleEntryPoint)
   mov x27, x0
   mov x26, x1
   mov x25, x4 //boot args addr
-  //Use ADT to discover usable DRAM base/size
-  bl ASM_PFX(InitializeUART)
-  //restore values
+
+  // m1n1's run_guest ABI passes boot_args in x0.  Installed payloads using
+  // the original AppleWOA convention may still pass it in x4, so only prefer
+  // x0 when it has a plausible, self-consistent boot_args header.
+  cbz x0, 1f
+  ldrh w8, [x0]
+  cmp w8, #1
+  b.lo 1f
+  cmp w8, #3
+  b.hi 1f
+  ldrh w9, [x0, #2]
+  cmp w8, w9
+  b.ne 1f
+  mov x25, x0
+1:
+
+  // Use ADT to discover usable DRAM and patch platform addresses before the
+  // UART library consumes those addresses.  Calling InitializeUART first is
+  // unsafe when this image is relocated and launched by m1n1.
   mov x0, x27
   mov x1, x26
   bl ASM_PFX(DiscoverDramFromDt)
+  bl ASM_PFX(InitializeUART)
   b _ModuleEntrySetupStack
 
 _ModuleEntrySetupStack:

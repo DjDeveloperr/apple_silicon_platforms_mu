@@ -1,0 +1,26 @@
+{
+  "aic": "AIC2",
+  "csrt_fixture_sha256": "7c80ebc287026e42f6c78836646cf20726e0826aa9dd17c263577486d39edee4",
+  "csrt_source_sha256": "07faf1a371c58adc21440f70dec005387f35c4971b16d92596632edd9ff86a24",
+  "driver_commit": "5ecd6fdffff027a353271519618e90ec9ce45fd9",
+  "fadt_oem_id": {
+    "ascii": "Apple",
+    "hex": "4170706c6500",
+    "temporary_windows_carrier_spoof": false
+  },
+  "linux_arm64_build_compatibility": {
+    "disabled_stuart_scopes": [
+      "cibuild",
+      "edk2-build"
+    ],
+    "removed_stale_arm_gic_arch_lib_override": true,
+    "system_tools": [
+      "iasl",
+      "nasm"
+    ]
+  },
+  "mu_base_commit": "bfe3e9d24e983b57749a3159acba077ef4f79f07",
+  "platform": "MacBookProEarly2023Pkg",
+  "schema_version": 1,
+  "soc": "T6020"
+}

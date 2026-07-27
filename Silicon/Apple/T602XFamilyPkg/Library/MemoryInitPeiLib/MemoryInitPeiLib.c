@@ -285,7 +285,16 @@ EFI_STATUS EFIAPI MemoryPeim(IN EFI_PHYSICAL_ADDRESS UefiMemoryBase, IN UINT64 U
 
     AsciiSPrint(CpuNodeName, ARRAY_SIZE(CpuNodeName), "/cpus/cpu%d", i);
     dt_node_t *CpuNode = dt_get(CpuNodeName);
+    if (CpuNode == NULL) {
+      DEBUG((DEBUG_INFO, "Skipping absent CPU node %a\n", CpuNodeName));
+      continue;
+    }
+
     UINT32 *Carveout = (UINT32 *)dt_node_prop(CpuNode, "cpm-impl-reg", &CarveoutLength);
+    if ((Carveout == NULL) || (CarveoutLength < (4 * sizeof (UINT32)))) {
+      DEBUG((DEBUG_WARN, "CPU node %a has no valid cpm-impl-reg\n", CpuNodeName));
+      continue;
+    }
 
     ReserveMemoryRegion (
       ((UINT64)Carveout[1] << 32) | Carveout[0],
