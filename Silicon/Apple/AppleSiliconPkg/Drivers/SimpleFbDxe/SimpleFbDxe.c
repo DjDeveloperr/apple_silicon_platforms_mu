@@ -32,10 +32,12 @@
 #define FB_BYTES_PER_PIXEL (FB_BITS_PER_PIXEL / 8)
 #define DISPLAYDXE_PHYSICALADDRESS32(_x_) (UINTN)((_x_)&0xFFFFFFFF)
 
-#define DISPLAYDXE_RED_MASK 0xFF0000
-#define DISPLAYDXE_GREEN_MASK 0x00FF00
-#define DISPLAYDXE_BLUE_MASK 0x0000FF
-#define DISPLAYDXE_ALPHA_MASK 0x000000
+#define APPLE_FRAMEBUFFER_DEPTH_MASK  0xFF
+
+#define X2R10G10B10_RED_MASK       0x3FF00000
+#define X2R10G10B10_GREEN_MASK     0x000FFC00
+#define X2R10G10B10_BLUE_MASK      0x000003FF
+#define X2R10G10B10_RESERVED_MASK  0xC0000000
 
 /*
  * Bits per pixel selector. Each value n is such that the bits-per-pixel is
@@ -177,12 +179,16 @@ SimpleFbDxeInitialize(
   UINT64 FramebufferAddr   = BootArgs->video.base;
   UINT32 FramebufferWidth  = BootArgs->video.width;
   UINT32 FramebufferHeight = BootArgs->video.height;
+  UINT32 FramebufferStride = BootArgs->video.stride;
+  UINT32 FramebufferDepth  = BootArgs->video.depth & APPLE_FRAMEBUFFER_DEPTH_MASK;
 
-  DEBUG((EFI_D_INFO, "SimpleFbDxe: Framebuffer parameters, Base: 0x%llx, Width, %d, Height %d\n", FramebufferAddr, FramebufferWidth, FramebufferHeight));
+  DEBUG((EFI_D_INFO, "SimpleFbDxe: Framebuffer parameters, Base: 0x%llx, Width: %u, Height: %u, Stride: %u, Depth: %u\n", FramebufferAddr, FramebufferWidth, FramebufferHeight, FramebufferStride, FramebufferDepth));
 
   /* Sanity check */
   if (FramebufferAddr == 0 || FramebufferWidth == 0 ||
-      FramebufferHeight == 0) {
+      FramebufferHeight == 0 || FramebufferStride < FramebufferWidth * FB_BYTES_PER_PIXEL ||
+      (FramebufferStride % FB_BYTES_PER_PIXEL) != 0 ||
+      (FramebufferDepth != 30 && FramebufferDepth != 32)) {
     DEBUG((EFI_D_ERROR, "SimpleFbDxe: Invalid framebuffer parameters\n"));
     return EFI_DEVICE_ERROR;
   }
@@ -220,13 +226,21 @@ SimpleFbDxeInitialize(
   mDisplay.Mode->Info->HorizontalResolution = FramebufferWidth;
   mDisplay.Mode->Info->VerticalResolution   = FramebufferHeight;
 
-  /* SimpleFB runs on a8r8g8b8 (VIDEO_BPP32) for WoA devices */
-  UINT32               LineLength = FramebufferWidth * VNBYTES(VIDEO_BPP32);
+  /* Apple framebuffers use four bytes per pixel for both 8:8:8 and 10:10:10. */
+  UINT32               LineLength = FramebufferStride;
   UINT32               FrameBufferSize    = LineLength * FramebufferHeight;
   EFI_PHYSICAL_ADDRESS FrameBufferAddress = FramebufferAddr;
 
-  mDisplay.Mode->Info->PixelsPerScanLine = FramebufferWidth;
-  mDisplay.Mode->Info->PixelFormat = PixelBlueGreenRedReserved8BitPerColor;
+  mDisplay.Mode->Info->PixelsPerScanLine = FramebufferStride / FB_BYTES_PER_PIXEL;
+  if (FramebufferDepth == 30) {
+    mDisplay.Mode->Info->PixelFormat = PixelBitMask;
+    mDisplay.Mode->Info->PixelInformation.RedMask      = X2R10G10B10_RED_MASK;
+    mDisplay.Mode->Info->PixelInformation.GreenMask    = X2R10G10B10_GREEN_MASK;
+    mDisplay.Mode->Info->PixelInformation.BlueMask     = X2R10G10B10_BLUE_MASK;
+    mDisplay.Mode->Info->PixelInformation.ReservedMask = X2R10G10B10_RESERVED_MASK;
+  } else {
+    mDisplay.Mode->Info->PixelFormat = PixelBlueGreenRedReserved8BitPerColor;
+  }
   mDisplay.Mode->SizeOfInfo      = sizeof(EFI_GRAPHICS_OUTPUT_MODE_INFORMATION);
   mDisplay.Mode->FrameBufferBase = FrameBufferAddress;
   mDisplay.Mode->FrameBufferSize = FrameBufferSize;

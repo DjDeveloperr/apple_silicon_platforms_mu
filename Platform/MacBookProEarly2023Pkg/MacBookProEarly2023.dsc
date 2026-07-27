@@ -36,6 +36,10 @@
 
 
 [PcdsFixedAtBuild.common]
+  # This firmware is RAM-loaded by m1n1 and has no persistent UEFI variable
+  # store. The normal first-boot memory-type update reset would therefore
+  # repeat on every launch instead of stabilizing after one reboot.
+  gEfiMdeModulePkgTokenSpaceGuid.PcdResetOnMemoryTypeInformationChange|FALSE
   gAppleSiliconPkgTokenSpaceGuid.PcdSmbiosSystemModel|"MacBook Pro (Early 2023)"
   gAppleSiliconPkgTokenSpaceGuid.PcdSmbiosSystemModelNumber|"Mac14,5/Mac14,6/Mac14,9/Mac14,10"
   gAppleSiliconPkgTokenSpaceGuid.PcdSmbiosSystemSku|"MacBook Pro (Early 2023) (Mac14,5/Mac14,6/Mac14,9/Mac14,10)"
