@@ -29,7 +29,10 @@
  * being that the timer interrupts (and most things considered a "PPI" on GIC systems) are using
  * FIQs and not IRQs.
  * 
- * As a result we will assign an arbitrary interrupt number (17 currently) and then proceed to define a standard ARM timer here.
+ * Firmware uses private logical source numbers for its native-AIC timer bridge,
+ * but the Windows startup carrier is GICv3.  Publish the architected GIC PPIs
+ * here; the native AIC HAL later translates the virtual timer to Apple's
+ * processor-local source namespace.
 */
 
 #define SYSTEM_TIMER_BASE_ADDRESS       0xFFFFFFFFFFFFFFFF
@@ -43,6 +46,11 @@
 #define GTDT_TIMER_LOSE_CONTEXT     0
 
 #define GTDT_GTIMER_FLAGS          (GTDT_TIMER_LOSE_CONTEXT | GTDT_TIMER_ACTIVE_HIGH | GTDT_TIMER_LEVEL_TRIGGERED)
+
+#define GTDT_SECURE_EL1_TIMER_GSIV      29
+#define GTDT_NONSECURE_EL1_TIMER_GSIV   30
+#define GTDT_VIRTUAL_EL1_TIMER_GSIV     27
+#define GTDT_NONSECURE_EL2_TIMER_GSIV   26
 
 /**
  * Per the Linux driver for the Apple WDT, Apple platforms have three watchdog timers on the platform,
@@ -95,13 +103,13 @@ EFI_ACPI_6_4_GENERIC_TIMER_DESCRIPTION_TABLES Gtdt = {
     ),
     SYSTEM_TIMER_BASE_ADDRESS,                              // UINT64  CntControlBasePhysicalAddress
     EFI_ACPI_RESERVED_DWORD,                                // UINT32  Reserved
-    FixedPcdGet32 (PcdArmArchTimerSecIntrNum),              // UINT32  SecurePL1TimerGSIV
+    GTDT_SECURE_EL1_TIMER_GSIV,                             // UINT32  SecurePL1TimerGSIV
     GTDT_GTIMER_FLAGS,                                      // UINT32  SecurePL1TimerFlags
-    FixedPcdGet32 (PcdArmArchTimerIntrNum),                 // UINT32  NonSecurePL1TimerGSIV
+    GTDT_NONSECURE_EL1_TIMER_GSIV,                          // UINT32  NonSecurePL1TimerGSIV
     GTDT_GTIMER_FLAGS,                                      // UINT32  NonSecurePL1TimerFlags
-    FixedPcdGet32 (PcdArmArchTimerVirtIntrNum),             // UINT32  VirtualTimerGSIV
+    GTDT_VIRTUAL_EL1_TIMER_GSIV,                            // UINT32  VirtualTimerGSIV
     GTDT_GTIMER_FLAGS,                                      // UINT32  VirtualTimerFlags
-    FixedPcdGet32 (PcdArmArchTimerHypIntrNum),              // UINT32  NonSecurePL2TimerGSIV
+    GTDT_NONSECURE_EL2_TIMER_GSIV,                          // UINT32  NonSecurePL2TimerGSIV
     GTDT_GTIMER_FLAGS,                                      // UINT32  NonSecurePL2TimerFlags
     CNT_READ_BASE_ADDRESS,                                  // UINT64  CntReadBasePhysicalAddress
 #if (WATCHDOG_COUNT != 0)
