@@ -7,11 +7,17 @@
 #include <Uefi.h>
 
 #include <Guid/EventGroup.h>
+#if !defined (APPLE_ANS_QEMU_TEST)
 #include <Library/AppleDTLib.h>
+#endif
 #include <Library/ArmLib.h>
 #include <Library/BaseLib.h>
 #include <Library/BaseMemoryLib.h>
+#if !defined (APPLE_ANS_QEMU_TEST)
 #include <Library/DebugLib.h>
+#else
+#include <Library/DxeServicesTableLib.h>
+#endif
 #include <Library/DevicePathLib.h>
 #include <Library/IoLib.h>
 #include <Library/MemoryAllocationLib.h>
@@ -29,6 +35,67 @@
 #define APPLE_ANS_MAILBOX_OFFSET  0x8000u
 #define APPLE_ANS_NAMESPACE_ID    1u
 #define APPLE_ANS_POLL_LIMIT      2000000u
+
+#if defined (APPLE_ANS_QEMU_TEST)
+#define APPLE_ANS_QEMU_ASC_SIZE   0x9000u
+#define APPLE_ANS_QEMU_NVME_SIZE  0x30000u
+#define APPLE_ANS_QEMU_SART_SIZE  0x1000u
+#endif
+
+#if defined (APPLE_ANS_QEMU_TEST)
+#define ANS_DEBUG(Expression)  do { } while (FALSE)
+#else
+#define ANS_DEBUG(Expression)  DEBUG (Expression)
+#endif
+
+#if defined (APPLE_ANS_QEMU_TEST)
+STATIC EFI_STATUS
+MapQemuMmio (
+  IN EFI_PHYSICAL_ADDRESS Base,
+  IN UINT64               Length
+  )
+{
+  EFI_STATUS  Status;
+
+  Status = gDS->AddMemorySpace (
+                  EfiGcdMemoryTypeMemoryMappedIo,
+                  Base,
+                  Length,
+                  EFI_MEMORY_UC | EFI_MEMORY_XP
+                  );
+  if (EFI_ERROR (Status)) {
+    return Status;
+  }
+
+  return gDS->SetMemorySpaceAttributes (
+                Base,
+                Length,
+                EFI_MEMORY_UC | EFI_MEMORY_XP
+                );
+}
+
+STATIC EFI_STATUS
+MapQemuHardware (
+  IN EFI_PHYSICAL_ADDRESS CpuBase,
+  IN EFI_PHYSICAL_ADDRESS NvmeBase,
+  IN EFI_PHYSICAL_ADDRESS SartBase
+  )
+{
+  EFI_STATUS  Status;
+
+  Status = MapQemuMmio (CpuBase, APPLE_ANS_QEMU_ASC_SIZE);
+  if (EFI_ERROR (Status)) {
+    return Status;
+  }
+
+  Status = MapQemuMmio (NvmeBase, APPLE_ANS_QEMU_NVME_SIZE);
+  if (EFI_ERROR (Status)) {
+    return Status;
+  }
+
+  return MapQemuMmio (SartBase, APPLE_ANS_QEMU_SART_SIZE);
+}
+#endif
 
 typedef struct {
   VENDOR_DEVICE_PATH        Vendor;
@@ -77,6 +144,7 @@ STATIC CONST EFI_GUID  mAppleAnsDevicePathGuid = {
   { 0xa8, 0x55, 0x20, 0x57, 0x04, 0x15, 0x21, 0x10 }
 };
 
+#if !defined (APPLE_ANS_QEMU_TEST)
 STATIC BOOLEAN
 PropertyContains (
   IN dt_node_t   *Node,
@@ -110,6 +178,7 @@ PropertyContains (
 
   return FALSE;
 }
+#endif
 
 STATIC UINT32
 AscCpuRead32 (
@@ -274,7 +343,7 @@ RtkitCrashed (
 
   (VOID)Crashlog;
   Device->Fatal = TRUE;
-  DEBUG ((DEBUG_ERROR, "AppleANS: RTKit firmware crashed\n"));
+  ANS_DEBUG ((DEBUG_ERROR, "AppleANS: RTKit firmware crashed\n"));
 }
 
 STATIC UINT32
@@ -612,13 +681,13 @@ AnsExitBootServices (
   Device->HandedOff = TRUE;
   Result = ntasi_ans_controller_stop (&Device->Controller);
   if (Result != 0) {
-    DEBUG ((DEBUG_ERROR, "AppleANS: controller handoff failed: %d\n", Result));
+    ANS_DEBUG ((DEBUG_ERROR, "AppleANS: controller handoff failed: %d\n", Result));
   }
 
   if (Device->Rtkit.booted) {
     Result = ntasi_rtkit_runtime_sleep (&Device->Rtkit);
     if (Result != 0) {
-      DEBUG ((DEBUG_ERROR, "AppleANS: RTKit handoff failed: %d\n", Result));
+      ANS_DEBUG ((DEBUG_ERROR, "AppleANS: RTKit handoff failed: %d\n", Result));
     }
   }
 
@@ -634,6 +703,7 @@ DiscoverHardware (
   OUT CONST struct ntasi_sart_params   **SartParams
   )
 {
+#if !defined (APPLE_ANS_QEMU_TEST)
   dt_node_t  *AnsNode;
   dt_node_t  *SartNode;
   UINT64     Size;
@@ -644,7 +714,23 @@ DiscoverHardware (
   UINTN      PropertySize;
   UINT32     *VersionProperty;
   BOOLEAN    Legacy;
+#endif
 
+#if defined (APPLE_ANS_QEMU_TEST)
+  // Generic QEMU/EDK2 does not initialize the Apple ADT library.  Do not
+  // inspect its process-global tree pointer in the option-ROM build: it can
+  // retain an arbitrary non-NULL value and make dt_get() walk unrelated
+  // firmware memory.
+  Device->CpuBase     = 0x250000000ULL;
+  Device->MailboxBase = Device->CpuBase + APPLE_ANS_MAILBOX_OFFSET;
+  Device->NvmeBase    = 0x250010000ULL;
+  Device->SartBase    = 0x250040000ULL;
+  Device->NvmeHw      = &ntasi_ans_hw_t8103;
+  *AscHw              = &ntasi_asc_hw_v4;
+  *SartParams         = &ntasi_sart_params_v2;
+  ANS_DEBUG ((DEBUG_INFO, "AppleANS: using QEMU fixed-resource profile\n"));
+  return EFI_SUCCESS;
+#else
   AnsNode  = dt_get ("/arm-io/ans");
   SartNode = dt_get ("/arm-io/sart-ans");
   if ((AnsNode == NULL) || (SartNode == NULL)) {
@@ -687,7 +773,7 @@ DiscoverHardware (
     return EFI_UNSUPPORTED;
   }
 
-  DEBUG ((
+  ANS_DEBUG ((
     DEBUG_INFO,
     "AppleANS: cpu=%lx mailbox=%lx nvme=%lx sart=%lx legacy=%d sartv%d\n",
     Device->CpuBase,
@@ -698,6 +784,7 @@ DiscoverHardware (
     SartVersion
     ));
   return EFI_SUCCESS;
+#endif
 }
 
 EFI_STATUS EFIAPI
@@ -752,6 +839,17 @@ AppleNANDStorageDxeInitialize (
     goto Fail;
   }
 
+#if defined (APPLE_ANS_QEMU_TEST)
+  Status = MapQemuHardware (
+             Device->CpuBase,
+             Device->NvmeBase,
+             Device->SartBase
+             );
+  if (EFI_ERROR (Status)) {
+    goto Fail;
+  }
+#endif
+
   Result = ntasi_sart_runtime_init (&Device->Sart, SartParams, &SartOps, Device);
   if (Result != 0) {
     Status = EFI_DEVICE_ERROR;
@@ -771,7 +869,7 @@ AppleNANDStorageDxeInitialize (
   }
 
   if (ntasi_asc_cpu_running (&Device->Asc)) {
-    DEBUG ((DEBUG_WARN, "AppleANS: coprocessor was left running; stopping before boot\n"));
+    ANS_DEBUG ((DEBUG_WARN, "AppleANS: coprocessor was left running; stopping before boot\n"));
     ntasi_asc_cpu_stop (&Device->Asc);
     MicroSecondDelay (1000);
   }
@@ -795,7 +893,7 @@ AppleNANDStorageDxeInitialize (
 
   Result = ntasi_rtkit_runtime_boot (&Device->Rtkit);
   if (Result != 0) {
-    DEBUG ((DEBUG_ERROR, "AppleANS: RTKit boot failed: %d\n", Result));
+    ANS_DEBUG ((DEBUG_ERROR, "AppleANS: RTKit boot failed: %d\n", Result));
     Status = EFI_DEVICE_ERROR;
     goto Fail;
   }
@@ -811,7 +909,7 @@ AppleNANDStorageDxeInitialize (
              &Device->IoMemory
              );
   if (Result != 0) {
-    DEBUG ((DEBUG_ERROR, "AppleANS: controller start failed: %d\n", Result));
+    ANS_DEBUG ((DEBUG_ERROR, "AppleANS: controller start failed: %d\n", Result));
     Status = EFI_DEVICE_ERROR;
     goto Fail;
   }
@@ -831,7 +929,7 @@ AppleNANDStorageDxeInitialize (
                );
   }
   if (Result != 0) {
-    DEBUG ((DEBUG_ERROR, "AppleANS: namespace identify failed: %d\n", Result));
+    ANS_DEBUG ((DEBUG_ERROR, "AppleANS: namespace identify failed: %d\n", Result));
     Status = EFI_DEVICE_ERROR;
     goto Fail;
   }
@@ -901,7 +999,7 @@ AppleNANDStorageDxeInitialize (
     goto Fail;
   }
 
-  DEBUG ((
+  ANS_DEBUG ((
     DEBUG_INFO,
     "AppleANS: namespace 1 ready: %Lu blocks x %u bytes\n",
     Device->BlockDevice.media.block_count,
