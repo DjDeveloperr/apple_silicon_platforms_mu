@@ -27,13 +27,22 @@
 #define T6020_MADT_CORE_COUNT  10
 
 //
+// ASLC compiles this table outside the normal DXE PCD access path.  PCD-based
+// carrier addresses therefore emitted as zero (and the 32-bit GICR accessor
+// also truncates a T6020 address).  Keep the synthetic startup-carrier
+// apertures aligned with T602XFamilyPkg.dsc.inc and m1n1's vGIC hooks.
+//
+#define T602X_GICD_CARRIER_BASE  0x5000000000ULL
+#define T602X_GICR_CARRIER_BASE  0x5100000000ULL
+
+//
 // pulled from mu_tiano_platforms, since there's no equivalent GICR initializer.
 //
 #define MADT_GICR_INIT()  {                                           \
    EFI_ACPI_6_4_GICR,                        /* Type */                        \
    sizeof (EFI_ACPI_6_4_GICR_STRUCTURE),     /* Length */                      \
    EFI_ACPI_RESERVED_WORD,                   /* Reserved */                    \
-   FixedPcdGet32 (PcdGicRedistributorsBase), /* DiscoveryRangeBaseAddress */   \
+   T602X_GICR_CARRIER_BASE,                  /* DiscoveryRangeBaseAddress */   \
    0x20000 * T6020_MADT_CORE_COUNT           /* DiscoveryRangeLength */        \
    }
 
@@ -100,7 +109,7 @@ MULTIPLE_APIC_DESCRIPTION_TABLE Madt = {
         9, 9, GET_MPIDR(0, 1, 2, 2),  EFI_ACPI_6_3_GIC_ENABLED, 38, 0,
         0, 0, 25, 0 /* GicRBase */, 0, 0),
 },
-EFI_ACPI_6_0_GIC_DISTRIBUTOR_INIT(0, FixedPcdGet64 (PcdGicDistributorBase), 0, 3),
+EFI_ACPI_6_0_GIC_DISTRIBUTOR_INIT(0, T602X_GICD_CARRIER_BASE, 0, 3),
 // Format: EFI_ACPI_6_3_GIC_MSI_FRAME_INIT(GicMsiFrameId, PhysicalBaseAddress, Flags, SPICount, SPIBase)
 
 MADT_GICR_INIT(),
