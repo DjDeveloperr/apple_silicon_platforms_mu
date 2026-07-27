@@ -26,10 +26,7 @@
 #include <Acpi/SgiAcpiHeader.h>
 
 
-#define DIE_COUNT               1 // this is *ignoring* the second die for now
-#define CLUSTER_COUNT           1 // validated bootstrap/E-core cluster only
-#define CLUSTER_CORE_COUNT      4 // 4 cores/cluster, note that for T600x
-#define PPTT_CPU_UID(DieId, ClusterId, CpuId)   ((ClusterId) * CLUSTER_CORE_COUNT + (CpuId))
+#define DIE_COUNT               1
 
 
 #pragma pack(1)
@@ -39,35 +36,42 @@ typedef struct {
 
 typedef struct {
     EFI_ACPI_6_4_PPTT_STRUCTURE_PROCESSOR  Cluster;
-    PPTT_CORE                              Cores[CLUSTER_CORE_COUNT];
-} PPTT_CLUSTER;
+    PPTT_CORE                              Cores[4];
+} PPTT_CLUSTER_4;
+
+typedef struct {
+    EFI_ACPI_6_4_PPTT_STRUCTURE_PROCESSOR  Cluster;
+    PPTT_CORE                              Cores[3];
+} PPTT_CLUSTER_3;
 
 typedef struct {
     EFI_ACPI_6_4_PPTT_STRUCTURE_PROCESSOR  Die;
-    PPTT_CLUSTER                           Clusters[CLUSTER_COUNT];
+    PPTT_CLUSTER_4                         Blizzard;
+    PPTT_CLUSTER_3                         Avalanche0;
+    PPTT_CLUSTER_3                         Avalanche1;
 } PPTT_DIE;
 #pragma pack ()
 
 
-#define CORE_INIT(DieId, ClusterId, CpuId)                                                          \
+#define CORE_INIT(DieId, ClusterField, CpuUid)                                                      \
 {                                                                                                   \
     /* Parameters for CPU Core */                                                                   \
     EFI_ACPI_6_4_PPTT_STRUCTURE_PROCESSOR_INIT (                                                    \
         0x14,                                                           /* Length */                \
         PPTT_PROCESSOR_CORE_FLAGS,                                      /* Flag */                  \
         OFFSET_OF (EFI_ACPI_6_4_PROCESSOR_PROPERTIES_TOPOLOGY_TABLE,                                \
-            Dies[DieId].Clusters[ClusterId]),                           /* Parent */                \
-        PPTT_CPU_UID(DieId, ClusterId, CpuId),                          /* ACPI Id */               \
+            Dies[DieId].ClusterField),                                  /* Parent */                \
+        CpuUid,                                                         /* ACPI Id */               \
         0                                                               /* Private resources */     \
     ),                                                                                              \
 }
 
 
-#define CLUSTER_INIT(DieId, ClusterId)                                                              \
+#define CLUSTER_4_INIT(DieId, ClusterField, ClusterId, UidBase)                                     \
 {                                                                                                   \
     /* Parameters for Cluster */                                                                    \
     EFI_ACPI_6_4_PPTT_STRUCTURE_PROCESSOR_INIT (                                                    \
-        OFFSET_OF (PPTT_CLUSTER, Cores),                                /* Length */                \
+        OFFSET_OF (PPTT_CLUSTER_4, Cores),                              /* Length */                \
         PPTT_PROCESSOR_CLUSTER_FLAGS,                                   /* Flag */                  \
         OFFSET_OF (EFI_ACPI_6_4_PROCESSOR_PROPERTIES_TOPOLOGY_TABLE,                                \
             Dies[DieId].Die),                                           /* Parent */                \
@@ -75,10 +79,27 @@ typedef struct {
         0                                                               /* Private resources */     \
     ),                                                                                              \
     {                                                                                               \
-        CORE_INIT (DieId, ClusterId, 0),                                                            \
-        CORE_INIT (DieId, ClusterId, 1),                                                            \
-        CORE_INIT (DieId, ClusterId, 2),                                                            \
-        CORE_INIT (DieId, ClusterId, 3),                                                            \
+        CORE_INIT (DieId, ClusterField, (UidBase) + 0),                                             \
+        CORE_INIT (DieId, ClusterField, (UidBase) + 1),                                             \
+        CORE_INIT (DieId, ClusterField, (UidBase) + 2),                                             \
+        CORE_INIT (DieId, ClusterField, (UidBase) + 3),                                             \
+    },                                                                                              \
+}
+
+#define CLUSTER_3_INIT(DieId, ClusterField, ClusterId, UidBase)                                     \
+{                                                                                                   \
+    EFI_ACPI_6_4_PPTT_STRUCTURE_PROCESSOR_INIT (                                                    \
+        OFFSET_OF (PPTT_CLUSTER_3, Cores),                              /* Length */                \
+        PPTT_PROCESSOR_CLUSTER_FLAGS,                                   /* Flag */                  \
+        OFFSET_OF (EFI_ACPI_6_4_PROCESSOR_PROPERTIES_TOPOLOGY_TABLE,                                \
+            Dies[DieId].Die),                                           /* Parent */                \
+        ((DieId << 4) | ClusterId),                                     /* ACPI Id */               \
+        0                                                               /* Private resources */     \
+    ),                                                                                              \
+    {                                                                                               \
+        CORE_INIT (DieId, ClusterField, (UidBase) + 0),                                             \
+        CORE_INIT (DieId, ClusterField, (UidBase) + 1),                                             \
+        CORE_INIT (DieId, ClusterField, (UidBase) + 2),                                             \
     },                                                                                              \
 }
 
@@ -86,15 +107,15 @@ typedef struct {
 {                                                                                                   \
     /* Parameters for DIE (Package) */                                                              \
     EFI_ACPI_6_4_PPTT_STRUCTURE_PROCESSOR_INIT(                                                     \
-        OFFSET_OF(PPTT_DIE, Clusters[0]),                               /* Length */                \
+        OFFSET_OF(PPTT_DIE, Blizzard),                                  /* Length */                \
         PPTT_PROCESSOR_PACKAGE_FLAGS,                                   /* Flag */                  \
         0,                                                              /* Parent */                \
         DieId,                                                          /* ACPI Id */               \
         0                                                               /* Private resources */     \
     ),                                                                                              \
-    {                                                                                               \
-        CLUSTER_INIT(DieId, 0),                                                                     \
-    }                                                                                               \
+    CLUSTER_4_INIT(DieId, Blizzard,   0, 0),                                                       \
+    CLUSTER_3_INIT(DieId, Avalanche0, 1, 4),                                                       \
+    CLUSTER_3_INIT(DieId, Avalanche1, 2, 7),                                                       \
 }
 
 

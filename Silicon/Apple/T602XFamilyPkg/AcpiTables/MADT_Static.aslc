@@ -25,13 +25,12 @@
 #include <Acpi/AcpiHeader.h>
 
 //
-// Windows reaches its idle loop on all four Blizzard cores, but currently
-// faults in KiKernelStackException while bringing up the first Avalanche core.
-// Keep this recovery image internally consistent and limit processor discovery
-// to the validated bootstrap cluster while the cross-cluster PSCI handoff is
-// diagnosed.  Native AIC still owns interrupt delivery after HAL handoff.
+// J414s has ten active CPUs: four Blizzard cores followed by two three-core
+// Avalanche clusters.  CPU slots 7 and 11 are absent in the ADT and must not
+// be published.  The MPIDRs below match the live J414s ADT exactly:
+// 0x000-0x003, 0x100-0x102, and 0x200-0x202.
 //
-#define T6020_MADT_CORE_COUNT  4
+#define T6020_MADT_CORE_COUNT  10
 
 //
 // ASLC compiles this table outside the normal DXE PCD access path.  PCD-based
@@ -96,6 +95,24 @@ MULTIPLE_APIC_DESCRIPTION_TABLE Madt = {
         0, 0, 25, 0 /* GicRBase */, 0, 0),
     EFI_ACPI_6_3_GICC_STRUCTURE_INIT( // Blizzard-3 (Bootstrap)
         3, 3, GET_MPIDR(0, 0, 0, 3),  EFI_ACPI_6_3_GIC_ENABLED, 54, 0,
+        0, 0, 25, 0 /* GicRBase */, 0, 0),
+    EFI_ACPI_6_3_GICC_STRUCTURE_INIT( // Avalanche-0 (P-core cluster 0)
+        4, 4, GET_MPIDR(0, 0, 1, 0),  EFI_ACPI_6_3_GIC_ENABLED, 58, 0,
+        0, 0, 25, 0 /* GicRBase */, 0, 0),
+    EFI_ACPI_6_3_GICC_STRUCTURE_INIT( // Avalanche-1 (P-core cluster 0)
+        5, 5, GET_MPIDR(0, 0, 1, 1),  EFI_ACPI_6_3_GIC_ENABLED, 62, 0,
+        0, 0, 25, 0 /* GicRBase */, 0, 0),
+    EFI_ACPI_6_3_GICC_STRUCTURE_INIT( // Avalanche-2 (P-core cluster 0)
+        6, 6, GET_MPIDR(0, 0, 1, 2),  EFI_ACPI_6_3_GIC_ENABLED, 34, 0,
+        0, 0, 25, 0 /* GicRBase */, 0, 0),
+    EFI_ACPI_6_3_GICC_STRUCTURE_INIT( // Avalanche-4 (P-core cluster 1)
+        7, 7, GET_MPIDR(0, 0, 2, 0),  EFI_ACPI_6_3_GIC_ENABLED, 38, 0,
+        0, 0, 25, 0 /* GicRBase */, 0, 0),
+    EFI_ACPI_6_3_GICC_STRUCTURE_INIT( // Avalanche-5 (P-core cluster 1)
+        8, 8, GET_MPIDR(0, 0, 2, 1),  EFI_ACPI_6_3_GIC_ENABLED, 38, 0,
+        0, 0, 25, 0 /* GicRBase */, 0, 0),
+    EFI_ACPI_6_3_GICC_STRUCTURE_INIT( // Avalanche-6 (P-core cluster 1)
+        9, 9, GET_MPIDR(0, 0, 2, 2),  EFI_ACPI_6_3_GIC_ENABLED, 38, 0,
         0, 0, 25, 0 /* GicRBase */, 0, 0),
 },
 EFI_ACPI_6_0_GIC_DISTRIBUTOR_INIT(0, T602X_GICD_CARRIER_BASE, 0, 3),
