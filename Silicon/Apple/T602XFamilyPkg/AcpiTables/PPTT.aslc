@@ -27,7 +27,7 @@
 
 
 #define DIE_COUNT               1 // this is *ignoring* the second die for now
-#define CLUSTER_COUNT           3 // bootstrap/E-core cluster, P-core cluster
+#define CLUSTER_COUNT           1 // validated bootstrap/E-core cluster only
 #define CLUSTER_CORE_COUNT      4 // 4 cores/cluster, note that for T600x
 #define PPTT_CPU_UID(DieId, ClusterId, CpuId)   ((ClusterId) * CLUSTER_CORE_COUNT + (CpuId))
 
@@ -94,8 +94,6 @@ typedef struct {
     ),                                                                                              \
     {                                                                                               \
         CLUSTER_INIT(DieId, 0),                                                                     \
-        CLUSTER_INIT(DieId, 1),                                                                     \
-        CLUSTER_INIT(DieId, 2),                                                                     \
     }                                                                                               \
 }
 
