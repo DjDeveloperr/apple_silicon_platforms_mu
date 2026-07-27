@@ -213,15 +213,19 @@ AppleUsbTypeCBringupDxeBringupCallback(IN EFI_EVENT Event, IN VOID *Context)
   NumDwc3Controllers = PcdGet32(PcdAppleNumDwc3Controllers);
 
   for(UINT32 Dwc3Index = 0; Dwc3Index < NumDwc3Controllers; Dwc3Index++) {
-    if((Dwc3Index == 0) || (Dwc3Index == 2)) {
-      //
-      // skip DWC3 0, it seems to be in charge of the DFU port.
-      //
-      continue;
-    }
-
     AsciiSPrint(Dwc3RegNodeName, ARRAY_SIZE(Dwc3RegNodeName), "usb-drd%d", Dwc3Index);
     dt_node_t *Dwc3Node = dt_get(Dwc3RegNodeName);
+
+    //
+    // m1n1 removes the controller used by its proxy transport from the guest
+    // ADT. Treat that absence as the ownership signal instead of assuming
+    // fixed DFU ports: on machines with several Type-C ports, any other
+    // surviving controller can contain the boot disk.
+    //
+    if (Dwc3Node == NULL) {
+      DEBUG((DEBUG_INFO, "AppleUsbTypeCBringupDxeBringupCallback: skipping absent/owned controller %a\n", Dwc3RegNodeName));
+      continue;
+    }
  
     dt_node_reg(Dwc3Node, 0, &Dwc3ControllerBaseAddr, NULL);
 
@@ -268,4 +272,3 @@ AppleUsbTypeCBringupDxeInitialize(
 
     return Status;
 }
-

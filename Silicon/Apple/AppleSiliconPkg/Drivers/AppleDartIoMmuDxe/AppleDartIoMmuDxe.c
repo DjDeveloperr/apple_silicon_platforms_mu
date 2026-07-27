@@ -321,8 +321,8 @@ AppleDartIoMmuDxeInitialize(
 )
 {
     UINT32 Midr;
-    dt_node_t *DartNode[FixedPcdGet32(PcdAppleNumDwc3Controllers)];
-    UINT64 DartReg[FixedPcdGet32(PcdAppleNumDwc3Controllers) * 2];
+    dt_node_t *DartNode[FixedPcdGet32(PcdAppleNumDwc3Controllers)] = { 0 };
+    UINT64 DartReg[FixedPcdGet32(PcdAppleNumDwc3Controllers) * 2] = { 0 };
     UINT32 DartIndex = 0;
     UINT32 Params4; // U-Boot does this
     // PHYSICAL_ADDRESS Address;
@@ -393,10 +393,12 @@ AppleDartIoMmuDxeInitialize(
 
     for(DartIndex = 0; DartIndex < FixedPcdGet32(PcdAppleNumDwc3Controllers) * 2; DartIndex++) {
         //
-        // to avoid killing the serial console from UART proxy - leave darts for DFU ports alone.
+        // m1n1 removes the USB controller and DART nodes that back its proxy
+        // connection. Skip exactly those absent nodes, rather than fixed
+        // controller indices, so every unowned Type-C port can DMA.
         //
-        if(DartIndex == 0 || DartIndex == 1 || DartIndex == 4 || DartIndex == 5) {
-            DEBUG((DEBUG_INFO, "Skipping DFU port DART %d\n", DartIndex));
+        if(DartNode[DartIndex / 2] == NULL) {
+            DEBUG((DEBUG_INFO, "Skipping absent/owned USB DART %d\n", DartIndex));
             continue;
         }
         //DEBUG((DEBUG_INFO, "Test0\n"));
