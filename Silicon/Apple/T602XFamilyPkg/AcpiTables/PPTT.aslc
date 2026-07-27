@@ -24,9 +24,34 @@
 #include <IndustryStandard/Acpi64.h>
 #include <Acpi/AcpiHeader.h>
 #include <Acpi/SgiAcpiHeader.h>
+#include "T6020J414sTopology.h"
 
 
 #define DIE_COUNT               1
+
+/*
+ * These flags mirror the actual ACPI namespace in the J414s DSDT.  DIE0 and
+ * CLU0..CLU2 are processor containers with UIDs 0 and 1..3 respectively.
+ * The package contains heterogeneous Blizzard and Avalanche implementations,
+ * while the cores within each individual cluster are identical.
+ */
+#define T6020_PPTT_PACKAGE_FLAGS                                                               \
+{                                                                                               \
+    EFI_ACPI_6_4_PPTT_PACKAGE_PHYSICAL,                                                        \
+    EFI_ACPI_6_4_PPTT_PROCESSOR_ID_VALID,                                                      \
+    EFI_ACPI_6_4_PPTT_PROCESSOR_IS_NOT_THREAD,                                                 \
+    EFI_ACPI_6_4_PPTT_NODE_IS_NOT_LEAF,                                                        \
+    EFI_ACPI_6_4_PPTT_IMPLEMENTATION_NOT_IDENTICAL                                             \
+}
+
+#define T6020_PPTT_CLUSTER_FLAGS                                                               \
+{                                                                                               \
+    EFI_ACPI_6_4_PPTT_PACKAGE_NOT_PHYSICAL,                                                    \
+    EFI_ACPI_6_4_PPTT_PROCESSOR_ID_VALID,                                                      \
+    EFI_ACPI_6_4_PPTT_PROCESSOR_IS_NOT_THREAD,                                                 \
+    EFI_ACPI_6_4_PPTT_NODE_IS_NOT_LEAF,                                                        \
+    EFI_ACPI_6_4_PPTT_IMPLEMENTATION_IDENTICAL                                                 \
+}
 
 
 #pragma pack(1)
@@ -36,12 +61,16 @@ typedef struct {
 
 typedef struct {
     EFI_ACPI_6_4_PPTT_STRUCTURE_PROCESSOR  Cluster;
-    PPTT_CORE                              Cores[4];
+    UINT32                                  PrivateResources[1];
+    PPTT_CORE                              Cores[T6020_J414S_E_CORE_COUNT];
+    EFI_ACPI_6_4_PPTT_STRUCTURE_CACHE      L2;
 } PPTT_CLUSTER_4;
 
 typedef struct {
     EFI_ACPI_6_4_PPTT_STRUCTURE_PROCESSOR  Cluster;
-    PPTT_CORE                              Cores[3];
+    UINT32                                  PrivateResources[1];
+    PPTT_CORE                              Cores[T6020_J414S_P0_CORE_COUNT];
+    EFI_ACPI_6_4_PPTT_STRUCTURE_CACHE      L2;
 } PPTT_CLUSTER_3;
 
 typedef struct {
@@ -67,40 +96,74 @@ typedef struct {
 }
 
 
-#define CLUSTER_4_INIT(DieId, ClusterField, ClusterId, UidBase)                                     \
+#define T6020_PPTT_L2_FLAGS                                                                        \
+{                                                                                                   \
+    EFI_ACPI_6_4_PPTT_CACHE_SIZE_VALID,                                                            \
+    EFI_ACPI_6_4_PPTT_NUMBER_OF_SETS_INVALID,                                                      \
+    EFI_ACPI_6_4_PPTT_ASSOCIATIVITY_INVALID,                                                       \
+    EFI_ACPI_6_4_PPTT_ALLOCATION_TYPE_INVALID,                                                     \
+    EFI_ACPI_6_4_PPTT_CACHE_TYPE_VALID,                                                            \
+    EFI_ACPI_6_4_PPTT_WRITE_POLICY_INVALID,                                                        \
+    EFI_ACPI_6_4_PPTT_LINE_SIZE_INVALID,                                                           \
+    EFI_ACPI_6_4_PPTT_CACHE_ID_VALID                                                               \
+}
+
+#define T6020_PPTT_L2_INIT(DieId, ClusterField, ClusterId, CacheSize)                               \
+    EFI_ACPI_6_4_PPTT_STRUCTURE_CACHE_INIT (                                                       \
+        T6020_PPTT_L2_FLAGS,                                           /* known fields only */     \
+        0,                                                             /* Last-level cache */      \
+        CacheSize,                                                     /* Linux cache-size */      \
+        0,                                                             /* Sets not in DT */        \
+        0,                                                             /* Ways not in DT */        \
+        PPTT_UNIFIED_CACHE_ATTR,                                       /* Linux cache-unified */   \
+        0,                                                             /* Line size not in DT */   \
+        RD_PPTT_CACHE_ID (DieId, ClusterId, 0, L2Cache)                /* Stable cache ID */       \
+    )
+
+#define CLUSTER_4_INIT(DieId, ClusterField, ClusterId, UidBase, CacheSize)                          \
 {                                                                                                   \
     /* Parameters for Cluster */                                                                    \
     EFI_ACPI_6_4_PPTT_STRUCTURE_PROCESSOR_INIT (                                                    \
         OFFSET_OF (PPTT_CLUSTER_4, Cores),                              /* Length */                \
-        PPTT_PROCESSOR_CLUSTER_FLAGS,                                   /* Flag */                  \
+        T6020_PPTT_CLUSTER_FLAGS,                                       /* Flag */                  \
         OFFSET_OF (EFI_ACPI_6_4_PROCESSOR_PROPERTIES_TOPOLOGY_TABLE,                                \
             Dies[DieId].Die),                                           /* Parent */                \
-        ((DieId << 4) | ClusterId),                                     /* ACPI Id */               \
-        0                                                               /* Private resources */     \
+        ((DieId << 4) | (ClusterId + 1)),                               /* CLU0..2 _UID 1..3 */      \
+        1                                                               /* Shared L2 */             \
     ),                                                                                              \
+    {                                                                                               \
+        OFFSET_OF (EFI_ACPI_6_4_PROCESSOR_PROPERTIES_TOPOLOGY_TABLE,                               \
+            Dies[DieId].ClusterField.L2),                              /* L2 resource */            \
+    },                                                                                              \
     {                                                                                               \
         CORE_INIT (DieId, ClusterField, (UidBase) + 0),                                             \
         CORE_INIT (DieId, ClusterField, (UidBase) + 1),                                             \
         CORE_INIT (DieId, ClusterField, (UidBase) + 2),                                             \
         CORE_INIT (DieId, ClusterField, (UidBase) + 3),                                             \
     },                                                                                              \
+    T6020_PPTT_L2_INIT (DieId, ClusterField, ClusterId, CacheSize),                                \
 }
 
-#define CLUSTER_3_INIT(DieId, ClusterField, ClusterId, UidBase)                                     \
+#define CLUSTER_3_INIT(DieId, ClusterField, ClusterId, UidBase, CacheSize)                          \
 {                                                                                                   \
     EFI_ACPI_6_4_PPTT_STRUCTURE_PROCESSOR_INIT (                                                    \
         OFFSET_OF (PPTT_CLUSTER_3, Cores),                              /* Length */                \
-        PPTT_PROCESSOR_CLUSTER_FLAGS,                                   /* Flag */                  \
+        T6020_PPTT_CLUSTER_FLAGS,                                       /* Flag */                  \
         OFFSET_OF (EFI_ACPI_6_4_PROCESSOR_PROPERTIES_TOPOLOGY_TABLE,                                \
             Dies[DieId].Die),                                           /* Parent */                \
-        ((DieId << 4) | ClusterId),                                     /* ACPI Id */               \
-        0                                                               /* Private resources */     \
+        ((DieId << 4) | (ClusterId + 1)),                               /* CLU0..2 _UID 1..3 */      \
+        1                                                               /* Shared L2 */             \
     ),                                                                                              \
+    {                                                                                               \
+        OFFSET_OF (EFI_ACPI_6_4_PROCESSOR_PROPERTIES_TOPOLOGY_TABLE,                               \
+            Dies[DieId].ClusterField.L2),                              /* L2 resource */            \
+    },                                                                                              \
     {                                                                                               \
         CORE_INIT (DieId, ClusterField, (UidBase) + 0),                                             \
         CORE_INIT (DieId, ClusterField, (UidBase) + 1),                                             \
         CORE_INIT (DieId, ClusterField, (UidBase) + 2),                                             \
     },                                                                                              \
+    T6020_PPTT_L2_INIT (DieId, ClusterField, ClusterId, CacheSize),                                \
 }
 
 #define DIE_INIT(DieId)                                                                             \
@@ -108,14 +171,14 @@ typedef struct {
     /* Parameters for DIE (Package) */                                                              \
     EFI_ACPI_6_4_PPTT_STRUCTURE_PROCESSOR_INIT(                                                     \
         OFFSET_OF(PPTT_DIE, Blizzard),                                  /* Length */                \
-        PPTT_PROCESSOR_PACKAGE_FLAGS,                                   /* Flag */                  \
+        T6020_PPTT_PACKAGE_FLAGS,                                       /* Flag */                  \
         0,                                                              /* Parent */                \
         DieId,                                                          /* ACPI Id */               \
         0                                                               /* Private resources */     \
     ),                                                                                              \
-    CLUSTER_4_INIT(DieId, Blizzard,   0, 0),                                                       \
-    CLUSTER_3_INIT(DieId, Avalanche0, 1, 4),                                                       \
-    CLUSTER_3_INIT(DieId, Avalanche1, 2, 7),                                                       \
+    CLUSTER_4_INIT(DieId, Blizzard,   0, T6020_J414S_E_UID_BASE,  T6020_J414S_E_L2_SIZE),           \
+    CLUSTER_3_INIT(DieId, Avalanche0, 1, T6020_J414S_P0_UID_BASE, T6020_J414S_P0_L2_SIZE),          \
+    CLUSTER_3_INIT(DieId, Avalanche1, 2, T6020_J414S_P1_UID_BASE, T6020_J414S_P1_L2_SIZE),          \
 }
 
 

@@ -23,24 +23,21 @@
 #include <Library/PcdLib.h>
 #include <IndustryStandard/Acpi63.h>
 #include <Acpi/AcpiHeader.h>
+#include "T6020J414sTopology.h"
 
 //
 // J414s has ten active CPUs: four Blizzard cores followed by two three-core
 // Avalanche clusters.  CPU slots 7 and 11 are absent in the ADT and must not
-// be published.  The MPIDRs below match the live J414s ADT exactly:
-// 0x000-0x003, 0x100-0x102, and 0x200-0x202.
+// be published.  T6020J414sTopology.h combines the live sparse ADT CPU list
+// with Linux's architectural MPIDR encoding; in particular P cores carry both
+// Aff2=1 and their Aff1 cluster number.
 //
-#define T6020_MADT_CORE_COUNT  10
-
 //
 // ASLC compiles this table outside the normal DXE PCD access path.  PCD-based
 // carrier addresses therefore emitted as zero (and the 32-bit GICR accessor
 // also truncates a T6020 address).  Keep the synthetic startup-carrier
 // apertures aligned with T602XFamilyPkg.dsc.inc and m1n1's vGIC hooks.
 //
-#define T602X_GICD_CARRIER_BASE  0x5000000000ULL
-#define T602X_GICR_CARRIER_BASE  0x5100000000ULL
-
 //
 // pulled from mu_tiano_platforms, since there's no equivalent GICR initializer.
 //
@@ -48,15 +45,15 @@
    EFI_ACPI_6_4_GICR,                        /* Type */                        \
    sizeof (EFI_ACPI_6_4_GICR_STRUCTURE),     /* Length */                      \
    EFI_ACPI_RESERVED_WORD,                   /* Reserved */                    \
-   T602X_GICR_CARRIER_BASE,                  /* DiscoveryRangeBaseAddress */   \
-   0x20000 * T6020_MADT_CORE_COUNT           /* DiscoveryRangeLength */        \
+   T6020_GICR_CARRIER_BASE,                  /* DiscoveryRangeBaseAddress */   \
+   T6020_GICR_FRAME_SIZE * T6020_J414S_CPU_COUNT /* DiscoveryRangeLength */    \
    }
 
 #pragma pack (1)
 
 typedef struct {
 EFI_ACPI_6_3_MULTIPLE_APIC_DESCRIPTION_TABLE_HEADER   Header;
-EFI_ACPI_6_3_GIC_STRUCTURE                            GicInterfaces[T6020_MADT_CORE_COUNT];
+EFI_ACPI_6_3_GIC_STRUCTURE                            GicInterfaces[T6020_J414S_CPU_COUNT];
 EFI_ACPI_6_0_GIC_DISTRIBUTOR_STRUCTURE                GicDistributor;
 EFI_ACPI_6_4_GICR_STRUCTURE                           GicRedistributor;
 } MULTIPLE_APIC_DESCRIPTION_TABLE;
@@ -77,45 +74,25 @@ MULTIPLE_APIC_DESCRIPTION_TABLE Madt = {
     0, // Flags
 },
 {
-    // Format: EFI_ACPI_6_3_GICC_STRUCTURE_INIT(GicId, AcpiCpuUid, Flags, PmuIrq, GicBase, GicVBase, GicHBase,
-    //                                          GsivId, GicRBase, Mpidr, Efficiency, SpeOvflIrq)
+    // Format: EFI_ACPI_6_3_GICC_STRUCTURE_INIT(GicId, AcpiCpuUid, Mpidr,
+    //     Flags, PmuIrq, GicBase, GicVBase, GicHBase, GsivId, GicRBase,
+    //     Efficiency, SpeOvflIrq)
     // Note: The GIC Structure of the primary CPU must be the first entry (see note in 5.2.12.14 GICC Structure of
     //       ACPI v5.1).
     //
-    // Cores are ordered by cluster. (Bootstrap first, then successive P-core/E-core clusters.)
+    // PMU is intentionally not exposed through the temporary GIC carrier.  It
+    // is an Apple processor-local FIQ and becomes available through native AIC.
+    // Cores are ordered by cluster, with dense OS-visible UIDs.
     //
-    EFI_ACPI_6_3_GICC_STRUCTURE_INIT( // Blizzard-0 (Bootstrap)
-        0, 0, GET_MPIDR(0, 0, 0, 0), EFI_ACPI_6_3_GIC_ENABLED, 50, 0,
-        0, 0, 25, 0 /* GicRBase */, 0, 0),
-    EFI_ACPI_6_3_GICC_STRUCTURE_INIT( // Blizzard-1 (Bootstrap)
-        1, 1, GET_MPIDR(0, 0, 0, 1),  EFI_ACPI_6_3_GIC_ENABLED, 54, 0,
-        0, 0, 25, 0 /* GicRBase */, 0, 0),
-    EFI_ACPI_6_3_GICC_STRUCTURE_INIT( // Blizzard-2 (Bootstrap)
-        2, 2, GET_MPIDR(0, 0, 0, 2),  EFI_ACPI_6_3_GIC_ENABLED, 54, 0,
-        0, 0, 25, 0 /* GicRBase */, 0, 0),
-    EFI_ACPI_6_3_GICC_STRUCTURE_INIT( // Blizzard-3 (Bootstrap)
-        3, 3, GET_MPIDR(0, 0, 0, 3),  EFI_ACPI_6_3_GIC_ENABLED, 54, 0,
-        0, 0, 25, 0 /* GicRBase */, 0, 0),
-    EFI_ACPI_6_3_GICC_STRUCTURE_INIT( // Avalanche-0 (P-core cluster 0)
-        4, 4, GET_MPIDR(0, 0, 1, 0),  EFI_ACPI_6_3_GIC_ENABLED, 58, 0,
-        0, 0, 25, 0 /* GicRBase */, 0, 0),
-    EFI_ACPI_6_3_GICC_STRUCTURE_INIT( // Avalanche-1 (P-core cluster 0)
-        5, 5, GET_MPIDR(0, 0, 1, 1),  EFI_ACPI_6_3_GIC_ENABLED, 62, 0,
-        0, 0, 25, 0 /* GicRBase */, 0, 0),
-    EFI_ACPI_6_3_GICC_STRUCTURE_INIT( // Avalanche-2 (P-core cluster 0)
-        6, 6, GET_MPIDR(0, 0, 1, 2),  EFI_ACPI_6_3_GIC_ENABLED, 34, 0,
-        0, 0, 25, 0 /* GicRBase */, 0, 0),
-    EFI_ACPI_6_3_GICC_STRUCTURE_INIT( // Avalanche-4 (P-core cluster 1)
-        7, 7, GET_MPIDR(0, 0, 2, 0),  EFI_ACPI_6_3_GIC_ENABLED, 38, 0,
-        0, 0, 25, 0 /* GicRBase */, 0, 0),
-    EFI_ACPI_6_3_GICC_STRUCTURE_INIT( // Avalanche-5 (P-core cluster 1)
-        8, 8, GET_MPIDR(0, 0, 2, 1),  EFI_ACPI_6_3_GIC_ENABLED, 38, 0,
-        0, 0, 25, 0 /* GicRBase */, 0, 0),
-    EFI_ACPI_6_3_GICC_STRUCTURE_INIT( // Avalanche-6 (P-core cluster 1)
-        9, 9, GET_MPIDR(0, 0, 2, 2),  EFI_ACPI_6_3_GIC_ENABLED, 38, 0,
-        0, 0, 25, 0 /* GicRBase */, 0, 0),
+#define T6020_J414S_GICC(LogicalUid, AdtCpuId, Aff2, Aff1, Aff0, Efficiency)   \
+    EFI_ACPI_6_3_GICC_STRUCTURE_INIT(                                         \
+        LogicalUid, LogicalUid, GET_MPIDR(0, Aff2, Aff1, Aff0),               \
+        EFI_ACPI_6_3_GIC_ENABLED, 0 /* PMU not exposed by carrier */, 0,       \
+        0, 0, 25, 0 /* discover GICR via type-0x0e entry */, Efficiency, 0),
+    T6020_J414S_CPU_LIST(T6020_J414S_GICC)
+#undef T6020_J414S_GICC
 },
-EFI_ACPI_6_0_GIC_DISTRIBUTOR_INIT(0, T602X_GICD_CARRIER_BASE, 0, 3),
+EFI_ACPI_6_0_GIC_DISTRIBUTOR_INIT(0, T6020_GICD_CARRIER_BASE, 0, 3),
 // Format: EFI_ACPI_6_3_GIC_MSI_FRAME_INIT(GicMsiFrameId, PhysicalBaseAddress, Flags, SPICount, SPIBase)
 
 MADT_GICR_INIT(),

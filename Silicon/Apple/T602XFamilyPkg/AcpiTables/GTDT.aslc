@@ -22,6 +22,7 @@
 #include <Library/AcpiLib.h>
 #include <IndustryStandard/Acpi64.h>
 #include <Acpi/AcpiHeader.h>
+#include "T6020J414sTopology.h"
 
 
 /**
@@ -46,11 +47,6 @@
 #define GTDT_TIMER_LOSE_CONTEXT     0
 
 #define GTDT_GTIMER_FLAGS          (GTDT_TIMER_LOSE_CONTEXT | GTDT_TIMER_ACTIVE_HIGH | GTDT_TIMER_LEVEL_TRIGGERED)
-
-#define GTDT_SECURE_EL1_TIMER_GSIV      29
-#define GTDT_NONSECURE_EL1_TIMER_GSIV   30
-#define GTDT_VIRTUAL_EL1_TIMER_GSIV     27
-#define GTDT_NONSECURE_EL2_TIMER_GSIV   26
 
 /**
  * Per the Linux driver for the Apple WDT, Apple platforms have three watchdog timers on the platform,
@@ -103,13 +99,13 @@ EFI_ACPI_6_4_GENERIC_TIMER_DESCRIPTION_TABLES Gtdt = {
     ),
     SYSTEM_TIMER_BASE_ADDRESS,                              // UINT64  CntControlBasePhysicalAddress
     EFI_ACPI_RESERVED_DWORD,                                // UINT32  Reserved
-    GTDT_SECURE_EL1_TIMER_GSIV,                             // UINT32  SecurePL1TimerGSIV
+    T6020_GTDT_SECURE_EL1_GSIV,                             // UINT32  SecurePL1TimerGSIV
     GTDT_GTIMER_FLAGS,                                      // UINT32  SecurePL1TimerFlags
-    GTDT_NONSECURE_EL1_TIMER_GSIV,                          // UINT32  NonSecurePL1TimerGSIV
+    T6020_GTDT_NONSECURE_EL1_GSIV,                          // UINT32  NonSecurePL1TimerGSIV
     GTDT_GTIMER_FLAGS,                                      // UINT32  NonSecurePL1TimerFlags
-    GTDT_VIRTUAL_EL1_TIMER_GSIV,                            // UINT32  VirtualTimerGSIV
+    T6020_GTDT_VIRTUAL_EL1_GSIV,                            // UINT32  VirtualTimerGSIV
     GTDT_GTIMER_FLAGS,                                      // UINT32  VirtualTimerFlags
-    GTDT_NONSECURE_EL2_TIMER_GSIV,                          // UINT32  NonSecurePL2TimerGSIV
+    T6020_GTDT_NONSECURE_EL2_GSIV,                          // UINT32  NonSecurePL2TimerGSIV
     GTDT_GTIMER_FLAGS,                                      // UINT32  NonSecurePL2TimerFlags
     CNT_READ_BASE_ADDRESS,                                  // UINT64  CntReadBasePhysicalAddress
 #if (WATCHDOG_COUNT != 0)
