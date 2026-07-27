@@ -113,12 +113,16 @@ DisplayQueryMode(
       (VOID **)Info);
 
   ASSERT_EFI_ERROR(Status);
+  if (EFI_ERROR(Status))
+    return Status;
 
+  ZeroMem(*Info, sizeof(EFI_GRAPHICS_OUTPUT_MODE_INFORMATION));
   *SizeOfInfo                   = sizeof(EFI_GRAPHICS_OUTPUT_MODE_INFORMATION);
   (*Info)->Version              = This->Mode->Info->Version;
   (*Info)->HorizontalResolution = This->Mode->Info->HorizontalResolution;
   (*Info)->VerticalResolution   = This->Mode->Info->VerticalResolution;
   (*Info)->PixelFormat          = This->Mode->Info->PixelFormat;
+  (*Info)->PixelInformation     = This->Mode->Info->PixelInformation;
   (*Info)->PixelsPerScanLine    = This->Mode->Info->PixelsPerScanLine;
 
   return EFI_SUCCESS;
