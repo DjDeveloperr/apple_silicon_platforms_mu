@@ -20,6 +20,7 @@
 #include <Library/AppleDTLib.h>
 
 #define APPLE_FAST_IPI_STATUS_PENDING BIT(0)
+#define AIC_TIMER_REFLECT_CALL_MAGIC 0x4e54414943ULL /* "NTAIC" */
 
 STATIC UINT64 AicV2Base;
 AIC_INFO_STRUCT *AicInfoStruct;
@@ -28,8 +29,97 @@ STATIC UINT64 mAicV2SoftwareClearRegOffset, mAicV2IrqMaskSetOffset;
 STATIC UINT64 mAicV2IrqMaskClearOffset, mAicV2HwStateOffset;
 STATIC UINT64 mAicV2EventReg;
 STATIC APPLE_AIC_VERSION mAicVersion;
+STATIC UINT32 mDeferredTimerPhysInterrupt = MAX_UINT32;
+STATIC UINT32 mDeferredTimerVirtInterrupt = MAX_UINT32;
 
 STATIC EFI_STATUS EFIAPI AppleAicV2CalculateRegisterOffsets(IN VOID);
+
+STATIC VOID
+AppleAicV2CompleteReflectedTimer (
+    IN UINTN Source
+    )
+{
+    register UINTN Magic __asm__ ("x0") = AIC_TIMER_REFLECT_CALL_MAGIC;
+    register UINTN TimerSource __asm__ ("x1") = Source;
+
+    // The AIC software IRQ is the delivery half of the m1n1 native-AIC timer
+    // ABI. Explicitly tell EL2 that TimerDxe has reprogrammed the deadline;
+    // relying on CNTP/CNTV accesses to trap is not valid under every VHE/ECV
+    // configuration used by these Apple CPUs.
+    __asm__ __volatile__ (
+        "smc #0"
+        : "+r" (Magic), "+r" (TimerSource)
+        :
+        : "memory"
+        );
+}
+
+STATIC VOID
+AppleAicV2ClearSoftwareInterrupt (
+    IN UINT32 Source
+    )
+{
+    MmioWrite32 (
+        AicV2Base + mAicV2SoftwareClearRegOffset + AIC_MASK_REG (Source),
+        AIC_MASK_BIT (Source)
+        );
+}
+
+VOID
+AppleAicV2ReplayDeferredTimerInterrupt (
+    IN HARDWARE_INTERRUPT_SOURCE Source
+    )
+{
+    UINT32 DeferredInterrupt;
+    UINT32 Interrupt;
+    UINT32 RangeStart;
+    UINT32 RangeEnd;
+
+    if (Source == 17) {
+        DeferredInterrupt = mDeferredTimerPhysInterrupt;
+        mDeferredTimerPhysInterrupt = MAX_UINT32;
+        RangeStart = AicInfoStruct->NumIrqs - (2 * AIC_TIMER_REFLECT_CPU_SLOTS);
+        RangeEnd = AicInfoStruct->NumIrqs - AIC_TIMER_REFLECT_CPU_SLOTS;
+    } else if (Source == 18) {
+        DeferredInterrupt = mDeferredTimerVirtInterrupt;
+        mDeferredTimerVirtInterrupt = MAX_UINT32;
+        RangeStart = AicInfoStruct->NumIrqs - AIC_TIMER_REFLECT_CPU_SLOTS;
+        RangeEnd = AicInfoStruct->NumIrqs;
+    } else {
+        return;
+    }
+
+    if (AicInfoStruct->NumIrqs <= (2 * AIC_TIMER_REFLECT_CPU_SLOTS)) {
+        return;
+    }
+
+    // Reading AIC_EVENT acknowledges and masks a source. A reflected tick can
+    // therefore be left SW-pending but masked if it arrived before this timer
+    // callback was registered (including before our CPU handler owned FIQ/IRQ).
+    // Registration is the synchronization point at which the entire per-CPU
+    // reflection block is safe to expose.
+    for (Interrupt = RangeStart; Interrupt < RangeEnd; Interrupt++) {
+        AppleAicUnmaskInterrupt (
+            AicV2Base,
+            Interrupt,
+            mAicV2IrqMaskClearOffset
+            );
+    }
+
+    if ((DeferredInterrupt == MAX_UINT32) && (Source == 17)) {
+        // Boot currently starts on CPU0. Give the newly registered physical
+        // timer consumer one deterministic handshake even if AIC reset/init
+        // discarded the pre-DXE reflected edge.
+        DeferredInterrupt = RangeStart;
+    }
+
+    if (DeferredInterrupt != MAX_UINT32) {
+        MmioWrite32 (
+            AicV2Base + mAicV2SoftwareSetRegOffset + AIC_MASK_REG (DeferredInterrupt),
+            AIC_MASK_BIT (DeferredInterrupt)
+            );
+    }
+}
 
 extern EFI_HARDWARE_INTERRUPT_PROTOCOL   gHardwareInterruptAicV2Protocol;
 extern EFI_HARDWARE_INTERRUPT2_PROTOCOL  gHardwareInterrupt2AicV2Protocol;
@@ -121,11 +211,12 @@ STATIC EFI_STATUS EFIAPI AppleAicV2EndOfInterrupt(
     IN HARDWARE_INTERRUPT_SOURCE Source
 )
 {
-    //As of 11/4/2022 we are reserving IRQ numbers 17, 18, and 19 for timer FIQs.
-    //If it's any one of these,disable the timer and return.
+    // IRQ numbers 17, 18, and 19 are the firmware's logical timer sources.
+    // Advancing the compare value in TimerInterruptHandler deasserts the timer;
+    // disabling it here leaves the periodic DXE timer permanently stopped
+    // because ArmGenericTimerReenableTimer() is intentionally a no-op.
     if ((Source == 17) || (Source == 18) || (Source == 19))
     {
-        ArmGenericTimerDisableTimer();
         return EFI_SUCCESS;
     }
 
@@ -237,15 +328,73 @@ STATIC VOID EFIAPI AppleAicV2InterruptHandler(
     IN EFI_SYSTEM_CONTEXT SystemContext
 )
 {
+    UINT32 AicEvent;
+    UINT32 AicEventType;
     UINT32 AicInterrupt;
+    UINT32 TimerPhysBase;
+    UINT32 TimerVirtBase;
     HARDWARE_INTERRUPT_HANDLER HwInterruptHandler;
     HARDWARE_INTERRUPT_HANDLER TimerInterruptHandlerPhys;
     HARDWARE_INTERRUPT_HANDLER TimerInterruptHandlerVirt;
     UINT64 PmcStatus;
     UINT64 UncorePmcStatus;
 
-    AicInterrupt = AppleAicAcknowledgeInterrupt(mAicV2EventReg);
-    HwInterruptHandler = AicRegisteredInterruptHandlers[AicInterrupt];
+    AicEvent = AppleAicAcknowledgeInterrupt(mAicV2EventReg);
+    // The event register is not a bare interrupt number: bits 31:24 are the
+    // die and bits 23:16 are the event type. Indexing the handler table with
+    // the raw word walks far beyond the allocation for every ordinary IRQ.
+    AicEventType = FIELD_GET (AIC_EVENT_INTERRUPT_TYPE, AicEvent);
+    AicInterrupt = FIELD_GET (AIC_EVENT_IRQ_NUM, AicEvent);
+    HwInterruptHandler = NULL;
+    if (AicInterrupt < AicInfoStruct->MaxIrqs) {
+        HwInterruptHandler = AicRegisteredInterruptHandlers[AicInterrupt];
+    }
+
+    TimerPhysBase = AicInfoStruct->NumIrqs - (2 * AIC_TIMER_REFLECT_CPU_SLOTS);
+    TimerVirtBase = AicInfoStruct->NumIrqs - AIC_TIMER_REFLECT_CPU_SLOTS;
+
+    // Dispatch reflected timers from the AIC event itself. Its type and
+    // number are authoritative; on J414s the event was acknowledged while the
+    // CPU exception-type split below failed to classify it as an ordinary IRQ.
+    if (AicEventType == 1) {
+        if ((AicInterrupt >= TimerPhysBase) && (AicInterrupt < TimerVirtBase)) {
+            AppleAicV2ClearSoftwareInterrupt (AicInterrupt);
+            TimerInterruptHandlerPhys = AicRegisteredInterruptHandlers[17];
+            if (TimerInterruptHandlerPhys != NULL) {
+                TimerInterruptHandlerPhys (17, SystemContext);
+                AppleAicV2CompleteReflectedTimer (17);
+                // Reading AIC_EVENT acknowledged and masked the physical
+                // reflected source. TimerDxe EOIs logical source 17, whose
+                // EOI is intentionally a no-op, so explicitly unmask the
+                // backing software IRQ after clearing and servicing it.
+                AppleAicUnmaskInterrupt (
+                    AicV2Base,
+                    AicInterrupt,
+                    mAicV2IrqMaskClearOffset
+                    );
+            } else {
+                mDeferredTimerPhysInterrupt = AicInterrupt;
+            }
+            return;
+        }
+
+        if ((AicInterrupt >= TimerVirtBase) && (AicInterrupt < AicInfoStruct->NumIrqs)) {
+            AppleAicV2ClearSoftwareInterrupt (AicInterrupt);
+            TimerInterruptHandlerVirt = AicRegisteredInterruptHandlers[18];
+            if (TimerInterruptHandlerVirt != NULL) {
+                TimerInterruptHandlerVirt (18, SystemContext);
+                AppleAicV2CompleteReflectedTimer (18);
+                AppleAicUnmaskInterrupt (
+                    AicV2Base,
+                    AicInterrupt,
+                    mAicV2IrqMaskClearOffset
+                    );
+            } else {
+                mDeferredTimerVirtInterrupt = AicInterrupt;
+            }
+            return;
+        }
+    }
 
     /**
      * In the FIQ case, every possible FIQ source must be checked to avoid an interrupt storm.
@@ -345,7 +494,6 @@ STATIC VOID EFIAPI AppleAicV2InterruptHandler(
      * 
      */
     else if (InterruptType == EXCEPT_AARCH64_IRQ) {
-        
         if(HwInterruptHandler != NULL) {
             HwInterruptHandler(AicInterrupt, SystemContext);
         }
@@ -538,6 +686,20 @@ EFI_STATUS AppleAicV2DxeInit(IN EFI_HANDLE ImageHandle, IN EFI_SYSTEM_TABLE *Sys
     for(InterruptIndex = 0; InterruptIndex < AicV2NumInterrupts; InterruptIndex++)
     {
         AppleAicV2MaskInterrupt(&gHardwareInterruptAicV2Protocol, InterruptIndex);
+    }
+
+    // m1n1 posts reflected CNTP/CNTV ticks into the top two MAX_CPUS-sized
+    // blocks of the implemented IRQ namespace. The blanket mask above must
+    // not leave that hypervisor/firmware ABI disabled.
+    if (AicV2NumInterrupts > (2 * AIC_TIMER_REFLECT_CPU_SLOTS)) {
+        for (
+            InterruptIndex = AicV2NumInterrupts - (2 * AIC_TIMER_REFLECT_CPU_SLOTS);
+            InterruptIndex < AicV2NumInterrupts;
+            InterruptIndex++
+            )
+        {
+            AppleAicV2UnmaskInterrupt (&gHardwareInterruptAicV2Protocol, InterruptIndex);
+        }
     }
 
     /**

@@ -76,6 +76,11 @@ extern AIC_INFO_STRUCT *AicInfoStruct;
 //Interrupt number
 #define AIC_EVENT_IRQ_NUM GENMASK(15, 0)
 
+// m1n1 native-AIC timer reflection ABI. EL2 reserves two blocks at the top
+// of the implemented per-die IRQ space, one CNTP and one CNTV software IRQ per
+// possible CPU. Keep this in sync with MAX_CPUS and HV_TIMER_*_SWIRQ in m1n1.
+#define AIC_TIMER_REFLECT_CPU_SLOTS  24
+
 
 //AICv1 bitmasks
 
@@ -99,8 +104,8 @@ extern AIC_INFO_STRUCT *AicInfoStruct;
 
 // IRQ Mask macros
 
-#define AIC_MASK_REG(num) (4 * ((num) >> 5))
-#define AIC_MASK_BIT(num) BIT(num) & GENMASK(4, 0)
+#define AIC_MASK_REG(num)  (4 * ((num) >> 5))
+#define AIC_MASK_BIT(num)  BIT ((num) & 0x1F)
 
 /* Function prototypes */
 

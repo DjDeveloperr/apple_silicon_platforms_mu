@@ -49,6 +49,8 @@ RegisterInterruptSource (
   IN HARDWARE_INTERRUPT_HANDLER       Handler
   )
 {
+  EFI_STATUS Status;
+
   if (Source >= AicInfoStruct->MaxIrqs) {
     ASSERT (FALSE);
     return EFI_UNSUPPORTED;
@@ -68,7 +70,14 @@ RegisterInterruptSource (
   if (NULL == Handler) {
     return This->DisableInterruptSource (This, Source);
   } else {
-    return This->EnableInterruptSource (This, Source);
+    Status = This->EnableInterruptSource (This, Source);
+    if (!EFI_ERROR (Status)) {
+      // A reflected timer can arrive while DXE dispatch is coming up, before
+      // TimerDxe has installed its logical source 17/18 callback. Replay that
+      // one deferred event now that its consumer is guaranteed to exist.
+      AppleAicV2ReplayDeferredTimerInterrupt (Source);
+    }
+    return Status;
   }
 }
 
@@ -120,7 +129,11 @@ InstallAndRegisterInterruptService (
   )
 {
     EFI_STATUS Status;
-    CONST UINTN InterruptHandlersSize = (sizeof(HARDWARE_INTERRUPT_HANDLER) * AicInfoStruct->NumIrqs);
+    // Interrupt events carry an index in the controller's full per-die IRQ
+    // namespace. Software IRQs (including m1n1's reflected timers) can live
+    // above NumIrqs, so sizing this table to NumIrqs permits an out-of-bounds
+    // access even though RegisterInterruptSource accepts values up to MaxIrqs.
+    CONST UINTN InterruptHandlersSize = (sizeof(HARDWARE_INTERRUPT_HANDLER) * AicInfoStruct->MaxIrqs);
 
     //set up RAM for IRQ handlers
     AicRegisteredInterruptHandlers = AllocateZeroPool(InterruptHandlersSize);
@@ -155,4 +168,4 @@ InstallAndRegisterInterruptService (
   
   return Status;
     
-} 
+}

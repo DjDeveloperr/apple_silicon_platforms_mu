@@ -55,5 +55,10 @@ EFI_STATUS AppleAicV1DxeInit(IN EFI_HANDLE ImageHandle, IN EFI_SYSTEM_TABLE *Sys
 
 EFI_STATUS AppleAicV2DxeInit(IN EFI_HANDLE ImageHandle, IN EFI_SYSTEM_TABLE *SystemTable, APPLE_AIC_VERSION aicVersion);
 
+VOID
+AppleAicV2ReplayDeferredTimerInterrupt (
+  IN HARDWARE_INTERRUPT_SOURCE Source
+  );
+
 
 #endif //APPLE_AIC_DXE_H
