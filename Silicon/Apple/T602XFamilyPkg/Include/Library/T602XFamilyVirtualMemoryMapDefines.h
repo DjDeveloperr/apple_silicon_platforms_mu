@@ -74,6 +74,22 @@
 #define APPLE_CORE_SYSTEM_MMIO_RANGE_16_BASE 0x5100000000
 #define APPLE_CORE_SYSTEM_MMIO_RANGE_16_SIZE SIZE_2MB
 
+//
+// T602x ANS/coprocessor window.  This map was copied from the M1 Pro (T600x)
+// layout, where ANS lives inside the 0x380000000+1GB range (ASC 0x38F400000,
+// SART 0x393C50000, NVMe 0x393CC0000).  On T602x the ANS block moved down:
+// the live J414s ADT (and Asahi t602x-nvme.dtsi) place the ASC at
+// 0x347400000 (mailbox +0x8000), the SART at 0x34BC50000, and the NVMe
+// aperture at 0x34BCC0000.  Those addresses fell in the unmapped hole
+// [0x2C0000000, 0x380000000), so AppleNANDStorageDxe's first SART read took a
+// synchronous data abort on hardware (Mu UART: "AppleANS: cpu=347400000
+// mailbox=347408000 nvme=34BCC0000 sart=34BC50000 legacy=0 sartv3" followed
+// by "Synchronous Exception at ... ArmCpuDxe+0x6A08", which is the exception
+// vector's own SP_EL0 context-save stp, not the faulting driver).
+//
+#define APPLE_CORE_SYSTEM_MMIO_RANGE_17_BASE 0x340000000
+#define APPLE_CORE_SYSTEM_MMIO_RANGE_17_SIZE SIZE_1GB
+
 
 
 //PCIe MMIO (mappings need to be nGnRE)

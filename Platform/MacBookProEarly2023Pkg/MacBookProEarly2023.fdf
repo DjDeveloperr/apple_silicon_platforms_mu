@@ -151,10 +151,19 @@ FvNameGuid         = 02e6c12f-69f7-4626-b5de-e3cfd6c0dc56
   INF MdeModulePkg/Bus/Pci/NonDiscoverablePciDeviceDxe/NonDiscoverablePciDeviceDxe.inf
 
   #NVMe Support
-# Input profile: AppleNANDStorageDxe faults on J414s.  Hardware logged
-# 'AppleANS: ... legacy=0 sartv3' followed by a synchronous exception in
-# ArmCpuDxe, repeatedly, before Windows ever started.  Keep it out until the
-# ANS line explains the SART v3 detection and the fault.
+# Root cause settled 2026-07-28: both halves of the 'AppleANS: ... sartv3'
+# line are correct readings of the live J414s ADT (T6020 SART is genuinely v3;
+# Asahi maps apple,t6020-sart -> apple,t6000-sart -> sart_ops_v3, so Windows
+# binds ACPI\NTAS2003/AppleNvmeSart3, not NTAS2002).  The synchronous
+# exception was the T602X virtual memory map: it was copied from T600X, where
+# ANS lives at 0x38F400000/0x393CC0000 inside the mapped 0x380000000+1GB
+# range.  On T602x ANS moved to 0x347400000/0x34BC50000/0x34BCC0000, inside
+# the unmapped hole [0x2C0000000, 0x380000000), so the driver's first SART
+# read data-aborted.  The reported PC (ArmCpuDxe+0x6A08) is the SPx-sync
+# vector's SP_EL0 context-save stp, not the driver.  The map now covers
+# 0x340000000+1GB (APPLE_CORE_SYSTEM_MMIO_RANGE_17); re-enable the INF below
+# only together with a rebuilt, re-manifested firmware and an explicit
+# hardware run decision.
 #  INF AppleSiliconPkg/Drivers/AppleNANDStorageDxe/AppleNANDStorageDxe.inf
   #INF MdeModulePkg/Bus/Pci/NvmExpressDxe/NvmExpressDxe.inf
 
