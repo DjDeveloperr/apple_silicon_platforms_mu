@@ -109,6 +109,41 @@
         })
 
         //
+        // T6020 port-0 PCIe DART.  Both BCM4388 functions behind PCI0 map
+        // requester IDs 0x100/0x101 to SID 1 in this single T8110 instance.
+        // Windows owns the runtime SID-1 page tables through AppleDart.sys;
+        // Mu only publishes the immutable register aperture.  Do not make
+        // PCI0 depend on this device: PCI enumeration is safe without DMA,
+        // and endpoint drivers independently keep bus mastering disabled
+        // until the DART provider interface is ready.
+        //
+        Device (DRT0) {
+            Name (_HID, "NTAS0011")
+            Name (_UID, Zero)
+            Name (_CCA, One)
+
+            Name (_CRS, ResourceTemplate () {
+                QWordMemory (
+                    ResourceConsumer,
+                    PosDecode,
+                    MinFixed,
+                    MaxFixed,
+                    NonCacheable,
+                    ReadWrite,
+                    0x0000000000000000,
+                    0x0000000594000000,
+                    0x0000000594003FFF,
+                    0x0000000000000000,
+                    0x0000000000004000
+                    )
+            })
+
+            Method (_STA) {
+                Return (0x0F)
+            }
+        }
+
+        //
         // Native PCI Express root bridge.  m1n1 trains the APCIE link and Mu's
         // PCI stack assigns endpoint BARs before Windows consumes this namespace.
         // Interrupt routing and DMA translation are intentionally described by
