@@ -33,6 +33,7 @@
 
 #define APPLE_ANS_ACPI_OEM_ID        "NTASP "
 #define APPLE_ANS_ACPI_OEM_TABLE_ID  "APPLEANS"
+#define APPLE_ANS_INTERRUPT_CONTRACT  "published-gsiv-to-physical-aic"
 
 STATIC
 BOOLEAN
@@ -157,7 +158,9 @@ AcpiPlatformInstallAppleAnsTable (
   UINT32                       SartVersion;
   UINT32                       *VersionProperty;
   UINT32                       NvmeInterruptIndex;
-  UINT32                       NvmeInterrupt;
+  UINT32                       NvmePhysicalInterrupt;
+  UINT32                       NvmePublishedInterrupt;
+  UINT32                       NvmeExpectedPhysicalInterrupt;
   UINT32                       *InterruptIndexProperty;
   UINT32                       *InterruptsProperty;
   UINTN                        PropertySize;
@@ -218,7 +221,26 @@ AcpiPlatformInstallAppleAnsTable (
     return EFI_DEVICE_ERROR;
   }
 
-  NvmeInterrupt = InterruptsProperty[NvmeInterruptIndex];
+  NvmePhysicalInterrupt = InterruptsProperty[NvmeInterruptIndex];
+  NvmePublishedInterrupt = FixedPcdGet32 (PcdAppleAnsPublishedInterrupt);
+  NvmeExpectedPhysicalInterrupt =
+    FixedPcdGet32 (PcdAppleAnsExpectedPhysicalInterrupt);
+  if (NvmePublishedInterrupt == 0) {
+    NvmePublishedInterrupt = NvmePhysicalInterrupt;
+  } else if ((NvmeExpectedPhysicalInterrupt == 0) ||
+             (NvmePhysicalInterrupt != NvmeExpectedPhysicalInterrupt) ||
+             (NvmePublishedInterrupt < 32) ||
+             (NvmePublishedInterrupt > 1019))
+  {
+    DEBUG ((
+      DEBUG_ERROR,
+      "AppleANS ACPI: refusing alias published=%u expected-physical=%u live-physical=%u\n",
+      NvmePublishedInterrupt,
+      NvmeExpectedPhysicalInterrupt,
+      NvmePhysicalInterrupt
+      ));
+    return EFI_DEVICE_ERROR;
+  }
 
   Legacy = AppleAnsPropertyContains (AnsNode, "compatible", "t8015");
   VersionProperty = dt_node_prop (SartNode, "sart-version", &PropertySize);
@@ -314,7 +336,7 @@ AcpiPlatformInstallAppleAnsTable (
              FALSE,                      // Level triggered
              FALSE,                      // Active high
              FALSE,                      // Exclusive
-             &NvmeInterrupt,
+             &NvmePublishedInterrupt,
              1,
              CrsNode,
              NULL
@@ -338,7 +360,7 @@ AcpiPlatformInstallAppleAnsTable (
   if (!EFI_ERROR (Status)) {
     DEBUG ((
       DEBUG_INFO,
-      "AppleANS ACPI: %a cpu=%lx/%lx nvme=%lx/%lx sart=%lx/%lx irq=%u\n",
+      "AppleANS ACPI: %a cpu=%lx/%lx nvme=%lx/%lx sart=%lx/%lx irq=%u physical=%u contract=%a\n",
       HardwareId,
       CpuBase,
       CpuSize,
@@ -346,7 +368,9 @@ AcpiPlatformInstallAppleAnsTable (
       NvmeSize,
       SartBase,
       SartSize,
-      NvmeInterrupt
+      NvmePublishedInterrupt,
+      NvmePhysicalInterrupt,
+      APPLE_ANS_INTERRUPT_CONTRACT
       ));
   }
 

@@ -26,6 +26,14 @@
   gAppleSiliconPkgTokenSpaceGuid.PcdSystemMemoryUefiRegionSize|0x8000000|UINT32|0x00004404
   gAppleSiliconPkgTokenSpaceGuid.PcdPciExpressBarLimit|0x0|UINT64|0x00004717
   gAppleSiliconPkgTokenSpaceGuid.PcdPciExpressBarSize|0x0|UINT64|0x00004718
+  #
+  # Optional Windows-facing ANS interrupt alias.  Zero preserves the physical
+  # ADT line.  A nonzero published value is accepted only when the live ADT
+  # line matches the expected physical value, keeping the Mu _CRS and AIC2
+  # CSRT ALI2 contracts fail-closed.
+  #
+  gAppleSiliconPkgTokenSpaceGuid.PcdAppleAnsPublishedInterrupt|0|UINT32|0x00004719
+  gAppleSiliconPkgTokenSpaceGuid.PcdAppleAnsExpectedPhysicalInterrupt|0|UINT32|0x0000471a
 
   # Stack stuff (128k stack by default)
   #Fallback stack base in case ModuleEntryPoint setup won't work.

@@ -41,6 +41,10 @@
   gAppleSiliconPkgTokenSpaceGuid.PcdSmbiosSystemSku|"MacBook Pro (Early 2023) (Mac14,5/Mac14,6/Mac14,9/Mac14,10)"
   gAppleSiliconPkgTokenSpaceGuid.PcdAppleNumDwc3Controllers|3 # M2 Pro case is hardcoded for now.
   gAppleSiliconPkgTokenSpaceGuid.PcdAppleNumDwc3Darts|6 # M2 Pro case is hardcoded for now.
+  # Windows' GIC arbiter cannot allocate T6020's physical ANS line 1832.
+  # Publish the platform-reserved GSIV 38; the AIC2 CSRT maps it back to 1832.
+  gAppleSiliconPkgTokenSpaceGuid.PcdAppleAnsPublishedInterrupt|38
+  gAppleSiliconPkgTokenSpaceGuid.PcdAppleAnsExpectedPhysicalInterrupt|1832
 
 [Components.common]
 
