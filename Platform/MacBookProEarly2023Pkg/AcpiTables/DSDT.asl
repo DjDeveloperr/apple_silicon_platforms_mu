@@ -118,6 +118,43 @@
         // }
 
         //
+        // The DWC3 blocks expose a standards-compliant xHCI register interface.
+        // m1n1 leaves usb-drd1 assigned to the guest, and Mu brings the controller
+        // and its DART up before ExitBootServices.  m1n1 maps the exact contiguous
+        // DWC3 core + Apple register span from the T6020 device tree at a free
+        // 32-bit guest-physical alias because the Windows root memory arbiter
+        // rejects the native 0xB02280000 fixed address before StartDevice.
+        //
+        Device (XHC1) {
+            Name (_HID, "PNP0D15")
+            Name (_UID, One)
+            Name (_CCA, One)
+
+            Name (_CRS, ResourceTemplate () {
+                QWordMemory (
+                    ResourceConsumer,
+                    PosDecode,
+                    MinFixed,
+                    MaxFixed,
+                    NonCacheable,
+                    ReadWrite,
+                    0x0000000000000000,
+                    0x0000000060000000,
+                    0x000000006000FEFF,
+                    0x0000000000000000,
+                    0x000000000000FF00
+                    )
+                Interrupt (ResourceConsumer, Level, ActiveHigh, Exclusive) {
+                    1274
+                }
+            })
+
+            Method (_STA) {
+                Return (0xF)
+            }
+        }
+
+        //
         // All known Apple devices to date have used the Samsung based UART that debuted on the 8900 (or a compatible implementation).
         //
         Device(COM0) {
@@ -217,6 +254,9 @@
             Device(CLU1) {
                 Name(_HID, "ACPI0010") // all "processor containers" must have this HID
                 Name(_UID, 0x2) // unique identifier of the container
+                Method (_STA) {
+                    Return (0xF)
+                }
                 // Method (_LPI, 0, NotSerialized) {
                 //     return(CLPI)
                 // }
@@ -257,6 +297,9 @@
             Device(CLU2) {
                 Name(_HID, "ACPI0010") // all "processor containers" must have this HID
                 Name(_UID, 0x3) // unique identifier of the container
+                Method (_STA) {
+                    Return (0xF)
+                }
                 // Method (_LPI, 0, NotSerialized) {
                 //     return(CLPI)
                 // }

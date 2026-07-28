@@ -200,6 +200,14 @@ class PlatformBuilder( UefiBuilder, BuildSettingsManager):
         self.env.SetValue("BUILDREPORT_TYPES", "PCD DEPEX FLASH BUILD_FLAGS LIBRARY FIXED_ADDRESS HASH", "Setting build report types")
         # Include the MFCI test cert by default, override on the commandline with "BLD_*_SHIP_MODE=TRUE" if you want the retail MFCI cert
         self.env.SetValue("BLD_*_SHIP_MODE", "FALSE", "Default")
+        # Experimental Windows 26200 scheduler containment.  Keep the normal
+        # heterogeneous MADT efficiency classes unless the build explicitly
+        # supplies BLD_*_NTASI_T6020_J414S_HOMOGENEOUS_EFFICIENCY=1.
+        self.env.SetValue(
+            "BLD_*_NTASI_T6020_J414S_HOMOGENEOUS_EFFICIENCY",
+            "0",
+            "Default",
+        )
 
         return 0
 

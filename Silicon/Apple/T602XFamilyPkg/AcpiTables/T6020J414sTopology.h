@@ -35,7 +35,24 @@
 #define T6020_J414S_P1_L2_SIZE      0x01000000
 
 #define T6020_J414S_E_EFFICIENCY_CLASS       0
+
+/*
+ * Experimental containment for Windows 26200's first heterogeneous-core
+ * bring-up.  Keep the shipping ACPI description unchanged unless the build
+ * explicitly opts in: setting the build macro to 1 preserves all ten real
+ * MPIDRs and the complete PPTT hierarchy, but reports one homogeneous MADT
+ * Processor Power Efficiency Class.  This isolates the scheduler's
+ * heterogeneous-class transition from processor-start and topology effects.
+ */
+#ifndef NTASI_T6020_J414S_HOMOGENEOUS_EFFICIENCY
+#define NTASI_T6020_J414S_HOMOGENEOUS_EFFICIENCY 0
+#endif
+
+#if NTASI_T6020_J414S_HOMOGENEOUS_EFFICIENCY
+#define T6020_J414S_P_EFFICIENCY_CLASS       T6020_J414S_E_EFFICIENCY_CLASS
+#else
 #define T6020_J414S_P_EFFICIENCY_CLASS       1
+#endif
 
 /* Linux t6020.dtsi / t602x-common.dtsi native-AIC resources. */
 #define T6020_AIC2_CORE_BASE         0x000000028E100000ULL

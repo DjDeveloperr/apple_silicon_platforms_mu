@@ -28,10 +28,14 @@
   SECURE_BOOT_ENABLE             = FALSE #disable secure boot for now
   AIC_BUILD                      = TRUE  # Mu uses native AIC; m1n1 supplies only the later Windows startup carrier
   NETWORK_TLS_ENABLE             = TRUE
+  # Experimental only. Build with
+  #   BLD_*_NTASI_T6020_J414S_HOMOGENEOUS_EFFICIENCY=1
+  # to publish PEC 0 for all ten processors without changing MPIDRs, CPU UIDs,
+  # or PPTT topology. PlatformBuild.py supplies the default value of 0.
 
 [BuildOptions.common]
   GCC:*_*_AARCH64_CC_FLAGS = -DSILICON_PLATFORM=6020
-  *_*_*_CC_FLAGS = -D DISABLE_NEW_DEPRECATED_INTERFACES -D HAS_MEMCPY_INTRINSICS
+  *_*_*_CC_FLAGS = -D DISABLE_NEW_DEPRECATED_INTERFACES -D HAS_MEMCPY_INTRINSICS -DNTASI_T6020_J414S_HOMOGENEOUS_EFFICIENCY=$(NTASI_T6020_J414S_HOMOGENEOUS_EFFICIENCY)
 
 
 
