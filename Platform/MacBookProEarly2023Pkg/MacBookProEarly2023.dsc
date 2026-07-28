@@ -57,3 +57,16 @@
 !include T602XFamilyPkg/T602XFamilyPkg.dsc.inc
 !include AppleSiliconPkg/AppleSiliconPkg.dsc.inc
 !include AppleSiliconPkg/FrontpageDsc.inc
+
+[PcdsFixedAtBuild.common]
+  # J414s has four E-cores and two three-core P clusters (4+3+3).  This must
+  # follow the T602x family include so the platform-specific value wins over
+  # the family's twelve-core maximum.
+  gAppleSiliconPkgTokenSpaceGuid.PcdCoreCount|10
+  # Publish the architectural ARM generic-timer PPIs.  The T602x family
+  # defaults are historical arbitrary placeholders and do not describe the
+  # Windows/native-AIC carrier contract.
+  gArmTokenSpaceGuid.PcdArmArchTimerSecIntrNum|29
+  gArmTokenSpaceGuid.PcdArmArchTimerIntrNum|30
+  gArmTokenSpaceGuid.PcdArmArchTimerVirtIntrNum|27
+  gArmTokenSpaceGuid.PcdArmArchTimerHypIntrNum|26

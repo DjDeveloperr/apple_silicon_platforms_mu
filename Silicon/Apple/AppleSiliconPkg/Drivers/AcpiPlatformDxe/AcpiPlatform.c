@@ -205,7 +205,13 @@ AcpiPlatformInstallAppleAnsTable (
       (InterruptsProperty == NULL))
   {
     DEBUG ((DEBUG_ERROR, "AppleANS ACPI: interrupt metadata is absent\n"));
-    return EFI_NOT_FOUND;
+    //
+    // The ANS and SART nodes prove that this platform contains the storage
+    // controller.  From this point onward, omitting its SSDT is never a benign
+    // "device absent" result: Windows would bind no boot miniport and end in
+    // INACCESSIBLE_BOOT_DEVICE.  Fail firmware construction closed instead.
+    //
+    return EFI_DEVICE_ERROR;
   }
 
   NvmeInterruptIndex = *InterruptIndexProperty;

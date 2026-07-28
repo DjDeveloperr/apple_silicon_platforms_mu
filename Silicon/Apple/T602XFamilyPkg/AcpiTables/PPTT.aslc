@@ -1,123 +1,163 @@
 /**
  * Copyright (c) 2025 AppleWOA authors.
- * 
+ *
  * Module Name:
  *     PPTT.aslc
- * 
+ *
  * Abstract:
- *     Processor Properties Topology Table. Implements the
- *     PPTT table for the T602x family -
- *     This is only a temporary implementation 
- *     until dynamic allocations in AcpiPlatformDxe are implemented.
- * 
- * Environment:
- *     UEFI firmware/runtime services.
- * 
+ *     Processor Properties Topology Table for the J414s M2 Pro topology:
+ *     one four-core E cluster and two three-core P clusters.  Each cluster
+ *     publishes its shared last-level cache as a private PPTT resource.
+ *
  * License:
  *     SPDX-License-Identifier: BSD-2-Clause-Patent OR MIT
- * 
-*/
+ */
 
 #include <Library/AcpiLib.h>
-#include <Library/ArmLib.h>
-#include <Library/PcdLib.h>
+#include <Library/BaseLib.h>
 #include <IndustryStandard/Acpi64.h>
 #include <Acpi/AcpiHeader.h>
 #include <Acpi/SgiAcpiHeader.h>
 
+#define J414S_E_CLUSTER_CACHE_SIZE  0x00400000
+#define J414S_P_CLUSTER_CACHE_SIZE  0x01000000
 
-#define DIE_COUNT               1 // this is *ignoring* the second die for now
-#define CLUSTER_COUNT           3 // bootstrap/E-core cluster, P-core cluster
-#define CLUSTER_CORE_COUNT      4 // 4 cores/cluster, note that for T600x
-#define PPTT_CPU_UID(DieId, ClusterId, CpuId)   ((ClusterId) * CLUSTER_CORE_COUNT + (CpuId))
+// The physical package has a valid namespace UID, but its E- and P-core
+// descendants are deliberately not marked as identical implementations.
+#define J414S_PACKAGE_FLAGS                                                  \
+  {                                                                          \
+    EFI_ACPI_6_4_PPTT_PACKAGE_PHYSICAL,                                      \
+    EFI_ACPI_6_4_PPTT_PROCESSOR_ID_VALID,                                    \
+    EFI_ACPI_6_4_PPTT_PROCESSOR_IS_NOT_THREAD,                               \
+    EFI_ACPI_6_4_PPTT_NODE_IS_NOT_LEAF,                                      \
+    EFI_ACPI_6_4_PPTT_IMPLEMENTATION_NOT_IDENTICAL                           \
+  }
 
+// Only the cache size, unified-cache type, and stable CacheId are known and
+// therefore marked valid.  Do not manufacture associativity or set counts.
+#define J414S_CLUSTER_CACHE_FLAGS                                            \
+  {                                                                          \
+    EFI_ACPI_6_4_PPTT_CACHE_SIZE_VALID,                                      \
+    EFI_ACPI_6_4_PPTT_NUMBER_OF_SETS_INVALID,                                \
+    EFI_ACPI_6_4_PPTT_ASSOCIATIVITY_INVALID,                                 \
+    EFI_ACPI_6_4_PPTT_ALLOCATION_TYPE_INVALID,                               \
+    EFI_ACPI_6_4_PPTT_CACHE_TYPE_VALID,                                      \
+    EFI_ACPI_6_4_PPTT_WRITE_POLICY_INVALID,                                  \
+    EFI_ACPI_6_4_PPTT_LINE_SIZE_INVALID,                                     \
+    EFI_ACPI_6_4_PPTT_CACHE_ID_VALID                                         \
+  }
 
-#pragma pack(1)
+#pragma pack (1)
+
 typedef struct {
-    EFI_ACPI_6_4_PPTT_STRUCTURE_PROCESSOR  Core;
-} PPTT_CORE;
+  EFI_ACPI_6_4_PPTT_STRUCTURE_PROCESSOR    Node;
+  UINT32                                   PrivateResource;
+} J414S_PPTT_CLUSTER_NODE;
 
 typedef struct {
-    EFI_ACPI_6_4_PPTT_STRUCTURE_PROCESSOR  Cluster;
-    PPTT_CORE                              Cores[CLUSTER_CORE_COUNT];
-} PPTT_CLUSTER;
+  J414S_PPTT_CLUSTER_NODE                  Cluster;
+  EFI_ACPI_6_4_PPTT_STRUCTURE_PROCESSOR    Cores[4];
+  EFI_ACPI_6_4_PPTT_STRUCTURE_CACHE        SharedCache;
+} J414S_PPTT_CLUSTER4;
 
 typedef struct {
-    EFI_ACPI_6_4_PPTT_STRUCTURE_PROCESSOR  Die;
-    PPTT_CLUSTER                           Clusters[CLUSTER_COUNT];
-} PPTT_DIE;
+  J414S_PPTT_CLUSTER_NODE                  Cluster;
+  EFI_ACPI_6_4_PPTT_STRUCTURE_PROCESSOR    Cores[3];
+  EFI_ACPI_6_4_PPTT_STRUCTURE_CACHE        SharedCache;
+} J414S_PPTT_CLUSTER3;
+
+typedef struct {
+  EFI_ACPI_6_4_PROCESSOR_PROPERTIES_TOPOLOGY_TABLE_HEADER Header;
+  EFI_ACPI_6_4_PPTT_STRUCTURE_PROCESSOR                    Die;
+  J414S_PPTT_CLUSTER4                                      ECluster;
+  J414S_PPTT_CLUSTER3                                      PCluster0;
+  J414S_PPTT_CLUSTER3                                      PCluster1;
+} J414S_PPTT_TABLE;
+
 #pragma pack ()
 
+STATIC_ASSERT (sizeof (J414S_PPTT_CLUSTER_NODE) == 24, "PPTT cluster node size");
+STATIC_ASSERT (sizeof (J414S_PPTT_TABLE) == 412, "J414s PPTT size");
+STATIC_ASSERT (OFFSET_OF (J414S_PPTT_TABLE, ECluster.SharedCache) == 160, "E cache offset");
+STATIC_ASSERT (OFFSET_OF (J414S_PPTT_TABLE, PCluster0.SharedCache) == 272, "P0 cache offset");
+STATIC_ASSERT (OFFSET_OF (J414S_PPTT_TABLE, PCluster1.SharedCache) == 384, "P1 cache offset");
 
-#define CORE_INIT(DieId, ClusterId, CpuId)                                                          \
-{                                                                                                   \
-    /* Parameters for CPU Core */                                                                   \
-    EFI_ACPI_6_4_PPTT_STRUCTURE_PROCESSOR_INIT (                                                    \
-        0x14,                                                           /* Length */                \
-        PPTT_PROCESSOR_CORE_FLAGS,                                      /* Flag */                  \
-        OFFSET_OF (EFI_ACPI_6_4_PROCESSOR_PROPERTIES_TOPOLOGY_TABLE,                                \
-            Dies[DieId].Clusters[ClusterId]),                           /* Parent */                \
-        PPTT_CPU_UID(DieId, ClusterId, CpuId),                          /* ACPI Id */               \
-        0                                                               /* Private resources */     \
-    ),                                                                                              \
-}
-
-
-#define CLUSTER_INIT(DieId, ClusterId)                                                              \
-{                                                                                                   \
-    /* Parameters for Cluster */                                                                    \
-    EFI_ACPI_6_4_PPTT_STRUCTURE_PROCESSOR_INIT (                                                    \
-        OFFSET_OF (PPTT_CLUSTER, Cores),                                /* Length */                \
-        PPTT_PROCESSOR_CLUSTER_FLAGS,                                   /* Flag */                  \
-        OFFSET_OF (EFI_ACPI_6_4_PROCESSOR_PROPERTIES_TOPOLOGY_TABLE,                                \
-            Dies[DieId].Die),                                           /* Parent */                \
-        ((DieId << 4) | ClusterId),                                     /* ACPI Id */               \
-        0                                                               /* Private resources */     \
-    ),                                                                                              \
-    {                                                                                               \
-        CORE_INIT (DieId, ClusterId, 0),                                                            \
-        CORE_INIT (DieId, ClusterId, 1),                                                            \
-        CORE_INIT (DieId, ClusterId, 2),                                                            \
-        CORE_INIT (DieId, ClusterId, 3),                                                            \
-    },                                                                                              \
-}
-
-#define DIE_INIT(DieId)                                                                             \
-{                                                                                                   \
-    /* Parameters for DIE (Package) */                                                              \
-    EFI_ACPI_6_4_PPTT_STRUCTURE_PROCESSOR_INIT(                                                     \
-        OFFSET_OF(PPTT_DIE, Clusters[0]),                               /* Length */                \
-        PPTT_PROCESSOR_PACKAGE_FLAGS,                                   /* Flag */                  \
-        0,                                                              /* Parent */                \
-        DieId,                                                          /* ACPI Id */               \
-        0                                                               /* Private resources */     \
-    ),                                                                                              \
-    {                                                                                               \
-        CLUSTER_INIT(DieId, 0),                                                                     \
-        CLUSTER_INIT(DieId, 1),                                                                     \
-        CLUSTER_INIT(DieId, 2),                                                                     \
-    }                                                                                               \
-}
-
-
-#pragma pack(1)
-typedef struct {
-    EFI_ACPI_6_4_PROCESSOR_PROPERTIES_TOPOLOGY_TABLE_HEADER  Header;
-    PPTT_DIE                                                 Dies[DIE_COUNT];
-} EFI_ACPI_6_4_PROCESSOR_PROPERTIES_TOPOLOGY_TABLE;
-#pragma pack ()
-
-EFI_ACPI_6_4_PROCESSOR_PROPERTIES_TOPOLOGY_TABLE Pptt = {
-{
-    __ACPI_HEADER (
-        EFI_ACPI_6_4_PROCESSOR_PROPERTIES_TOPOLOGY_TABLE_STRUCTURE_SIGNATURE,
-        EFI_ACPI_6_4_PROCESSOR_PROPERTIES_TOPOLOGY_TABLE,
-        EFI_ACPI_6_4_PROCESSOR_PROPERTIES_TOPOLOGY_TABLE_REVISION
+#define J414S_CORE_INIT(ClusterField, CpuUid)                                  \
+  EFI_ACPI_6_4_PPTT_STRUCTURE_PROCESSOR_INIT (                                \
+    sizeof (EFI_ACPI_6_4_PPTT_STRUCTURE_PROCESSOR),                           \
+    PPTT_PROCESSOR_CORE_FLAGS,                                                 \
+    OFFSET_OF (J414S_PPTT_TABLE, ClusterField),                                \
+    CpuUid,                                                                     \
+    0                                                                           \
     )
-    },
+
+#define J414S_CLUSTER_INIT(ClusterField, ClusterUid)                            \
+  {                                                                            \
+    EFI_ACPI_6_4_PPTT_STRUCTURE_PROCESSOR_INIT (                               \
+      sizeof (J414S_PPTT_CLUSTER_NODE),                                        \
+      PPTT_PROCESSOR_CLUSTER_FLAGS,                                            \
+      OFFSET_OF (J414S_PPTT_TABLE, Die),                                       \
+      ClusterUid,                                                               \
+      1                                                                         \
+      ),                                                                        \
+    OFFSET_OF (J414S_PPTT_TABLE, ClusterField.SharedCache)                     \
+  }
+
+#define J414S_CACHE_INIT(ClusterId, CacheSize)                                  \
+  EFI_ACPI_6_4_PPTT_STRUCTURE_CACHE_INIT (                                    \
+    J414S_CLUSTER_CACHE_FLAGS,                                                 \
+    0,                                                                         \
+    CacheSize,                                                                 \
+    0,                                                                         \
+    0,                                                                         \
+    PPTT_UNIFIED_CACHE_ATTR,                                                   \
+    0,                                                                         \
+    RD_PPTT_CACHE_ID (0, ClusterId, 0, L2Cache)                                \
+    )
+
+J414S_PPTT_TABLE Pptt = {
+  {
+    __ACPI_HEADER (
+      EFI_ACPI_6_4_PROCESSOR_PROPERTIES_TOPOLOGY_TABLE_STRUCTURE_SIGNATURE,
+      J414S_PPTT_TABLE,
+      EFI_ACPI_6_4_PROCESSOR_PROPERTIES_TOPOLOGY_TABLE_REVISION
+      )
+  },
+  EFI_ACPI_6_4_PPTT_STRUCTURE_PROCESSOR_INIT (
+    sizeof (EFI_ACPI_6_4_PPTT_STRUCTURE_PROCESSOR),
+    J414S_PACKAGE_FLAGS,
+    0,
+    0,
+    0
+    ),
+  {
+    J414S_CLUSTER_INIT (ECluster, 1),
     {
-        DIE_INIT(0),
-    }
+      J414S_CORE_INIT (ECluster, 0),
+      J414S_CORE_INIT (ECluster, 1),
+      J414S_CORE_INIT (ECluster, 2),
+      J414S_CORE_INIT (ECluster, 3)
+    },
+    J414S_CACHE_INIT (0, J414S_E_CLUSTER_CACHE_SIZE)
+  },
+  {
+    J414S_CLUSTER_INIT (PCluster0, 2),
+    {
+      J414S_CORE_INIT (PCluster0, 4),
+      J414S_CORE_INIT (PCluster0, 5),
+      J414S_CORE_INIT (PCluster0, 6)
+    },
+    J414S_CACHE_INIT (1, J414S_P_CLUSTER_CACHE_SIZE)
+  },
+  {
+    J414S_CLUSTER_INIT (PCluster1, 3),
+    {
+      J414S_CORE_INIT (PCluster1, 7),
+      J414S_CORE_INIT (PCluster1, 8),
+      J414S_CORE_INIT (PCluster1, 9)
+    },
+    J414S_CACHE_INIT (2, J414S_P_CLUSTER_CACHE_SIZE)
+  }
 };
 
-VOID * CONST ReferenceAcpiTable = &Pptt;
+VOID *CONST ReferenceAcpiTable = &Pptt;
