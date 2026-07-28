@@ -131,10 +131,6 @@ AppleAnsAddMemoryResource (
     0: ASC CPU/mailbox aperture (mailbox registers are at +0x8000)
     1: ANS NVMe aperture (ADT reg[3])
     2: SART aperture
-
-  No interrupt resource is published.  The Mu DXE and Windows miniport both
-  poll ANS, and T6020's physical controller line (1832) is outside the
-  architectural GIC SPI range accepted by the Windows resource arbiter.
 **/
 STATIC
 EFI_STATUS
@@ -158,11 +154,19 @@ AcpiPlatformInstallAppleAnsTable (
   UINT64                       NvmeSize;
   UINT64                       SartBase;
   UINT64                       SartSize;
+  UINT32                       AcpiInterrupt;
+  UINT32                       ExpectedPhysicalInterrupt;
+  UINT32                       PhysicalInterrupt;
   UINT32                       SartVersion;
   UINT32                       *VersionProperty;
+  UINT32                       NvmeInterruptIndex;
+  UINT32                       *InterruptIndexProperty;
+  UINT32                       *InterruptsProperty;
   UINTN                        PropertySize;
+  UINTN                        InterruptsSize;
   BOOLEAN                      Legacy;
   CONST CHAR8                  *HardwareId;
+  CONST CHAR8                  *InterruptContract;
 
   RootNode = NULL;
   Table    = NULL;
@@ -178,6 +182,86 @@ AcpiPlatformInstallAppleAnsTable (
       (dt_node_reg (SartNode, 0, &SartBase, &SartSize) != 0))
   {
     return EFI_DEVICE_ERROR;
+  }
+
+  //
+  // Apple ADT keeps all ASC mailbox and NVMe interrupts in one UINT32 array.
+  // nvme-interrupt-idx identifies the dedicated controller interrupt within
+  // that array (currently index 4).  Derive it from the live ADT so the ACPI
+  // GSIV remains correct across SoCs and dies.
+  //
+  InterruptIndexProperty = dt_node_prop (
+                             AnsNode,
+                             "nvme-interrupt-idx",
+                             &PropertySize
+                             );
+  InterruptsProperty = dt_node_prop (
+                         AnsNode,
+                         "interrupts",
+                         &InterruptsSize
+                         );
+  if ((InterruptIndexProperty == NULL) ||
+      (PropertySize < sizeof (*InterruptIndexProperty)) ||
+      (InterruptsProperty == NULL))
+  {
+    DEBUG ((DEBUG_ERROR, "AppleANS ACPI: interrupt metadata is absent\n"));
+    return EFI_NOT_FOUND;
+  }
+
+  NvmeInterruptIndex = *InterruptIndexProperty;
+  if ((NvmeInterruptIndex >= InterruptsSize / sizeof (*InterruptsProperty)) ||
+      (NvmeInterruptIndex > MAX_UINT8))
+  {
+    DEBUG ((
+      DEBUG_ERROR,
+      "AppleANS ACPI: invalid NVMe interrupt index %u for %u bytes\n",
+      NvmeInterruptIndex,
+      (UINT32)InterruptsSize
+      ));
+    return EFI_DEVICE_ERROR;
+  }
+
+  PhysicalInterrupt = InterruptsProperty[NvmeInterruptIndex];
+
+  //
+  // Windows' architectural GIC interrupt arbiter refuses T6020's physical
+  // AIC line 1832 because it falls in GIC's reserved 1024..4095 INTID gap.
+  // A platform may therefore publish an arbiter-legal GSIV and describe the
+  // one-to-one mapping in the AIC2 CSRT ALI2 tail.  Require both PCDs as a
+  // pair and verify the physical line against the live ADT before publishing
+  // the alias.  A zero/zero pair retains the legacy direct publication for
+  // platforms that do not use this contract.
+  //
+  AcpiInterrupt            = FixedPcdGet32 (PcdAppleAnsPublishedInterrupt);
+  ExpectedPhysicalInterrupt =
+    FixedPcdGet32 (PcdAppleAnsExpectedPhysicalInterrupt);
+  if ((AcpiInterrupt == 0) != (ExpectedPhysicalInterrupt == 0)) {
+    DEBUG ((
+      DEBUG_ERROR,
+      "AppleANS ACPI: refusing alias published=%u expected-physical=%u live-physical=%u\n",
+      AcpiInterrupt,
+      ExpectedPhysicalInterrupt,
+      PhysicalInterrupt
+      ));
+    return EFI_DEVICE_ERROR;
+  }
+
+  if (ExpectedPhysicalInterrupt != 0) {
+    if (PhysicalInterrupt != ExpectedPhysicalInterrupt) {
+      DEBUG ((
+        DEBUG_ERROR,
+        "AppleANS ACPI: refusing alias published=%u expected-physical=%u live-physical=%u\n",
+        AcpiInterrupt,
+        ExpectedPhysicalInterrupt,
+        PhysicalInterrupt
+        ));
+      return EFI_DEVICE_ERROR;
+    }
+
+    InterruptContract = "published-gsiv-to-physical-aic";
+  } else {
+    AcpiInterrupt     = PhysicalInterrupt;
+    InterruptContract = "physical-aic-line";
   }
 
   Legacy = AppleAnsPropertyContains (AnsNode, "compatible", "t8015");
@@ -269,6 +353,20 @@ AcpiPlatformInstallAppleAnsTable (
     goto Exit;
   }
 
+  Status = AmlCodeGenRdInterrupt (
+             TRUE,                       // ResourceConsumer
+             FALSE,                      // Level triggered
+             FALSE,                      // Active high
+             FALSE,                      // Exclusive
+             &AcpiInterrupt,
+             1,
+             CrsNode,
+             NULL
+             );
+  if (EFI_ERROR (Status)) {
+    goto Exit;
+  }
+
   Status = AmlSerializeDefinitionBlock (RootNode, &Table);
   if (EFI_ERROR (Status)) {
     goto Exit;
@@ -284,14 +382,17 @@ AcpiPlatformInstallAppleAnsTable (
   if (!EFI_ERROR (Status)) {
     DEBUG ((
       DEBUG_INFO,
-      "AppleANS ACPI: %a cpu=%lx/%lx nvme=%lx/%lx sart=%lx/%lx polling-no-interrupt\n",
+      "AppleANS ACPI: %a cpu=%lx/%lx nvme=%lx/%lx sart=%lx/%lx irq=%u physical=%u contract=%a\n",
       HardwareId,
       CpuBase,
       CpuSize,
       NvmeBase,
       NvmeSize,
       SartBase,
-      SartSize
+      SartSize,
+      AcpiInterrupt,
+      PhysicalInterrupt,
+      InterruptContract
       ));
   }
 

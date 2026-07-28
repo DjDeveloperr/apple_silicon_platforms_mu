@@ -49,6 +49,9 @@
   gAppleSiliconPkgTokenSpaceGuid.PcdSmbiosSystemSku|"MacBook Pro (Early 2023) (Mac14,5/Mac14,6/Mac14,9/Mac14,10)"
   gAppleSiliconPkgTokenSpaceGuid.PcdAppleNumDwc3Controllers|3 # M2 Pro case is hardcoded for now.
   gAppleSiliconPkgTokenSpaceGuid.PcdAppleNumDwc3Darts|6 # M2 Pro case is hardcoded for now.
+  # Windows consumes GSIV 38; the AIC2 CSRT translates it to T6020 line 1832.
+  gAppleSiliconPkgTokenSpaceGuid.PcdAppleAnsPublishedInterrupt|38
+  gAppleSiliconPkgTokenSpaceGuid.PcdAppleAnsExpectedPhysicalInterrupt|1832
 
 [Components.common]
 

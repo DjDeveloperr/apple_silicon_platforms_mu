@@ -26,6 +26,10 @@
   gAppleSiliconPkgTokenSpaceGuid.PcdSystemMemoryUefiRegionSize|0x8000000|UINT32|0x00004404
   gAppleSiliconPkgTokenSpaceGuid.PcdPciExpressBarLimit|0x0|UINT64|0x00004717
   gAppleSiliconPkgTokenSpaceGuid.PcdPciExpressBarSize|0x0|UINT64|0x00004718
+  # Optional ACPI published-GSIV <-> physical-AIC-line contract for ANS.
+  # A zero/zero pair publishes the live physical line directly.
+  gAppleSiliconPkgTokenSpaceGuid.PcdAppleAnsPublishedInterrupt|0|UINT32|0x00004719
+  gAppleSiliconPkgTokenSpaceGuid.PcdAppleAnsExpectedPhysicalInterrupt|0|UINT32|0x0000471A
 
   # Stack stuff (128k stack by default)
   #Fallback stack base in case ModuleEntryPoint setup won't work.
