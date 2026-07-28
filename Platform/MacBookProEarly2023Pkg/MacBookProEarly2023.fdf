@@ -161,10 +161,11 @@ FvNameGuid         = 02e6c12f-69f7-4626-b5de-e3cfd6c0dc56
 # the unmapped hole [0x2C0000000, 0x380000000), so the driver's first SART
 # read data-aborted.  The reported PC (ArmCpuDxe+0x6A08) is the SPx-sync
 # vector's SP_EL0 context-save stp, not the driver.  The map now covers
-# 0x340000000+1GB (APPLE_CORE_SYSTEM_MMIO_RANGE_17); re-enable the INF below
-# only together with a rebuilt, re-manifested firmware and an explicit
-# hardware run decision.
-#  INF AppleSiliconPkg/Drivers/AppleNANDStorageDxe/AppleNANDStorageDxe.inf
+# 0x340000000+1GB (APPLE_CORE_SYSTEM_MMIO_RANGE_17), so the DXE is
+# re-enabled on this branch as the internal-SSD boot candidate.  Windows-side
+# prerequisite: a signed NTAS2003/AppleNvmeSart3 boot-start package must be
+# staged before this firmware is useful for a Windows boot.
+  INF AppleSiliconPkg/Drivers/AppleNANDStorageDxe/AppleNANDStorageDxe.inf
   #INF MdeModulePkg/Bus/Pci/NvmExpressDxe/NvmExpressDxe.inf
 
   #
