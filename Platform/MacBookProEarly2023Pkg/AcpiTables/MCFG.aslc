@@ -1,0 +1,42 @@
+/** @file
+  M2 Pro PCI Express memory-mapped configuration-space table.
+
+  SPDX-License-Identifier: BSD-2-Clause-Patent OR MIT
+**/
+
+#include <IndustryStandard/MemoryMappedConfigurationSpaceAccessTable.h>
+#include <Library/PcdLib.h>
+#include <Acpi/AcpiHeader.h>
+
+#pragma pack(1)
+
+typedef struct {
+  EFI_ACPI_DESCRIPTION_HEADER
+    Header;
+  UINT64
+    Reserved;
+  EFI_ACPI_MEMORY_MAPPED_ENHANCED_CONFIGURATION_SPACE_BASE_ADDRESS_ALLOCATION_STRUCTURE
+    Allocation;
+} APPLE_MCFG_TABLE;
+
+#pragma pack()
+
+STATIC_ASSERT (sizeof (APPLE_MCFG_TABLE) == 60, "MCFG must contain one allocation");
+
+APPLE_MCFG_TABLE Mcfg = {
+  __ACPI_HEADER (
+    EFI_ACPI_6_4_PCI_EXPRESS_MEMORY_MAPPED_CONFIGURATION_SPACE_BASE_ADDRESS_DESCRIPTION_TABLE_SIGNATURE,
+    APPLE_MCFG_TABLE,
+    EFI_ACPI_MEMORY_MAPPED_CONFIGURATION_SPACE_ACCESS_TABLE_REVISION
+    ),
+  0,
+  {
+    FixedPcdGet64 (PcdPciExpressBaseAddress),
+    0,
+    (UINT8)FixedPcdGet32 (PcdPciBusMin),
+    (UINT8)FixedPcdGet32 (PcdPciBusMax),
+    0
+  }
+};
+
+VOID *CONST ReferenceAcpiTable = &Mcfg;
