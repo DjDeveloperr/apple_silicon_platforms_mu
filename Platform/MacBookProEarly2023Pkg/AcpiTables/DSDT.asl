@@ -118,6 +118,41 @@
         // }
 
         //
+        // J414s' right-side USB-C receptacle is usb-drd2.  Keep its native
+        // T6020 controller separate from XHC1 and publish the m1n1-provided
+        // low guest-physical alias.  GSIV 39 is translated to physical AIC
+        // line 1292 by the AIC2 CSRT ALI2 table.
+        //
+        Device (XHC2) {
+            Name (_HID, "PNP0D15")
+            Name (_UID, 0x02)
+            Name (_CCA, One)
+
+            Name (_CRS, ResourceTemplate () {
+                QWordMemory (
+                    ResourceConsumer,
+                    PosDecode,
+                    MinFixed,
+                    MaxFixed,
+                    NonCacheable,
+                    ReadWrite,
+                    0x0000000000000000,
+                    0x0000000061000000,
+                    0x000000006100FEFF,
+                    0x0000000000000000,
+                    0x000000000000FF00
+                    )
+                Interrupt (ResourceConsumer, Level, ActiveHigh, Exclusive) {
+                    39
+                }
+            })
+
+            Method (_STA) {
+                Return (0xF)
+            }
+        }
+
+        //
         // All known Apple devices to date have used the Samsung based UART that debuted on the 8900 (or a compatible implementation).
         //
         Device(COM0) {
