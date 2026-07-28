@@ -250,16 +250,6 @@
                         Return (0xF)
                     }
                 }
-                Device(CPU7) {
-                    Name(_HID, "ACPI0007")
-                    Name(_UID, 0x7)
-                    // Method (_LPI, 0, NotSerialized) {
-                    // return(PLPI)
-                    // }
-                    Method (_STA) {
-                        Return (0xF)
-                    }
-                }
             }
             //
             // P-core cluster 2, present on all variants
@@ -270,6 +260,16 @@
                 // Method (_LPI, 0, NotSerialized) {
                 //     return(CLPI)
                 // }
+                Device(CPU7) {
+                    Name(_HID, "ACPI0007")
+                    Name(_UID, 0x7)
+                    // Method (_LPI, 0, NotSerialized) {
+                    // return(PLPI)
+                    // }
+                    Method (_STA) {
+                        Return (0xF)
+                    }
+                }
                 Device(CPU8) {
                     Name(_HID, "ACPI0007")
                     Name(_UID, 0x8)
@@ -283,26 +283,6 @@
                 Device(CPU9) {
                     Name(_HID, "ACPI0007")
                     Name(_UID, 0x9)
-                    // Method (_LPI, 0, NotSerialized) {
-                    // return(PLPI)
-                    // }
-                    Method (_STA) {
-                        Return (0xF)
-                    }
-                }
-                Device(CPUA) {
-                    Name(_HID, "ACPI0007")
-                    Name(_UID, 0xA)
-                    // Method (_LPI, 0, NotSerialized) {
-                    // return(PLPI)
-                    // }
-                    Method (_STA) {
-                        Return (0xF)
-                    }
-                }
-                Device(CPUB) {
-                    Name(_HID, "ACPI0007")
-                    Name(_UID, 0xB)
                     // Method (_LPI, 0, NotSerialized) {
                     // return(PLPI)
                     // }
