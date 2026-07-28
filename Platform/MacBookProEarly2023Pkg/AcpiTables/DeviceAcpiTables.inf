@@ -21,7 +21,7 @@
   DBG2.aslc
   #EINJ.asl
   FADT.aslc
-  MCFG.aslc
+  #MCFG.aslc
   DSDT.asl
 
 [Packages]
