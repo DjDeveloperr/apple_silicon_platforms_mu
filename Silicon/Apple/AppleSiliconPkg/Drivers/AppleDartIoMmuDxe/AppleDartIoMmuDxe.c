@@ -308,7 +308,7 @@ STATIC VOID AppleDartT8020TlbFlush(VOID *DartInformation) {
 STATIC VOID AppleDartT8110TlbFlush(VOID *DartInformation) {
     APPLE_DART_INFO *DartInfoStruct = (APPLE_DART_INFO *)DartInformation;
     __asm__("dsb sy");
-    MmioWrite32(DartInfoStruct->BaseAddress + DART_T8110_TLB_CMD_FLUSH_ALL, DART_T8110_TLB_CMD_FLUSH_ALL);
+    MmioWrite32(DartInfoStruct->BaseAddress + DART_T8110_TLB_CMD, DART_T8110_TLB_CMD_FLUSH_ALL);
     while((MmioRead32(DartInfoStruct->BaseAddress + DART_T8110_TLB_CMD)) & DART_T8110_TLB_CMD_BUSY) {
         continue;
     }
