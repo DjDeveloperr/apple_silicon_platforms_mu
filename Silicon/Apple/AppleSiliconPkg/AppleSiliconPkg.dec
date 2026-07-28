@@ -34,6 +34,8 @@
   #
   gAppleSiliconPkgTokenSpaceGuid.PcdAppleAnsPublishedInterrupt|0|UINT32|0x00004719
   gAppleSiliconPkgTokenSpaceGuid.PcdAppleAnsExpectedPhysicalInterrupt|0|UINT32|0x0000471a
+  # Windows-facing xHCI GSIV paired with the AIC2 CSRT alias contract.
+  gAppleSiliconPkgTokenSpaceGuid.PcdAppleXhciPublishedInterrupt|0|UINT32|0x0000471b
 
   # Stack stuff (128k stack by default)
   #Fallback stack base in case ModuleEntryPoint setup won't work.

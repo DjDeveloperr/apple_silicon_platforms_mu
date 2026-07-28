@@ -486,6 +486,35 @@
             }
         }
 
+        // Windows sees the xHCI BAR through m1n1's 0x60000000 stage-2 alias.
+        // GSIV 37 is translated to physical AIC line 1274 by the AIC2 CSRT.
+        Device(XHC1) {
+            Name (_HID, "PNP0D15")
+            Name (_UID, One)
+            Name (_CCA, One)
+            Name (_CRS, ResourceTemplate () {
+                QWordMemory(
+                    ResourceConsumer,
+                    PosDecode,
+                    MinFixed,
+                    MaxFixed,
+                    NonCacheable,
+                    ReadWrite,
+                    0x0000000000000000,
+                    0x0000000060000000,
+                    0x000000006000feff,
+                    0x0000000000000000,
+                    0x000000000000ff00
+                )
+                Interrupt(ResourceConsumer, Level, ActiveHigh, Exclusive) {
+                    FixedPcdGet32 (PcdAppleXhciPublishedInterrupt)
+                }
+            })
+            Method (_STA) {
+                Return (0xF)
+            }
+        }
+
         //
         // PCIe root complex (because just implementing it in the host bridge library is not enough apparently...)
         // Code adapted from QemuSbsaPkg DSDT in mu_tiano_platforms

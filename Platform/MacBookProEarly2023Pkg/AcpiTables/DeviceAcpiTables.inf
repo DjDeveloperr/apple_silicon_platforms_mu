@@ -50,3 +50,4 @@
   gAppleSiliconPkgTokenSpaceGuid.PcdPciExpressBarSize
   gAppleSiliconPkgTokenSpaceGuid.PcdPciExpressBarLimit
   gAppleSiliconPkgTokenSpaceGuid.PcdAppleUartBase
+  gAppleSiliconPkgTokenSpaceGuid.PcdAppleXhciPublishedInterrupt
