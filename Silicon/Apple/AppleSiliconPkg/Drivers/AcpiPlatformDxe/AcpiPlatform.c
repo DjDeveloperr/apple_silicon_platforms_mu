@@ -30,6 +30,7 @@
 #include <Library/PcdLib.h>
 
 #include <IndustryStandard/Acpi.h>
+#include <Drivers/AppleAnsHardware.h>
 
 #define APPLE_ANS_ACPI_OEM_ID        "NTASP "
 #define APPLE_ANS_ACPI_OEM_TABLE_ID  "APPLEANS"
@@ -154,6 +155,8 @@ AcpiPlatformInstallAppleAnsTable (
   UINT64                       NvmeSize;
   UINT64                       SartBase;
   UINT64                       SartSize;
+  UINT64                       NvmeMinimumSize;
+  UINT64                       SartMinimumSize;
   UINT32                       AcpiInterrupt;
   UINT32                       ExpectedPhysicalInterrupt;
   UINT32                       PhysicalInterrupt;
@@ -265,6 +268,7 @@ AcpiPlatformInstallAppleAnsTable (
   }
 
   Legacy = AppleAnsPropertyContains (AnsNode, "compatible", "t8015");
+  NvmeMinimumSize = Legacy ? APPLE_ANS_NVME_T8015_MIN_SIZE : APPLE_ANS_NVME_MIN_SIZE;
   VersionProperty = dt_node_prop (SartNode, "sart-version", &PropertySize);
   if ((VersionProperty != NULL) && (PropertySize >= sizeof (*VersionProperty))) {
     SartVersion = *VersionProperty;
@@ -278,10 +282,13 @@ AcpiPlatformInstallAppleAnsTable (
 
   if (Legacy && (SartVersion == 0)) {
     HardwareId = "NTAS1000";
+    SartMinimumSize = APPLE_ANS_SART_V0_MIN_SIZE;
   } else if (!Legacy && (SartVersion == 2)) {
     HardwareId = "NTAS2002";
+    SartMinimumSize = APPLE_ANS_SART_V2_MIN_SIZE;
   } else if (!Legacy && (SartVersion == 3)) {
     HardwareId = "NTAS2003";
+    SartMinimumSize = APPLE_ANS_SART_V3_MIN_SIZE;
   } else {
     DEBUG ((
       DEBUG_ERROR,
@@ -290,6 +297,26 @@ AcpiPlatformInstallAppleAnsTable (
       SartVersion
       ));
     return EFI_UNSUPPORTED;
+  }
+
+  if (!AppleAnsMmioRangeValid (CpuBase, CpuSize, APPLE_ANS_CPU_MIN_SIZE) ||
+      !AppleAnsMmioRangeValid (NvmeBase, NvmeSize, NvmeMinimumSize) ||
+      !AppleAnsMmioRangeValid (SartBase, SartSize, SartMinimumSize))
+  {
+    DEBUG ((
+      DEBUG_ERROR,
+      "AppleANS ACPI: refusing MMIO cpu=%Lx/%Lx nvme=%Lx/%Lx sart=%Lx/%Lx minimum=%Lx/%Lx/%Lx\n",
+      CpuBase,
+      CpuSize,
+      NvmeBase,
+      NvmeSize,
+      SartBase,
+      SartSize,
+      (UINT64)APPLE_ANS_CPU_MIN_SIZE,
+      NvmeMinimumSize,
+      SartMinimumSize
+      ));
+    return EFI_DEVICE_ERROR;
   }
 
   Status = AmlCodeGenDefinitionBlock (
