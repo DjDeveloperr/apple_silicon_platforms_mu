@@ -459,6 +459,33 @@
         //     }
         // }
 
+        // T8110 DART aperture for the BCM4388 PCIe functions. This describes
+        // the IOMMU device only; PCI0 deliberately has no _DEP until m1n1 can
+        // preinstall and lock the SID1 handoff before any endpoint reaches BME.
+        Device(DRT0) {
+            Name (_HID, "NTAS0011")
+            Name (_UID, Zero)
+            Name (_CCA, One)
+            Name (_CRS, ResourceTemplate () {
+                QWordMemory(
+                    ResourceConsumer,
+                    PosDecode,
+                    MinFixed,
+                    MaxFixed,
+                    NonCacheable,
+                    ReadWrite,
+                    0x0000000000000000,
+                    0x0000000594000000,
+                    0x0000000594003fff,
+                    0x0000000000000000,
+                    0x0000000000004000
+                )
+            })
+            Method (_STA) {
+                Return (0xF)
+            }
+        }
+
         //
         // PCIe root complex (because just implementing it in the host bridge library is not enough apparently...)
         // Code adapted from QemuSbsaPkg DSDT in mu_tiano_platforms
