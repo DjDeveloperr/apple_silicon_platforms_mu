@@ -145,7 +145,7 @@
                     0x000000000000FF00
                     )
                 Interrupt (ResourceConsumer, Level, ActiveHigh, Exclusive) {
-                    1274
+                    37
                 }
             })
 

@@ -1,8 +1,8 @@
 {
   "aic": "AIC2",
-  "csrt_fixture_sha256": "7c80ebc287026e42f6c78836646cf20726e0826aa9dd17c263577486d39edee4",
-  "csrt_source_sha256": "07faf1a371c58adc21440f70dec005387f35c4971b16d92596632edd9ff86a24",
-  "driver_commit": "5ecd6fdffff027a353271519618e90ec9ce45fd9",
+  "csrt_fixture_sha256": "c124eb06f3bddd1277319407fa37d21d79897433fcd2a27e7cda22cc07d9a9d4",
+  "csrt_source_sha256": "d57c133487da5f68fd1aaff5863bee977926805a7e570f1457a619a3bcd5b3d9",
+  "driver_commit": "5cb4158a6f703ca76f1549ddf5969339b58f59db",
   "fadt_oem_id": {
     "ascii": "Apple",
     "hex": "4170706c6500",
