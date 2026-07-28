@@ -131,6 +131,10 @@ AppleAnsAddMemoryResource (
     0: ASC CPU/mailbox aperture (mailbox registers are at +0x8000)
     1: ANS NVMe aperture (ADT reg[3])
     2: SART aperture
+
+  No interrupt resource is published.  The Mu DXE and Windows miniport both
+  poll ANS, and T6020's physical controller line (1832) is outside the
+  architectural GIC SPI range accepted by the Windows resource arbiter.
 **/
 STATIC
 EFI_STATUS
@@ -156,12 +160,7 @@ AcpiPlatformInstallAppleAnsTable (
   UINT64                       SartSize;
   UINT32                       SartVersion;
   UINT32                       *VersionProperty;
-  UINT32                       NvmeInterruptIndex;
-  UINT32                       NvmeInterrupt;
-  UINT32                       *InterruptIndexProperty;
-  UINT32                       *InterruptsProperty;
   UINTN                        PropertySize;
-  UINTN                        InterruptsSize;
   BOOLEAN                      Legacy;
   CONST CHAR8                  *HardwareId;
 
@@ -180,45 +179,6 @@ AcpiPlatformInstallAppleAnsTable (
   {
     return EFI_DEVICE_ERROR;
   }
-
-  //
-  // Apple ADT keeps all ASC mailbox and NVMe interrupts in one UINT32 array.
-  // nvme-interrupt-idx identifies the dedicated controller interrupt within
-  // that array (currently index 4).  Derive it from the live ADT so the ACPI
-  // GSIV remains correct across SoCs and dies.
-  //
-  InterruptIndexProperty = dt_node_prop (
-                             AnsNode,
-                             "nvme-interrupt-idx",
-                             &PropertySize
-                             );
-  InterruptsProperty = dt_node_prop (
-                         AnsNode,
-                         "interrupts",
-                         &InterruptsSize
-                         );
-  if ((InterruptIndexProperty == NULL) ||
-      (PropertySize < sizeof (*InterruptIndexProperty)) ||
-      (InterruptsProperty == NULL))
-  {
-    DEBUG ((DEBUG_ERROR, "AppleANS ACPI: interrupt metadata is absent\n"));
-    return EFI_NOT_FOUND;
-  }
-
-  NvmeInterruptIndex = *InterruptIndexProperty;
-  if ((NvmeInterruptIndex >= InterruptsSize / sizeof (*InterruptsProperty)) ||
-      (NvmeInterruptIndex > MAX_UINT8))
-  {
-    DEBUG ((
-      DEBUG_ERROR,
-      "AppleANS ACPI: invalid NVMe interrupt index %u for %u bytes\n",
-      NvmeInterruptIndex,
-      (UINT32)InterruptsSize
-      ));
-    return EFI_DEVICE_ERROR;
-  }
-
-  NvmeInterrupt = InterruptsProperty[NvmeInterruptIndex];
 
   Legacy = AppleAnsPropertyContains (AnsNode, "compatible", "t8015");
   VersionProperty = dt_node_prop (SartNode, "sart-version", &PropertySize);
@@ -309,20 +269,6 @@ AcpiPlatformInstallAppleAnsTable (
     goto Exit;
   }
 
-  Status = AmlCodeGenRdInterrupt (
-             TRUE,                       // ResourceConsumer
-             FALSE,                      // Level triggered
-             FALSE,                      // Active high
-             FALSE,                      // Exclusive
-             &NvmeInterrupt,
-             1,
-             CrsNode,
-             NULL
-             );
-  if (EFI_ERROR (Status)) {
-    goto Exit;
-  }
-
   Status = AmlSerializeDefinitionBlock (RootNode, &Table);
   if (EFI_ERROR (Status)) {
     goto Exit;
@@ -338,15 +284,14 @@ AcpiPlatformInstallAppleAnsTable (
   if (!EFI_ERROR (Status)) {
     DEBUG ((
       DEBUG_INFO,
-      "AppleANS ACPI: %a cpu=%lx/%lx nvme=%lx/%lx sart=%lx/%lx irq=%u\n",
+      "AppleANS ACPI: %a cpu=%lx/%lx nvme=%lx/%lx sart=%lx/%lx polling-no-interrupt\n",
       HardwareId,
       CpuBase,
       CpuSize,
       NvmeBase,
       NvmeSize,
       SartBase,
-      SartSize,
-      NvmeInterrupt
+      SartSize
       ));
   }
 
