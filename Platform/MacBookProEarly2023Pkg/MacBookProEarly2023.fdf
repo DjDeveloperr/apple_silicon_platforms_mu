@@ -151,7 +151,11 @@ FvNameGuid         = 02e6c12f-69f7-4626-b5de-e3cfd6c0dc56
   INF MdeModulePkg/Bus/Pci/NonDiscoverablePciDeviceDxe/NonDiscoverablePciDeviceDxe.inf
 
   #NVMe Support
-  INF AppleSiliconPkg/Drivers/AppleNANDStorageDxe/AppleNANDStorageDxe.inf
+# Input profile: AppleNANDStorageDxe faults on J414s.  Hardware logged
+# 'AppleANS: ... legacy=0 sartv3' followed by a synchronous exception in
+# ArmCpuDxe, repeatedly, before Windows ever started.  Keep it out until the
+# ANS line explains the SART v3 detection and the fault.
+#  INF AppleSiliconPkg/Drivers/AppleNANDStorageDxe/AppleNANDStorageDxe.inf
   #INF MdeModulePkg/Bus/Pci/NvmExpressDxe/NvmExpressDxe.inf
 
   #

@@ -170,6 +170,12 @@ AcpiPlatformInstallAppleAnsTable (
 
   RootNode = NULL;
   Table    = NULL;
+
+  //
+  // Input profile: do not publish the ANS controller either.  Its DXE is absent
+  // here, so an NTAS2002 device would enumerate with no driver behind it.
+  //
+  return EFI_NOT_FOUND;
   AnsNode  = dt_get ("/arm-io/ans");
   SartNode = dt_get ("/arm-io/sart-ans");
   if ((AnsNode == NULL) || (SartNode == NULL)) {
