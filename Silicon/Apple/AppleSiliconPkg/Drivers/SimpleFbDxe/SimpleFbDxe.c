@@ -15,6 +15,8 @@
 #include <Library/AppleDTLib.h>
 
 #include <Protocol/GraphicsOutput.h>
+#include <Protocol/EdidActive.h>
+#include <Protocol/EdidDiscovered.h>
 
 /// Defines
 /*
@@ -163,6 +165,100 @@ DisplayBlt(
   return RETURN_ERROR(Status) ? EFI_INVALID_PARAMETER : EFI_SUCCESS;
 }
 
+
+/*
+ * Windows has no other source of monitor geometry on this platform.  Without an
+ * EDID, BasicDisplay's monitor has neither an aspect ratio nor a physical size,
+ * so Windows composes the desktop at 4:3 and pillarboxes it into the real
+ * framebuffer -- measured on J414s as 2618 px of content centred in 3024 px,
+ * with 203 px black bars either side, because 1964 * 4/3 = 2618.67.  The same
+ * gap pins DPI at 96, which is why nothing scales for a HiDPI panel.  Publish a
+ * synthesized EDID describing the actual scanout and the panel's real size.
+ */
+#define EDID_BLOCK_SIZE 128
+
+STATIC UINT8 mEdid[EDID_BLOCK_SIZE];
+STATIC EFI_EDID_DISCOVERED_PROTOCOL mEdidDiscovered;
+STATIC EFI_EDID_ACTIVE_PROTOCOL     mEdidActive;
+
+STATIC VOID SimpleFbBuildEdid(
+    IN UINT32 Width, IN UINT32 Height, IN UINT32 WidthMm, IN UINT32 HeightMm)
+{
+  //
+  // Blanking is not read back from DCP; these are ordinary reduced-blanking
+  // values.  Nothing here drives a mode set -- BasicDisplay never reprograms
+  // the scanout -- so only the active geometry and the physical size matter.
+  //
+  UINT32 HBlank = 80;
+  UINT32 VBlank = 24;
+  UINT32 Clock10Khz = ((Width + HBlank) * (Height + VBlank) * 60) / 10000;
+  UINT8  *Dtd;
+  UINT32 Index;
+  UINT8  Checksum = 0;
+
+  SetMem(mEdid, sizeof(mEdid), 0);
+  SetMem(mEdid + 1, 6, 0xFF);                 /* header 00 FF*6 00 */
+
+  mEdid[8]  = 0x06;                           /* "APP" */
+  mEdid[9]  = 0x10;
+  mEdid[10] = 0x14;                           /* product code */
+  mEdid[11] = 0x14;
+  mEdid[16] = 0;                              /* week unspecified */
+  mEdid[17] = 33;                             /* 2023 */
+  mEdid[18] = 1;                              /* EDID 1.4 */
+  mEdid[19] = 4;
+  mEdid[20] = 0x95;                           /* digital, 8 bpc, DisplayPort */
+  mEdid[21] = (UINT8)((WidthMm + 5) / 10);    /* cm */
+  mEdid[22] = (UINT8)((HeightMm + 5) / 10);
+  mEdid[23] = 120;                            /* gamma 2.2 */
+  mEdid[24] = 0x02;                           /* preferred timing is native */
+
+  /* sRGB chromaticity */
+  mEdid[25] = 0xEE; mEdid[26] = 0x91; mEdid[27] = 0xA3; mEdid[28] = 0x54;
+  mEdid[29] = 0x4C; mEdid[30] = 0x99; mEdid[31] = 0x26; mEdid[32] = 0x0F;
+  mEdid[33] = 0x50; mEdid[34] = 0x54;
+
+  /* No established or standard timings: the panel has exactly one mode. */
+  for (Index = 38; Index < 54; Index += 2) {
+    mEdid[Index]     = 0x01;
+    mEdid[Index + 1] = 0x01;
+  }
+
+  Dtd = &mEdid[54];
+  Dtd[0]  = (UINT8)(Clock10Khz & 0xFF);
+  Dtd[1]  = (UINT8)(Clock10Khz >> 8);
+  Dtd[2]  = (UINT8)(Width & 0xFF);
+  Dtd[3]  = (UINT8)(HBlank & 0xFF);
+  Dtd[4]  = (UINT8)(((Width >> 8) << 4) | ((HBlank >> 8) & 0xF));
+  Dtd[5]  = (UINT8)(Height & 0xFF);
+  Dtd[6]  = (UINT8)(VBlank & 0xFF);
+  Dtd[7]  = (UINT8)(((Height >> 8) << 4) | ((VBlank >> 8) & 0xF));
+  Dtd[8]  = 24;                               /* hsync front porch */
+  Dtd[9]  = 32;                               /* hsync width */
+  Dtd[10] = (3 << 4) | 6;                     /* vsync porch/width */
+  Dtd[11] = 0;
+  Dtd[12] = (UINT8)(WidthMm & 0xFF);
+  Dtd[13] = (UINT8)(HeightMm & 0xFF);
+  Dtd[14] = (UINT8)(((WidthMm >> 8) << 4) | ((HeightMm >> 8) & 0xF));
+  Dtd[17] = 0x1E;                             /* digital separate, +h +v */
+
+  /* Descriptor 2: monitor name.  The text field is exactly 13 bytes: a name
+     shorter than that is terminated with 0x0A and padded with spaces. */
+  mEdid[72 + 3] = 0xFC;
+  SetMem(&mEdid[72 + 5], 13, 0x20);
+  CopyMem(&mEdid[72 + 5], "Apple Panel\n", 12);
+
+  /* Descriptors 3 and 4: unused. */
+  mEdid[90 + 3]  = 0x10;
+  mEdid[108 + 3] = 0x10;
+
+  mEdid[126] = 0;                             /* no extension blocks */
+  for (Index = 0; Index < EDID_BLOCK_SIZE - 1; Index++) {
+    Checksum = (UINT8)(Checksum + mEdid[Index]);
+  }
+  mEdid[127] = (UINT8)(0x100 - Checksum);
+}
+
 EFI_STATUS
 EFIAPI
 SimpleFbDxeInitialize(
@@ -265,10 +361,23 @@ SimpleFbDxeInitialize(
 
   ASSERT_EFI_ERROR(Status);
 
+  //
+  // The panel is the 14.2" J414s internal display: 302 x 196 mm, which is what
+  // turns 3024 x 1964 into ~246 DPI for the guest instead of the 96 DPI Windows
+  // assumes when no monitor geometry exists at all.
+  //
+  SimpleFbBuildEdid(FramebufferWidth, FramebufferHeight, 302, 196);
+  mEdidDiscovered.SizeOfEdid = sizeof(mEdid);
+  mEdidDiscovered.Edid       = mEdid;
+  mEdidActive.SizeOfEdid     = sizeof(mEdid);
+  mEdidActive.Edid           = mEdid;
+
   /* Register handle */
   Status = gBS->InstallMultipleProtocolInterfaces(
       &hUEFIDisplayHandle, &gEfiDevicePathProtocolGuid, &mDisplayDevicePath,
-      &gEfiGraphicsOutputProtocolGuid, &mDisplay, NULL);
+      &gEfiGraphicsOutputProtocolGuid, &mDisplay,
+      &gEfiEdidDiscoveredProtocolGuid, &mEdidDiscovered,
+      &gEfiEdidActiveProtocolGuid, &mEdidActive, NULL);
 
   ASSERT_EFI_ERROR(Status);
 

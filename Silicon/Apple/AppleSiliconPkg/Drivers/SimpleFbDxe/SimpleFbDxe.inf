@@ -34,6 +34,8 @@
 
 [Protocols]
   gEfiGraphicsOutputProtocolGuid ## PRODUCES
+  gEfiEdidDiscoveredProtocolGuid ## PRODUCES
+  gEfiEdidActiveProtocolGuid ## PRODUCES
   gEfiCpuArchProtocolGuid
 
 [FixedPcd]
