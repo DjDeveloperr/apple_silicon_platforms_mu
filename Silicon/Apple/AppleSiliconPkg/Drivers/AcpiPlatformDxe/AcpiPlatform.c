@@ -154,16 +154,19 @@ AcpiPlatformInstallAppleAnsTable (
   UINT64                       NvmeSize;
   UINT64                       SartBase;
   UINT64                       SartSize;
+  UINT32                       AcpiInterrupt;
+  UINT32                       ExpectedPhysicalInterrupt;
+  UINT32                       PhysicalInterrupt;
   UINT32                       SartVersion;
   UINT32                       *VersionProperty;
   UINT32                       NvmeInterruptIndex;
-  UINT32                       NvmeInterrupt;
   UINT32                       *InterruptIndexProperty;
   UINT32                       *InterruptsProperty;
   UINTN                        PropertySize;
   UINTN                        InterruptsSize;
   BOOLEAN                      Legacy;
   CONST CHAR8                  *HardwareId;
+  CONST CHAR8                  *InterruptContract;
 
   RootNode = NULL;
   Table    = NULL;
@@ -218,7 +221,48 @@ AcpiPlatformInstallAppleAnsTable (
     return EFI_DEVICE_ERROR;
   }
 
-  NvmeInterrupt = InterruptsProperty[NvmeInterruptIndex];
+  PhysicalInterrupt = InterruptsProperty[NvmeInterruptIndex];
+
+  //
+  // Windows' architectural GIC interrupt arbiter refuses T6020's physical
+  // AIC line 1832 because it falls in GIC's reserved 1024..4095 INTID gap.
+  // A platform may therefore publish an arbiter-legal GSIV and describe the
+  // one-to-one mapping in the AIC2 CSRT ALI2 tail.  Require both PCDs as a
+  // pair and verify the physical line against the live ADT before publishing
+  // the alias.  A zero/zero pair retains the legacy direct publication for
+  // platforms that do not use this contract.
+  //
+  AcpiInterrupt            = FixedPcdGet32 (PcdAppleAnsPublishedInterrupt);
+  ExpectedPhysicalInterrupt =
+    FixedPcdGet32 (PcdAppleAnsExpectedPhysicalInterrupt);
+  if ((AcpiInterrupt == 0) != (ExpectedPhysicalInterrupt == 0)) {
+    DEBUG ((
+      DEBUG_ERROR,
+      "AppleANS ACPI: refusing alias published=%u expected-physical=%u live-physical=%u\n",
+      AcpiInterrupt,
+      ExpectedPhysicalInterrupt,
+      PhysicalInterrupt
+      ));
+    return EFI_DEVICE_ERROR;
+  }
+
+  if (ExpectedPhysicalInterrupt != 0) {
+    if (PhysicalInterrupt != ExpectedPhysicalInterrupt) {
+      DEBUG ((
+        DEBUG_ERROR,
+        "AppleANS ACPI: refusing alias published=%u expected-physical=%u live-physical=%u\n",
+        AcpiInterrupt,
+        ExpectedPhysicalInterrupt,
+        PhysicalInterrupt
+        ));
+      return EFI_DEVICE_ERROR;
+    }
+
+    InterruptContract = "published-gsiv-to-physical-aic";
+  } else {
+    AcpiInterrupt     = PhysicalInterrupt;
+    InterruptContract = "physical-aic-line";
+  }
 
   Legacy = AppleAnsPropertyContains (AnsNode, "compatible", "t8015");
   VersionProperty = dt_node_prop (SartNode, "sart-version", &PropertySize);
@@ -314,7 +358,7 @@ AcpiPlatformInstallAppleAnsTable (
              FALSE,                      // Level triggered
              FALSE,                      // Active high
              FALSE,                      // Exclusive
-             &NvmeInterrupt,
+             &AcpiInterrupt,
              1,
              CrsNode,
              NULL
@@ -338,7 +382,7 @@ AcpiPlatformInstallAppleAnsTable (
   if (!EFI_ERROR (Status)) {
     DEBUG ((
       DEBUG_INFO,
-      "AppleANS ACPI: %a cpu=%lx/%lx nvme=%lx/%lx sart=%lx/%lx irq=%u\n",
+      "AppleANS ACPI: %a cpu=%lx/%lx nvme=%lx/%lx sart=%lx/%lx irq=%u physical=%u contract=%a\n",
       HardwareId,
       CpuBase,
       CpuSize,
@@ -346,7 +390,9 @@ AcpiPlatformInstallAppleAnsTable (
       NvmeSize,
       SartBase,
       SartSize,
-      NvmeInterrupt
+      AcpiInterrupt,
+      PhysicalInterrupt,
+      InterruptContract
       ));
   }
 
