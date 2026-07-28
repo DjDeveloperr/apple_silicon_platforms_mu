@@ -1,0 +1,41 @@
+/** @file
+  PCI Express Memory Mapped Configuration Space Base Address Description Table
+  for the MacBook Pro (Early 2023) platform.
+
+  SPDX-License-Identifier: BSD-2-Clause-Patent OR MIT
+**/
+
+#include <Library/AcpiLib.h>
+#include <IndustryStandard/Acpi65.h>
+#include <IndustryStandard/MemoryMappedConfigurationSpaceAccessTable.h>
+#include <Acpi/AcpiHeader.h>
+
+#pragma pack(1)
+
+typedef struct {
+  EFI_ACPI_MEMORY_MAPPED_CONFIGURATION_BASE_ADDRESS_TABLE_HEADER          Header;
+  EFI_ACPI_MEMORY_MAPPED_ENHANCED_CONFIGURATION_SPACE_BASE_ADDRESS_ALLOCATION_STRUCTURE Allocation;
+} NTASI_MCFG_TABLE;
+
+STATIC NTASI_MCFG_TABLE Mcfg = {
+  {
+    __ACPI_HEADER (
+      EFI_ACPI_6_5_PCI_EXPRESS_MEMORY_MAPPED_CONFIGURATION_SPACE_BASE_ADDRESS_DESCRIPTION_TABLE_SIGNATURE,
+      NTASI_MCFG_TABLE,
+      EFI_ACPI_MEMORY_MAPPED_CONFIGURATION_SPACE_ACCESS_TABLE_REVISION
+      ),
+    0
+  },
+  {
+    0x0000000580000000ULL, // BaseAddress
+    0,                     // PciSegmentGroupNumber
+    0,                     // StartBusNumber
+    4,                     // EndBusNumber
+    0                      // Reserved
+  }
+};
+
+#pragma pack()
+
+// Prevent the optimizer from removing the generated ACPI table.
+VOID *CONST ReferenceAcpiTable = &Mcfg;
