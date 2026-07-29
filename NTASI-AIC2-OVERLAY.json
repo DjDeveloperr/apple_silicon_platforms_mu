@@ -35,6 +35,33 @@
     "hex": "4170706c6500",
     "temporary_windows_carrier_spoof": false
   },
+  "kbd_backlight": {
+    "crs": {
+      "interrupts": [],
+      "memory": [
+        {
+          "base": "0x39b030000",
+          "length": "0x4000",
+          "role": "fpwm0-registers"
+        },
+        {
+          "base": "0x290280000",
+          "length": "0x1000",
+          "role": "pmgr-east-ps-page"
+        }
+      ]
+    },
+    "enabled": true,
+    "hardware_id": "ACPI\\NTAS0051",
+    "platform": "J414s/T6020",
+    "power_chain": {
+      "policy": "driver raises sio then fpwm0; never lowers sio",
+      "ps_fpwm0_offset": "0x1e8",
+      "ps_sio_offset": "0x1c0"
+    },
+    "preboot": "none required",
+    "source_sha256": "f3f56b201e1b58e27dfa9a6338064b17684d6e12b783c96b1b5748071f0f4a05"
+  },
   "linux_arm64_build_compatibility": {
     "disabled_stuart_scopes": [
       "cibuild",
