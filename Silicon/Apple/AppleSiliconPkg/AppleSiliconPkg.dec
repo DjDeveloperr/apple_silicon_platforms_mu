@@ -40,6 +40,17 @@
   # option for it.  Windows does not need it: the NTAS200x device comes from
   # the runtime SSDT, which reads the live ADT directly.
   gAppleSiliconPkgTokenSpaceGuid.PcdAppleAnsPublishBlockIo|FALSE|BOOLEAN|0x0000471C
+  # AppleMtpInputDxe activation gate.  FALSE means the driver is inert even
+  # if built in: reading the MTP DockChannel FIFO consumes the one-shot
+  # interface announcement the Windows AppleMtpHid driver requires
+  # preserved (its preboot ownership contract), so firmware keyboard input
+  # currently costs the Windows keyboard for that session.  Enable only for
+  # firmware-UI sessions or once a re-announce path exists.
+  gAppleSiliconPkgTokenSpaceGuid.PcdAppleMtpInputConIn|FALSE|BOOLEAN|0x0000471D
+  # J414s MTP remote DockChannel apertures (live ADT capture; same values
+  # the NTAS0050 _CRS publishes to Windows).
+  gAppleSiliconPkgTokenSpaceGuid.PcdAppleMtpDockChannelConfigBase|0x2a9b30000|UINT64|0x0000471E
+  gAppleSiliconPkgTokenSpaceGuid.PcdAppleMtpDockChannelDataBase|0x2a9b34000|UINT64|0x0000471F
 
   # Stack stuff (128k stack by default)
   #Fallback stack base in case ModuleEntryPoint setup won't work.

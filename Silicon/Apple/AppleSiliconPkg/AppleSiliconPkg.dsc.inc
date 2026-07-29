@@ -679,6 +679,11 @@
   # Rng Protocol producer
   SecurityPkg/RandomNumberGenerator/RngDxe/RngDxe.inf
 
+  # Input
+  # Compile-only: not in any FDF, inert unless PcdAppleMtpInputConIn.  See
+  # the ownership-hazard note in the driver before packaging it.
+  AppleSiliconPkg/Drivers/AppleMtpInputDxe/AppleMtpInputDxe.inf
+
   # Disk IO
   AppleSiliconPkg/Drivers/AppleNANDStorageDxe/AppleNANDStorageDxe.inf
   AppleSiliconPkg/Drivers/AppleNANDStorageDxe/AppleNANDStorageQemuDxe.inf {

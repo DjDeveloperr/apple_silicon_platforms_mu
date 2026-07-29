@@ -1,0 +1,64 @@
+## @file
+# AppleMtpInputDxe - SimpleTextIn/SimpleTextInEx over the J414s MTP
+# DockChannel keyboard transport.
+#
+# STATUS: designed, compile-target only.  Deliberately not referenced by any
+# FDF, and inert unless PcdAppleMtpInputConIn is TRUE -- activating it
+# consumes the one-shot MTP interface announcement that the Windows
+# AppleMtpHid driver's preboot contract requires preserved.  See the
+# ownership-hazard block at the top of AppleMtpInputDxe.c.
+#
+# AppleDockChannel.[ch], AppleMtpProtocol.[ch], AppleMtpStream.[ch] are
+# byte-identical copies of drivers/AppleMtpHid from the
+# apple_silicon_nt_drivers repository (host-tested there by
+# tests/run-host-tests.sh).  Do not modify them here; update the source of
+# truth and re-copy.
+#
+# SPDX-License-Identifier: BSD-2-Clause-Patent
+##
+
+[Defines]
+  INF_VERSION                    = 0x00010005
+  BASE_NAME                      = AppleMtpInputDxe
+  FILE_GUID                      = 84C3F251-9A2D-45E1-BB86-0D6E31D06A17
+  MODULE_TYPE                    = DXE_DRIVER
+  VERSION_STRING                 = 0.1
+  ENTRY_POINT                    = AppleMtpInputDxeInitialize
+
+[Sources]
+  AppleMtpInputDxe.c
+  AppleDockChannel.c
+  AppleDockChannel.h
+  AppleMtpProtocol.c
+  AppleMtpProtocol.h
+  AppleMtpStream.c
+  AppleMtpStream.h
+  string.h
+
+[Packages]
+  MdePkg/MdePkg.dec
+  MdeModulePkg/MdeModulePkg.dec
+  AppleSiliconPkg/AppleSiliconPkg.dec
+
+[LibraryClasses]
+  BaseMemoryLib
+  DebugLib
+  DevicePathLib
+  IoLib
+  MemoryAllocationLib
+  PcdLib
+  UefiBootServicesTableLib
+  UefiDriverEntryPoint
+
+[Protocols]
+  gEfiDevicePathProtocolGuid            ## PRODUCES
+  gEfiSimpleTextInProtocolGuid          ## PRODUCES
+  gEfiSimpleTextInputExProtocolGuid     ## PRODUCES
+
+[Pcd]
+  gAppleSiliconPkgTokenSpaceGuid.PcdAppleMtpInputConIn             ## CONSUMES
+  gAppleSiliconPkgTokenSpaceGuid.PcdAppleMtpDockChannelConfigBase  ## CONSUMES
+  gAppleSiliconPkgTokenSpaceGuid.PcdAppleMtpDockChannelDataBase    ## CONSUMES
+
+[Depex]
+  TRUE
