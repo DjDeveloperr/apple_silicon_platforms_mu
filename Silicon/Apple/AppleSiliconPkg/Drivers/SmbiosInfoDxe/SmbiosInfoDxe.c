@@ -903,18 +903,17 @@ VOID ProcessorInfoUpdateSmbiosType4(IN UINTN MaxCpus)
     ChipName = (CONST CHAR8 *)PcdGetPtr(PcdSmbiosCpuModel);
   }
 
-  if ((TotalCoreCount != 0) && (ECoreMaxMhz != 0) && (PCoreMaxMhz != 0)) {
-    AsciiSPrint(
-      mProcessorVersionString, sizeof(mProcessorVersionString),
-      "%a (%uE @ %u.%02u GHz + %uP @ %u.%02u GHz)",
-      ChipName,
-      ECoreCount, ECoreMaxMhz / 1000, (ECoreMaxMhz % 1000) / 10,
-      PCoreCount, PCoreMaxMhz / 1000, (PCoreMaxMhz % 1000) / 10);
-  } else {
-    AsciiSPrint(
-      mProcessorVersionString, sizeof(mProcessorVersionString),
-      "%a", ChipName);
-  }
+  //
+  // ProcessorVersion is the marketing name and nothing else -- "Apple M2 Pro".
+  // An earlier revision appended the cluster split and per-cluster maximum
+  // frequencies here, which put a frequency in the one Type 4 field that is
+  // documented to carry only the processor's name, and duplicated data that
+  // MaxSpeed/CurrentSpeed already carry in their own fields.  Core counts go
+  // in CoreCount/CoreEnabled/ThreadCount, which are populated below.
+  //
+  AsciiSPrint(
+    mProcessorVersionString, sizeof(mProcessorVersionString),
+    "%a", ChipName);
   mProcessorInfoType4Strings[2] = mProcessorVersionString;
 
   if (ChipId != 0) {
