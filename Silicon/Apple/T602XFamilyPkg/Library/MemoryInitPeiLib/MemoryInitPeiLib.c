@@ -29,11 +29,15 @@
 
 //Device memory map configuration file for UEFI (this is to help with pagetable initialization)
 #include <Library/T602XFamilyVirtualMemoryMapDefines.h>
+#include <AppendedRamdisk.h>
 
-#define MAX_VIRTUAL_MEMORY_MAP_DESCRIPTORS 42
+#define MAX_VIRTUAL_MEMORY_MAP_DESCRIPTORS 44
 
 #define DDR_ATTRIBUTES_CACHED           ARM_MEMORY_REGION_ATTRIBUTE_WRITE_BACK
 #define DDR_ATTRIBUTES_UNCACHED         ARM_MEMORY_REGION_ATTRIBUTE_UNCACHED_UNBUFFERED
+
+STATIC BOOLEAN  mAppendedRamdiskCorrupt;
+STATIC UINT64   mAppendedRamdiskReservationSize;
 
 VOID BuildMemoryTypeInformationHob(VOID);
 
@@ -284,6 +288,27 @@ EFI_STATUS EFIAPI MemoryPeim(IN EFI_PHYSICAL_ADDRESS UefiMemoryBase, IN UINT64 U
   // the preboot RTKit buffer pool the MTP IOP keeps DMA-writing after
   // boot.  Reserve both so neither UEFI nor Windows ever allocates them.
   ReserveMemoryRegion (0x10020000000ULL, 0x200000);
+
+  // Reserve only the intersection with advertised system RAM.  Bytes
+  // in m1n1 proxy scratch are not allocatable HOB memory, but remain
+  // reachable through the explicit cached identity mapping above.
+  if (mAppendedRamdiskCorrupt) {
+    DEBUG ((DEBUG_ERROR, "MemoryInitPeiLib: invalid appended ramdisk header\n"));
+    return EFI_COMPROMISED_DATA;
+  }
+  if (mAppendedRamdiskReservationSize != 0) {
+    EFI_PHYSICAL_ADDRESS  AppendedTop;
+    EFI_PHYSICAL_ADDRESS  ReserveBase;
+    EFI_PHYSICAL_ADDRESS  ReserveTop;
+
+    AppendedTop = FdTop + mAppendedRamdiskReservationSize;
+    ReserveBase = MAX (FdTop, PcdGet64 (PcdSystemMemoryBase));
+    ReserveTop  = MIN (AppendedTop, SystemMemoryTop);
+    if (ReserveTop > ReserveBase) {
+      ReserveMemoryRegion (ReserveBase, (UINT32)(ReserveTop - ReserveBase));
+    }
+    DEBUG ((DEBUG_INFO, "MemoryInitPeiLib: mapped appended ramdisk at 0x%lx (0x%lx bytes)\n", FdTop, mAppendedRamdiskReservationSize));
+  }
 
   //reserve secondary stacks carveouts passed into cpm-impl-reg 
   for(int i = 0; i < PcdGet32(PcdCoreCount); i++){
@@ -560,6 +585,54 @@ VOID BuildVirtualMemoryMap(OUT ARM_MEMORY_REGION_DESCRIPTOR **VirtualMemoryMap)
   VirtualMemoryTable[Index].VirtualBase    = APPLE_CORE_SYSTEM_MMIO_RANGE_17_BASE;
   VirtualMemoryTable[Index].Length         = APPLE_CORE_SYSTEM_MMIO_RANGE_17_SIZE;
   VirtualMemoryTable[Index].Attributes     = ARM_MEMORY_REGION_ATTRIBUTE_DEVICE;
+
+  // Inspect the header while the MMU is still off.  HV.load_raw normally
+  // puts the FD and append inside BootArgs/Pcd RAM, already covered by
+  // the ordinary DRAM descriptor.  Add a cached identity map only for
+  // an exceptional placement outside that span.
+  {
+    EFI_PHYSICAL_ADDRESS                 AppendedFdTop;
+    EFI_PHYSICAL_ADDRESS                 AppendedTop;
+    CONST NTASI_APPENDED_RAMDISK_HEADER  *AppendedHeader;
+    EFI_PHYSICAL_ADDRESS                 MapSystemTop;
+
+    mAppendedRamdiskCorrupt         = FALSE;
+    mAppendedRamdiskReservationSize = 0;
+    AppendedFdTop = PcdGet64 (PcdFdBaseAddress) + PcdGet32 (PcdFdSize);
+    if (AppendedFdTop >= PcdGet64 (PcdFdBaseAddress)) {
+      AppendedHeader = (CONST NTASI_APPENDED_RAMDISK_HEADER *)(UINTN)AppendedFdTop;
+      if (AppendedHeader->Signature == NTASI_APPENDED_RAMDISK_SIGNATURE) {
+        if (!NtasiValidateAppendedRamdisk (
+               AppendedHeader,
+               NTASI_APPENDED_RAMDISK_MAX_MAPPED_SPAN,
+               FALSE,
+               NULL,
+               NULL,
+               &mAppendedRamdiskReservationSize
+               ))
+        {
+          mAppendedRamdiskCorrupt = TRUE;
+        } else {
+          AppendedTop = AppendedFdTop + mAppendedRamdiskReservationSize;
+          MapSystemTop = PcdGet64 (PcdSystemMemoryBase) +
+                         PcdGet64 (PcdSystemMemorySize);
+          if ((AppendedTop < AppendedFdTop) ||
+              (MapSystemTop < PcdGet64 (PcdSystemMemoryBase)))
+          {
+            mAppendedRamdiskCorrupt = TRUE;
+          } else if ((AppendedFdTop < PcdGet64 (PcdSystemMemoryBase)) ||
+                     (AppendedTop > MapSystemTop))
+          {
+            ASSERT ((Index + 4) <= MAX_VIRTUAL_MEMORY_MAP_DESCRIPTORS);
+            VirtualMemoryTable[++Index].PhysicalBase = AppendedFdTop;
+            VirtualMemoryTable[Index].VirtualBase    = AppendedFdTop;
+            VirtualMemoryTable[Index].Length         = mAppendedRamdiskReservationSize;
+            VirtualMemoryTable[Index].Attributes     = CacheAttributes;
+          }
+        }
+      }
+    }
+  }
 
   //System DRAM
   VirtualMemoryTable[++Index].PhysicalBase = PcdGet64(PcdSystemMemoryBase);

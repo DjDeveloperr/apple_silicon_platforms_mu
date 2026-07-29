@@ -47,6 +47,10 @@
 
 [Pcd.common]
   gAppleSiliconPkgTokenSpaceGuid.PcdInitializeRamdisk
+  gArmTokenSpaceGuid.PcdFdBaseAddress
+
+[FixedPcd]
+  gArmTokenSpaceGuid.PcdFdSize
 
 
 [Depex]
