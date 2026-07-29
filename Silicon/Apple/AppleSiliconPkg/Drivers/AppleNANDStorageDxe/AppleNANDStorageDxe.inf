@@ -66,5 +66,8 @@
 [Guids]
   gEfiEventExitBootServicesGuid
 
+[Pcd]
+  gAppleSiliconPkgTokenSpaceGuid.PcdAppleAnsPublishBlockIo    ## CONSUMES
+
 [Depex]
   TRUE

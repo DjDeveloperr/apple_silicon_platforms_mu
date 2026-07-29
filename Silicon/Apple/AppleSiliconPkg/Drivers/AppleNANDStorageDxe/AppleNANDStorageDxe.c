@@ -987,16 +987,33 @@ AppleNANDStorageDxeInitialize (
     goto Fail;
   }
 
-  Status = gBS->InstallMultipleProtocolInterfaces (
-                  &Device->Handle,
-                  &gEfiBlockIoProtocolGuid,
-                  &Device->BlockIo,
-                  &gEfiDevicePathProtocolGuid,
-                  &Device->DevicePath,
-                  NULL
-                  );
-  if (EFI_ERROR (Status)) {
-    goto Fail;
+  //
+  // Publishing Block I/O hands BDS a bootable device.  On J414s the internal
+  // SSD still carries its original OS loader, so the moment this appeared the
+  // boot manager chose it over the Windows loader on USB and booted GRUB --
+  // with no way to intervene, because Mu drives no keyboard on this machine.
+  // Windows never needs this protocol: it finds the controller through the
+  // NTAS200x runtime SSDT, which reads the live ADT.  Everything above still
+  // runs, including stopping the coprocessor before boot, so the controller is
+  // left in the state the Windows driver expects.
+  //
+  if (FixedPcdGetBool (PcdAppleAnsPublishBlockIo)) {
+    Status = gBS->InstallMultipleProtocolInterfaces (
+                    &Device->Handle,
+                    &gEfiBlockIoProtocolGuid,
+                    &Device->BlockIo,
+                    &gEfiDevicePathProtocolGuid,
+                    &Device->DevicePath,
+                    NULL
+                    );
+    if (EFI_ERROR (Status)) {
+      goto Fail;
+    }
+  } else {
+    ANS_DEBUG ((
+      DEBUG_INFO,
+      "AppleANS: Block I/O withheld from BDS by PcdAppleAnsPublishBlockIo\n"
+      ));
   }
 
   ANS_DEBUG ((
