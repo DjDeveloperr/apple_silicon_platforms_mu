@@ -41,10 +41,20 @@
     ]
   },
   "mtp_input": {
-    "enabled": false
+    "enabled": true,
+    "hardware_id": "ACPI\\NTAS0050",
+    "source_sha256": "24c3de02b5ed6c8e9c934bf775541a761e00555348be972cf2c41e7e1f7b98ed",
+    "retained_memory": "0x10020000000+0x200000"
   },
   "mtp_trackpad": {
-    "enabled": false
+    "enabled": true,
+    "gpio_controller_hardware_id": "ACPI\\NTAS0052",
+    "gpio_controller_source_sha256": "1e1748b8c23430a8fd65fff32950d7b6b6846113d7c58d819922087d737ed6b9"
+  },
+  "keyboard_backlight": {
+    "enabled": true,
+    "hardware_id": "ACPI\\NTAS0051",
+    "source_sha256": "f3f56b201e1b58e27dfa9a6338064b17684d6e12b783c96b1b5748071f0f4a05"
   },
   "mu_base_commit": "74964aed5dce7a30139469ef69150232a3cd128b",
   "pcie": {

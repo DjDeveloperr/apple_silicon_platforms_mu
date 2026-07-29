@@ -397,6 +397,34 @@ EFI_STATUS EFIAPI MemoryPeim(IN EFI_PHYSICAL_ADDRESS UefiMemoryBase, IN UINT64 U
     }
   }
 
+  // MTP multitouch firmware staging carveout: published to Windows as the
+  // fourth NTAS0050 _CRS memory resource (bus 0x1800000 via MTP DART stream 1)
+  // and pre-mapped by the m1n1 preboot handoff.  The second megabyte is the
+  // preboot RTKit buffer pool the MTP IOP keeps DMA-writing after boot.
+  //
+  // The normal HV layout places this pair below UefiMemoryBase, in m1n1's
+  // retained scratch allocation, so it is already absent from the guest RAM
+  // HOBs.  If a later layout moves guest RAM down over it, reserve it using
+  // the cacheable system-memory + allocation-HOB contract.  Never use the old
+  // EFI_RESOURCE_MEMORY_RESERVED helper here: that produces an attribute-zero
+  // GCD range which DXE/Windows cannot safely read.
+  if (0x10020000000ULL >= PcdGet64 (PcdSystemMemoryBase) &&
+      0x10020200000ULL <= SystemMemoryTop)
+  {
+    if (!ReserveAllocatedSystemMemoryRegion (
+           0x10020000000ULL,
+           0x200000,
+           ResourceAttributes
+           ))
+    {
+      DEBUG ((DEBUG_ERROR, "MemoryInitPeiLib: cannot reserve MTP retained memory\n"));
+      return EFI_OUT_OF_RESOURCES;
+    }
+    DEBUG ((DEBUG_INFO, "MemoryInitPeiLib: reserved MTP retained memory at 0x10020000000 (0x200000 bytes)\n"));
+  } else {
+    DEBUG ((DEBUG_INFO, "MemoryInitPeiLib: MTP retained memory is outside guest RAM HOBs\n"));
+  }
+
   //reserve secondary stacks carveouts passed into cpm-impl-reg 
   for(int i = 0; i < PcdGet32(PcdCoreCount); i++){
     CHAR8 CpuNodeName[14];
