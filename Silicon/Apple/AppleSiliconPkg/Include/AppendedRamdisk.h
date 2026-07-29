@@ -147,34 +147,56 @@ NtasiValidateAppendedRamdisk (
 
 #ifdef NTASI_APPENDED_RAMDISK_INCLUDE_FAT_VALIDATOR
 STATIC
-BOOLEAN
-NtasiValidateFatBootSector (
-  IN CONST VOID  *Image,
-  IN UINT64      ImageSize
+UINT16
+NtasiReadUint16 (
+  IN CONST UINT8  *Bytes
   )
 {
-  CONST UINT8  *BootSector;
+  return (UINT16)Bytes[0] | ((UINT16)Bytes[1] << 8);
+}
+
+STATIC
+UINT32
+NtasiReadUint32 (
+  IN CONST UINT8  *Bytes
+  )
+{
+  return (UINT32)Bytes[0] |
+         ((UINT32)Bytes[1] << 8) |
+         ((UINT32)Bytes[2] << 16) |
+         ((UINT32)Bytes[3] << 24);
+}
+
+STATIC
+UINT64
+NtasiReadUint64 (
+  IN CONST UINT8  *Bytes
+  )
+{
+  return (UINT64)NtasiReadUint32 (Bytes) |
+         ((UINT64)NtasiReadUint32 (Bytes + 4) << 32);
+}
+
+STATIC
+BOOLEAN
+NtasiValidateFatVolume (
+  IN CONST UINT8  *BootSector,
+  IN UINT64       VolumeSize
+  )
+{
   UINT32       BytesPerSector;
   UINT32       SectorsPerCluster;
   UINT32       ReservedSectors;
   UINT32       FatCount;
   UINT32       TotalSectors;
 
-  if ((Image == NULL) || (ImageSize < 512)) {
-    return FALSE;
-  }
-
-  BootSector       = (CONST UINT8 *)Image;
-  BytesPerSector   = (UINT32)BootSector[11] | ((UINT32)BootSector[12] << 8);
+  BytesPerSector   = NtasiReadUint16 (BootSector + 11);
   SectorsPerCluster = BootSector[13];
-  ReservedSectors  = (UINT32)BootSector[14] | ((UINT32)BootSector[15] << 8);
+  ReservedSectors  = NtasiReadUint16 (BootSector + 14);
   FatCount         = BootSector[16];
-  TotalSectors     = (UINT32)BootSector[19] | ((UINT32)BootSector[20] << 8);
+  TotalSectors     = NtasiReadUint16 (BootSector + 19);
   if (TotalSectors == 0) {
-    TotalSectors = (UINT32)BootSector[32] |
-                   ((UINT32)BootSector[33] << 8) |
-                   ((UINT32)BootSector[34] << 16) |
-                   ((UINT32)BootSector[35] << 24);
+    TotalSectors = NtasiReadUint32 (BootSector + 32);
   }
 
   return ((BootSector[0] == 0xE9) || (BootSector[0] == 0xEB)) &&
@@ -185,7 +207,199 @@ NtasiValidateFatBootSector (
          ((SectorsPerCluster & (SectorsPerCluster - 1)) == 0) &&
          (ReservedSectors != 0) && (FatCount != 0) && (FatCount <= 4) &&
          (TotalSectors != 0) &&
-         (((UINT64)TotalSectors * BytesPerSector) == ImageSize);
+         (((UINT64)TotalSectors * BytesPerSector) == VolumeSize);
+}
+
+STATIC
+UINT32
+NtasiCrc32WithZeroRange (
+  IN CONST UINT8  *Bytes,
+  IN UINTN        Size,
+  IN UINTN        ZeroOffset,
+  IN UINTN        ZeroSize
+  )
+{
+  UINT32  Crc;
+  UINT32  Table[256];
+  UINT32  Value;
+  UINTN   Index;
+  UINTN   Bit;
+
+  for (Index = 0; Index < ARRAY_SIZE (Table); Index++) {
+    Table[Index] = (UINT32)Index;
+    for (Bit = 0; Bit < 8; Bit++) {
+      Table[Index] = (Table[Index] >> 1) ^
+                     ((0U - (Table[Index] & 1U)) & 0xEDB88320U);
+    }
+  }
+
+  Crc = MAX_UINT32;
+  for (Index = 0; Index < Size; Index++) {
+    Value = ((Index >= ZeroOffset) && (Index - ZeroOffset < ZeroSize)) ?
+            0U : Bytes[Index];
+    Crc = Table[(Crc ^ Value) & 0xFFU] ^ (Crc >> 8);
+  }
+
+  return ~Crc;
+}
+
+STATIC
+BOOLEAN
+NtasiValidateGptFatDisk (
+  IN CONST UINT8  *Disk,
+  IN UINT64       DiskSize
+  )
+{
+  STATIC CONST UINT8  EspTypeGuid[16] = {
+    0x28, 0x73, 0x2A, 0xC1, 0x1F, 0xF8, 0xD2, 0x11,
+    0xBA, 0x4B, 0x00, 0xA0, 0xC9, 0x3E, 0xC9, 0x3B
+  };
+  CONST UINT8  *Header;
+  CONST UINT8  *Entries;
+  CONST UINT8  *Entry;
+  UINT64       TotalLbas;
+  UINT64       BackupLba;
+  UINT64       FirstUsable;
+  UINT64       LastUsable;
+  UINT64       EntryLba;
+  UINT64       EntryBytes;
+  UINT64       FirstLba;
+  UINT64       LastLba;
+  UINT64       PartitionOffset;
+  UINT64       PartitionSize;
+  UINT32       HeaderSize;
+  UINT32       EntryCount;
+  UINT32       EntrySize;
+  UINT32       Index;
+  UINT32       ByteIndex;
+  UINT32       ProtectiveCount;
+  UINT32       EspCount;
+  BOOLEAN      IsEsp;
+
+  if ((DiskSize < (34ULL * 512ULL)) || ((DiskSize & 511ULL) != 0) ||
+      (Disk[510] != 0x55) || (Disk[511] != 0xAA))
+  {
+    return FALSE;
+  }
+
+  ProtectiveCount = 0;
+  for (Index = 0; Index < 4; Index++) {
+    if (Disk[446 + (Index * 16) + 4] == 0xEE) {
+      ProtectiveCount++;
+    }
+  }
+  if (ProtectiveCount != 1) {
+    return FALSE;
+  }
+
+  Header = Disk + 512;
+  if ((Header[0] != 'E') || (Header[1] != 'F') || (Header[2] != 'I') ||
+      (Header[3] != ' ') || (Header[4] != 'P') || (Header[5] != 'A') ||
+      (Header[6] != 'R') || (Header[7] != 'T') ||
+      (NtasiReadUint32 (Header + 8) != 0x00010000U))
+  {
+    return FALSE;
+  }
+
+  TotalLbas   = DiskSize / 512;
+  HeaderSize  = NtasiReadUint32 (Header + 12);
+  BackupLba   = NtasiReadUint64 (Header + 32);
+  FirstUsable = NtasiReadUint64 (Header + 40);
+  LastUsable  = NtasiReadUint64 (Header + 48);
+  EntryLba    = NtasiReadUint64 (Header + 72);
+  EntryCount  = NtasiReadUint32 (Header + 80);
+  EntrySize   = NtasiReadUint32 (Header + 84);
+  if ((HeaderSize < 92) || (HeaderSize > 512) ||
+      (NtasiReadUint32 (Header + 20) != 0) ||
+      (NtasiReadUint64 (Header + 24) != 1) ||
+      (BackupLba != TotalLbas - 1) ||
+      (FirstUsable < 2) || (FirstUsable > LastUsable) ||
+      (LastUsable >= BackupLba) || (EntryLba < 2) ||
+      (EntryLba >= FirstUsable) || (EntryCount == 0) ||
+      (EntryCount > 4096) || (EntrySize < 128) ||
+      (EntrySize > 1024) || ((EntrySize & 7U) != 0) ||
+      (NtasiReadUint32 (Header + 16) != NtasiCrc32WithZeroRange (
+                                               Header,
+                                               HeaderSize,
+                                               16,
+                                               sizeof (UINT32)
+                                               )))
+  {
+    return FALSE;
+  }
+
+  EntryBytes = (UINT64)EntryCount * EntrySize;
+  if ((EntryBytes > MAX_UINTN) ||
+      (EntryLba > MAX_UINT64 / 512) ||
+      (EntryLba * 512 > DiskSize) ||
+      (EntryBytes > DiskSize - (EntryLba * 512)) ||
+      ((EntryLba * 512) + EntryBytes > FirstUsable * 512))
+  {
+    return FALSE;
+  }
+  Entries = Disk + (UINTN)(EntryLba * 512);
+  if (NtasiReadUint32 (Header + 88) !=
+      NtasiAppendedRamdiskCrc32 (Entries, (UINTN)EntryBytes))
+  {
+    return FALSE;
+  }
+
+  EspCount        = 0;
+  PartitionOffset = 0;
+  PartitionSize   = 0;
+  for (Index = 0; Index < EntryCount; Index++) {
+    Entry = Entries + ((UINTN)Index * EntrySize);
+    IsEsp = TRUE;
+    for (ByteIndex = 0; ByteIndex < ARRAY_SIZE (EspTypeGuid); ByteIndex++) {
+      if (Entry[ByteIndex] != EspTypeGuid[ByteIndex]) {
+        IsEsp = FALSE;
+        break;
+      }
+    }
+    if (!IsEsp) {
+      continue;
+    }
+
+    FirstLba = NtasiReadUint64 (Entry + 32);
+    LastLba  = NtasiReadUint64 (Entry + 40);
+    if ((FirstLba < FirstUsable) || (FirstLba > LastLba) ||
+        (LastLba > LastUsable) || (FirstLba > MAX_UINT64 / 512) ||
+        ((LastLba - FirstLba + 1) > MAX_UINT64 / 512))
+    {
+      return FALSE;
+    }
+    PartitionOffset = FirstLba * 512;
+    PartitionSize   = (LastLba - FirstLba + 1) * 512;
+    if ((PartitionOffset > DiskSize) ||
+        (PartitionSize > DiskSize - PartitionOffset))
+    {
+      return FALSE;
+    }
+    EspCount++;
+  }
+
+  return (EspCount == 1) &&
+         NtasiValidateFatVolume (
+           Disk + (UINTN)PartitionOffset,
+           PartitionSize
+           );
+}
+
+STATIC
+BOOLEAN
+NtasiValidateFatBootSector (
+  IN CONST VOID  *Image,
+  IN UINT64      ImageSize
+  )
+{
+  CONST UINT8  *Disk;
+
+  if ((Image == NULL) || (ImageSize < 512) || (ImageSize > MAX_UINTN)) {
+    return FALSE;
+  }
+  Disk = (CONST UINT8 *)Image;
+  return NtasiValidateFatVolume (Disk, ImageSize) ||
+         NtasiValidateGptFatDisk (Disk, ImageSize);
 }
 #endif
 

@@ -6,6 +6,9 @@
 
 #include <PiDxe.h>
 #include <Guid/GlobalVariable.h>
+#include <Protocol/BlockIo.h>
+#include <Protocol/SimpleFileSystem.h>
+#include <Library/BaseMemoryLib.h>
 #include <Library/HobLib.h>
 #include <Library/UefiBootManagerLib.h>
 #include <Library/UefiRuntimeServicesTableLib.h>
@@ -16,6 +19,112 @@
 
 STATIC CONST EFI_GUID  mNtasiAppendedRamdiskLocationHobGuid =
   NTASI_APPENDED_RAMDISK_LOCATION_HOB_GUID;
+STATIC CONST EFI_GUID  mNtasiEvidenceEspGuid =
+  { 0x4e544153, 0x492d, 0x4742, { 0x94, 0x14, 0x00, 0x00, 0x00, 0x00, 0x00, 0x02 } };
+
+STATIC
+EFI_STATUS
+FindRamdiskEspDevicePath (
+  IN  EFI_DEVICE_PATH_PROTOCOL  *RamdiskDevicePath,
+  OUT EFI_DEVICE_PATH_PROTOCOL  **EspDevicePath
+  )
+{
+  EFI_DEVICE_PATH_PROTOCOL  *Candidate;
+  EFI_DEVICE_PATH_PROTOCOL  *Remaining;
+  EFI_HANDLE                RamdiskHandle;
+  EFI_HANDLE                *Handles;
+  HARDDRIVE_DEVICE_PATH     *HardDrive;
+  EFI_STATUS                Status;
+  UINTN                     HandleCount;
+  UINTN                     Index;
+  UINTN                     ParentPrefixSize;
+  UINTN                     CandidateSize;
+
+  if ((RamdiskDevicePath == NULL) || (EspDevicePath == NULL)) {
+    return EFI_INVALID_PARAMETER;
+  }
+  *EspDevicePath = NULL;
+
+  Remaining = RamdiskDevicePath;
+  Status = gBS->LocateDevicePath (
+                  &gEfiBlockIoProtocolGuid,
+                  &Remaining,
+                  &RamdiskHandle
+                  );
+  if (EFI_ERROR (Status) || !IsDevicePathEnd (Remaining)) {
+    DEBUG ((DEBUG_ERROR, "BootRamdiskHelperDxe: cannot locate RAM-disk BlockIo handle: %r\n", Status));
+    return EFI_NOT_FOUND;
+  }
+  Status = gBS->ConnectController (RamdiskHandle, NULL, NULL, TRUE);
+  if (EFI_ERROR (Status)) {
+    DEBUG ((DEBUG_ERROR, "BootRamdiskHelperDxe: cannot recursively connect RAM disk: %r\n", Status));
+    return Status;
+  }
+
+  Handles = NULL;
+  Status  = gBS->LocateHandleBuffer (
+                   ByProtocol,
+                   &gEfiSimpleFileSystemProtocolGuid,
+                   NULL,
+                   &HandleCount,
+                   &Handles
+                   );
+  if (EFI_ERROR (Status)) {
+    return Status;
+  }
+
+  ParentPrefixSize = GetDevicePathSize (RamdiskDevicePath) - END_DEVICE_PATH_LENGTH;
+  for (Index = 0; Index < HandleCount; Index++) {
+    Status = gBS->HandleProtocol (
+                    Handles[Index],
+                    &gEfiDevicePathProtocolGuid,
+                    (VOID **)&Candidate
+                    );
+    if (EFI_ERROR (Status) || (Candidate == NULL)) {
+      continue;
+    }
+    CandidateSize = GetDevicePathSize (Candidate);
+    if ((CandidateSize != ParentPrefixSize + sizeof (HARDDRIVE_DEVICE_PATH) +
+                          END_DEVICE_PATH_LENGTH) ||
+        (CompareMem (Candidate, RamdiskDevicePath, ParentPrefixSize) != 0))
+    {
+      continue;
+    }
+
+    HardDrive = (HARDDRIVE_DEVICE_PATH *)((UINT8 *)Candidate + ParentPrefixSize);
+    if ((DevicePathType (&HardDrive->Header) != MEDIA_DEVICE_PATH) ||
+        (DevicePathSubType (&HardDrive->Header) != MEDIA_HARDDRIVE_DP) ||
+        (DevicePathNodeLength (&HardDrive->Header) != sizeof (*HardDrive)) ||
+        (HardDrive->PartitionNumber != 1) ||
+        (HardDrive->MBRType != MBR_TYPE_EFI_PARTITION_TABLE_HEADER) ||
+        (HardDrive->SignatureType != SIGNATURE_TYPE_GUID) ||
+        (CompareMem (HardDrive->Signature, &mNtasiEvidenceEspGuid,
+                     sizeof (mNtasiEvidenceEspGuid)) != 0) ||
+        !IsDevicePathEnd (NextDevicePathNode (&HardDrive->Header)))
+    {
+      continue;
+    }
+    if (*EspDevicePath != NULL) {
+      FreePool (*EspDevicePath);
+      *EspDevicePath = NULL;
+      FreePool (Handles);
+      DEBUG ((DEBUG_ERROR, "BootRamdiskHelperDxe: multiple matching GPT ESP children\n"));
+      return EFI_COMPROMISED_DATA;
+    }
+    *EspDevicePath = DuplicateDevicePath (Candidate);
+    if (*EspDevicePath == NULL) {
+      FreePool (Handles);
+      return EFI_OUT_OF_RESOURCES;
+    }
+  }
+  FreePool (Handles);
+  if (*EspDevicePath == NULL) {
+    DEBUG ((DEBUG_ERROR, "BootRamdiskHelperDxe: exact GPT ESP child was not produced\n"));
+    return EFI_NOT_FOUND;
+  }
+  DEBUG ((DEBUG_INFO, "BootRamdiskHelperDxe: selected exact VirtualDisk/HD(1,GPT) ESP child\n"));
+  return EFI_SUCCESS;
+}
 
 STATIC
 EFI_STATUS
@@ -92,10 +201,12 @@ STATIC
 EFI_STATUS
 RegisterRamdisk (
   IN UINTN   Address,
-  IN UINT64  Size
+  IN UINT64  Size,
+  IN BOOLEAN RequireGptEsp
   )
 {
   EFI_DEVICE_PATH_PROTOCOL  *DevicePath;
+  EFI_DEVICE_PATH_PROTOCOL  *EspDevicePath;
   EFI_RAM_DISK_PROTOCOL     *RamdiskProtocol;
   EFI_STATUS                Status;
 
@@ -121,7 +232,16 @@ RegisterRamdisk (
     return Status;
   }
 
-  return PrioritizeRamdiskBoot (DevicePath);
+  if (!RequireGptEsp) {
+    return PrioritizeRamdiskBoot (DevicePath);
+  }
+  Status = FindRamdiskEspDevicePath (DevicePath, &EspDevicePath);
+  if (EFI_ERROR (Status)) {
+    return Status;
+  }
+  Status = PrioritizeRamdiskBoot (EspDevicePath);
+  FreePool (EspDevicePath);
+  return Status;
 }
 
 STATIC
@@ -198,7 +318,7 @@ RegisterAppendedRamdisk (
     (UINT64)(UINTN)Image,
     ImageSize
     ));
-  return RegisterRamdisk ((UINTN)Image, ImageSize);
+  return RegisterRamdisk ((UINTN)Image, ImageSize, TRUE);
 }
 
 EFI_STATUS
@@ -246,5 +366,5 @@ BootRamdiskHelperDxeInitialize (
     return EFI_OUT_OF_RESOURCES;
   }
 
-  return RegisterRamdisk ((UINTN)DestinationRamdiskPtr, RamDiskSize);
+  return RegisterRamdisk ((UINTN)DestinationRamdiskPtr, RamDiskSize, FALSE);
 }

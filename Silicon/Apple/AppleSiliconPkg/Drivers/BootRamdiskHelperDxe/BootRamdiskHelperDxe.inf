@@ -21,6 +21,7 @@
 
 #just a default set of libraries from HttpBootDxe for now, can scale back if needed
 [LibraryClasses]
+  BaseMemoryLib
   HobLib
   UefiRuntimeServicesTableLib
   UefiDriverEntryPoint
@@ -37,6 +38,8 @@
   UefiBootManagerLib
 
 [Protocols]
+  gEfiBlockIoProtocolGuid
+  gEfiSimpleFileSystemProtocolGuid
   gEfiRamDiskProtocolGuid                         ## SOMETIMES_CONSUMES
   gEfiDevicePathProtocolGuid
 
