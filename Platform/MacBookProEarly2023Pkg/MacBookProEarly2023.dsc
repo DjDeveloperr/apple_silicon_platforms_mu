@@ -74,6 +74,12 @@
 [Components.common]
 
   MacBookProEarly2023Pkg/AcpiTables/DeviceAcpiTables.inf
+!if $(NTASI_ENABLE_WIRELESS_DART_HANDOFF) == TRUE
+  MacBookProEarly2023Pkg/AcpiTables/WirelessDartAcpiTables.inf
+!endif
+!if $(NTASI_J414S_GPU_RESOURCE_PROFILE) == TRUE
+  MacBookProEarly2023Pkg/AcpiTables/GpuAcpiTables.inf
+!endif
 
 !include MacBookProFamilyPkg/MacBookProFamilyPkg.dsc.inc
 !include T602XFamilyPkg/T602XFamilyPkg.dsc.inc

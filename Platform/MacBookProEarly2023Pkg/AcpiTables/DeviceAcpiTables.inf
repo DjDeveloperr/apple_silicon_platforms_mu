@@ -26,12 +26,6 @@
   DISP.asl
   KBL.asl
   MTP.asl
-!if $(NTASI_ENABLE_WIRELESS_DART_HANDOFF) == TRUE
-  WDRT.asl
-!endif
-!if $(NTASI_J414S_GPU_RESOURCE_PROFILE) == TRUE
-  GPU.asl
-!endif
   SMCG.asl
 
 [Packages]
