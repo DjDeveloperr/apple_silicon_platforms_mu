@@ -206,6 +206,11 @@ class PlatformBuilder( UefiBuilder, BuildSettingsManager):
             "FALSE",
             "Unified baseline keeps experimental ANS publication disabled",
         )
+        self.env.SetValue(
+            "BLD_*_NTASI_ENABLE_WIRELESS_DART_HANDOFF",
+            "FALSE",
+            "Unified baseline does not assume an m1n1 wireless DART handoff",
+        )
 
         return 0
 

@@ -370,6 +370,7 @@ EFI_STATUS EFIAPI MemoryPeim(IN EFI_PHYSICAL_ADDRESS UefiMemoryBase, IN UINT64 U
   // Preserve the SID-1 DART tables installed by m1n1's J414s wireless
   // handoff.  Keep the range cacheable and CPU-readable so AppleDart can
   // validate it, while the allocation HOB prevents DXE/OS reuse.
+#if NTASI_ENABLE_WIRELESS_DART_HANDOFF
   {
     EFI_PHYSICAL_ADDRESS  WirelessDartBase;
     UINT32                WirelessDartSize;
@@ -402,6 +403,7 @@ EFI_STATUS EFIAPI MemoryPeim(IN EFI_PHYSICAL_ADDRESS UefiMemoryBase, IN UINT64 U
       DEBUG ((DEBUG_INFO, "MemoryInitPeiLib: reserved wireless DART tables at 0x%lx (0x%x bytes)\n", WirelessDartBase, WirelessDartSize));
     }
   }
+#endif // NTASI_ENABLE_WIRELESS_DART_HANDOFF
 
 #if NTASI_J414S_GPU_RESOURCE_PROFILE
   // Generated AppleAgxGpu preboot reservations. Keep these exact
