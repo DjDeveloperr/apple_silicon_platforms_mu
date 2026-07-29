@@ -10,7 +10,8 @@
 #include <Base.h>
 
 #define NTASI_APPENDED_RAMDISK_SIGNATURE       SIGNATURE_64 ('N', 'T', 'A', 'S', 'I', 'R', 'D', 'K')
-#define NTASI_APPENDED_RAMDISK_VERSION         1U
+#define NTASI_APPENDED_RAMDISK_VERSION         2U
+#define NTASI_APPENDED_RAMDISK_HEADER_SIZE     EFI_PAGE_SIZE
 #define NTASI_APPENDED_RAMDISK_MAX_IMAGE_SIZE  0x40000000ULL
 #define NTASI_APPENDED_RAMDISK_MAX_MAPPED_SPAN  0x40001000ULL
 #define NTASI_APPENDED_RAMDISK_LOCATION_SIGNATURE  SIGNATURE_64 ('N', 'T', 'A', 'S', 'I', 'H', 'O', 'B')
@@ -101,7 +102,7 @@ NtasiValidateAppendedRamdisk (
   if ((Header == NULL) || (MaximumBytes < sizeof (*Header)) ||
       (Header->Signature != NTASI_APPENDED_RAMDISK_SIGNATURE) ||
       (Header->Version != NTASI_APPENDED_RAMDISK_VERSION) ||
-      (Header->HeaderSize != sizeof (*Header)) ||
+      (Header->HeaderSize != NTASI_APPENDED_RAMDISK_HEADER_SIZE) ||
       (Header->ImageSize < 512) ||
       (Header->ImageSize > NTASI_APPENDED_RAMDISK_MAX_IMAGE_SIZE) ||
       (Header->HeaderCrc32 != NtasiAppendedRamdiskCrc32 (

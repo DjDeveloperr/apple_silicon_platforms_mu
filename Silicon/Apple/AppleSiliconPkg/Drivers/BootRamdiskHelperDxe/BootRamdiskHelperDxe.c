@@ -5,7 +5,10 @@
 **/
 
 #include <PiDxe.h>
+#include <Guid/GlobalVariable.h>
 #include <Library/HobLib.h>
+#include <Library/UefiBootManagerLib.h>
+#include <Library/UefiRuntimeServicesTableLib.h>
 
 #include "BootRamdiskHelperDxe.h"
 #define NTASI_APPENDED_RAMDISK_INCLUDE_FAT_VALIDATOR  1
@@ -13,6 +16,77 @@
 
 STATIC CONST EFI_GUID  mNtasiAppendedRamdiskLocationHobGuid =
   NTASI_APPENDED_RAMDISK_LOCATION_HOB_GUID;
+
+STATIC
+EFI_STATUS
+PrioritizeRamdiskBoot (
+  IN EFI_DEVICE_PATH_PROTOCOL  *RamdiskDevicePath
+  )
+{
+  EFI_DEVICE_PATH_PROTOCOL      *BootDevicePath;
+  EFI_DEVICE_PATH_PROTOCOL      *FileDevicePathOnly;
+  EFI_BOOT_MANAGER_LOAD_OPTION  LoadOption;
+  EFI_STATUS                    Status;
+  UINT16                        BootNext;
+
+  FileDevicePathOnly = FileDevicePath (
+                         NULL,
+                         L"\\EFI\\Microsoft\\Boot\\cdboot_noprompt.efi"
+                         );
+  if (FileDevicePathOnly == NULL) {
+    return EFI_OUT_OF_RESOURCES;
+  }
+  BootDevicePath = AppendDevicePath (RamdiskDevicePath, FileDevicePathOnly);
+  FreePool (FileDevicePathOnly);
+  if (BootDevicePath == NULL) {
+    return EFI_OUT_OF_RESOURCES;
+  }
+
+  Status = EfiBootManagerInitializeLoadOption (
+             &LoadOption,
+             LoadOptionNumberUnassigned,
+             LoadOptionTypeBoot,
+             LOAD_OPTION_ACTIVE,
+             L"NTASI Appended RAM WinPE",
+             BootDevicePath,
+             NULL,
+             0
+             );
+  FreePool (BootDevicePath);
+  if (EFI_ERROR (Status)) {
+    DEBUG ((DEBUG_ERROR, "BootRamdiskHelperDxe: cannot initialize RAM WinPE boot option: %r\n", Status));
+    return Status;
+  }
+
+  Status = EfiBootManagerAddLoadOptionVariable (&LoadOption, 0);
+  if (EFI_ERROR (Status)) {
+    DEBUG ((DEBUG_ERROR, "BootRamdiskHelperDxe: cannot add RAM WinPE boot option: %r\n", Status));
+    EfiBootManagerFreeLoadOption (&LoadOption);
+    return Status;
+  }
+  if (LoadOption.OptionNumber > MAX_UINT16) {
+    EfiBootManagerFreeLoadOption (&LoadOption);
+    return EFI_COMPROMISED_DATA;
+  }
+
+  BootNext = (UINT16)LoadOption.OptionNumber;
+  Status   = gRT->SetVariable (
+                    L"BootNext",
+                    &gEfiGlobalVariableGuid,
+                    EFI_VARIABLE_NON_VOLATILE |
+                    EFI_VARIABLE_BOOTSERVICE_ACCESS |
+                    EFI_VARIABLE_RUNTIME_ACCESS,
+                    sizeof (BootNext),
+                    &BootNext
+                    );
+  if (EFI_ERROR (Status)) {
+    DEBUG ((DEBUG_ERROR, "BootRamdiskHelperDxe: cannot set RAM WinPE BootNext: %r\n", Status));
+  } else {
+    DEBUG ((DEBUG_INFO, "BootRamdiskHelperDxe: BootNext=Boot%04x selects appended RAM WinPE\n", BootNext));
+  }
+  EfiBootManagerFreeLoadOption (&LoadOption);
+  return Status;
+}
 
 STATIC
 EFI_STATUS
@@ -44,9 +118,10 @@ RegisterRamdisk (
                               );
   if (EFI_ERROR (Status)) {
     DEBUG ((DEBUG_ERROR, "BootRamdiskHelperDxe: cannot register RAM disk: %r\n", Status));
+    return Status;
   }
 
-  return Status;
+  return PrioritizeRamdiskBoot (DevicePath);
 }
 
 STATIC

@@ -22,6 +22,7 @@
 #just a default set of libraries from HttpBootDxe for now, can scale back if needed
 [LibraryClasses]
   HobLib
+  UefiRuntimeServicesTableLib
   UefiDriverEntryPoint
   UefiBootServicesTableLib
   MemoryAllocationLib
@@ -42,6 +43,7 @@
   gEfiLoadFileProtocolGuid
 
 [Guids]
+  gEfiGlobalVariableGuid
   gEfiVirtualCdGuid            ## SOMETIMES_CONSUMES ## GUID
   gEfiVirtualDiskGuid          ## SOMETIMES_CONSUMES ## GUID
   gAppleSiliconPkgEmbeddedRamdiskGuid
