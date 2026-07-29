@@ -54,6 +54,8 @@ RegisterAppendedRamdisk (
   CONST NTASI_APPENDED_RAMDISK_HEADER   *Header;
   CONST VOID                            *Image;
   UINT64                                ImageSize;
+  UINT32                                PayloadCrc32;
+  EFI_STATUS                            Status;
 
   FdTop = PcdGet64 (PcdFdBaseAddress) + PcdGet32 (PcdFdSize);
   if (FdTop < PcdGet64 (PcdFdBaseAddress)) {
@@ -68,14 +70,27 @@ RegisterAppendedRamdisk (
   if (!NtasiValidateAppendedRamdisk (
          Header,
          NTASI_APPENDED_RAMDISK_MAX_MAPPED_SPAN,
-         TRUE,
+         FALSE,
          &Image,
          &ImageSize,
          NULL
          ) ||
+      (ImageSize > MAX_UINTN) ||
       !NtasiValidateFatBootSector (Image, ImageSize))
   {
-    DEBUG ((DEBUG_ERROR, "BootRamdiskHelperDxe: appended ramdisk failed header, CRC, or FAT validation\n"));
+    DEBUG ((DEBUG_ERROR, "BootRamdiskHelperDxe: appended ramdisk failed header or FAT validation\n"));
+    return EFI_COMPROMISED_DATA;
+  }
+
+  Status = gBS->CalculateCrc32 ((VOID *)Image, (UINTN)ImageSize, &PayloadCrc32);
+  if (EFI_ERROR (Status) || (PayloadCrc32 != Header->ImageCrc32)) {
+    DEBUG ((
+      DEBUG_ERROR,
+      "BootRamdiskHelperDxe: appended payload CRC failed: %r, got 0x%x expected 0x%x\n",
+      Status,
+      PayloadCrc32,
+      Header->ImageCrc32
+      ));
     return EFI_COMPROMISED_DATA;
   }
 
