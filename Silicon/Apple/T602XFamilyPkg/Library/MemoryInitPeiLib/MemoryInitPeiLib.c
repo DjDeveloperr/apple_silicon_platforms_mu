@@ -309,6 +309,35 @@ EFI_STATUS EFIAPI MemoryPeim(IN EFI_PHYSICAL_ADDRESS UefiMemoryBase, IN UINT64 U
     );
   }
 
+  //
+  // Reserve the BCM4388 SID-1 DART page-table carveout.
+  //
+  // m1n1's wireless handoff installs a deny-all SID-1 domain before Mu runs,
+  // because Windows' pci.sys enables bus mastering on both BCM4388 functions
+  // before any KMDF driver can claim the IOMMU.  The L1 and dedicated MSI L2
+  // tables that domain points at must stay live for the entire lifetime of
+  // the guest, so this range can never be conventional memory: if Windows
+  // allocated it, the DART would keep walking page tables that had become
+  // ordinary allocations.
+  //
+  // The base and size are the same literals as WLAN_PT_CARVEOUT_PHYS /
+  // WLAN_PT_CARVEOUT_SIZE in the m1n1 patch and the second DRT0 _CRS memory
+  // resource in the platform DSDT.  The PCD defaults to zero so every other
+  // profile is unaffected; only a wireless build sets it.
+  //
+  if (PcdGet64 (PcdAppleWirelessDartPageTableBase) != 0) {
+    DEBUG ((
+      DEBUG_INFO,
+      "Reserving BCM4388 DART page-table carveout 0x%lx/+0x%x\n",
+      PcdGet64 (PcdAppleWirelessDartPageTableBase),
+      PcdGet32 (PcdAppleWirelessDartPageTableSize)
+      ));
+    ReserveMemoryRegion (
+      PcdGet64 (PcdAppleWirelessDartPageTableBase),
+      PcdGet32 (PcdAppleWirelessDartPageTableSize)
+    );
+  }
+
   // Build Memory Allocation Hob
   InitMmu (MemoryTable);
 

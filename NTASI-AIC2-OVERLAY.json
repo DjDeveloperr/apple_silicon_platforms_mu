@@ -152,7 +152,7 @@
   },
   "mu_base_commit": "93c8b4cd271aeae23189cfda7fa16b2f307b0e34",
   "pcie": {
-    "dsdt_source_sha256": "1d3c52cf34da72ed4fa4d6203753e87107080db21020b9e702135d5960e83eb8",
+    "dsdt_source_sha256": "629257c03053236ff95523efc7238fe54f4d4bd3fc7bddde05e79147dc6cb3c9",
     "enabled": true,
     "mcfg": {
       "allocation_base": "0x580000000",
@@ -167,6 +167,15 @@
       "compatible_id": "PNP0A03",
       "dma_coherent": true,
       "hardware_id": "PNP0A08"
+    },
+    "wireless_dart": {
+      "enabled": true,
+      "hardware_id": "ACPI\\NTAS0011",
+      "page_table_carveout_base": "0x10022000000",
+      "page_table_carveout_length": "0x10000",
+      "physical_base": "0x594000000",
+      "physical_length": "0x4000",
+      "stream_id": 1
     }
   },
   "platform": "MacBookProEarly2023Pkg",
