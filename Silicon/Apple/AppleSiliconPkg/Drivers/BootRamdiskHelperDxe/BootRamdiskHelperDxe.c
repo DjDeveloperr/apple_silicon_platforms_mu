@@ -31,7 +31,7 @@ PrioritizeRamdiskBoot (
 
   FileDevicePathOnly = FileDevicePath (
                          NULL,
-                         L"\\EFI\\Microsoft\\Boot\\cdboot_noprompt.efi"
+                         L"\\EFI\\BOOT\\BOOTAA64.EFI"
                          );
   if (FileDevicePathOnly == NULL) {
     return EFI_OUT_OF_RESOURCES;

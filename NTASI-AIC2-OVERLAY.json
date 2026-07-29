@@ -6,7 +6,7 @@
   "appended_ramdisk": {
     "allocation": "cacheable EFI_RESOURCE_SYSTEM_MEMORY plus EfiReservedMemoryType allocation HOB",
     "dxe_location": "versioned GUID HOB published from relocated PEI PCD instance",
-    "dxe_source_sha256": "4cf4dccf821a7368cf9c1c2b0f2f51185bd036bbc555902efa893806a8fa71f9",
+    "dxe_source_sha256": "4d6333785c98badad16cf71a8b1bc9d60a4aa9f34dae33994f84f8486245f787",
     "enabled": true,
     "header_size": 4096,
     "header_source_sha256": "fcbaec1641c43784446e5dfbef3d9eb6c0e0a4cf6af594581e9b895e39f7b1ee",
