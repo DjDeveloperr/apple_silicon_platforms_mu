@@ -1,0 +1,84 @@
+{
+  "captured_at": "2026-07-29T16:44:15-04:00",
+  "firmware": {
+    "chosen_firmware_version": "iBoot-8422.141.2",
+    "compat_major": 13,
+    "compat_minor": 5
+  },
+  "gpu": {
+    "max_frequency_khz": 1398000
+  },
+  "interrupt": {
+    "physical_aic_line": 1146,
+    "published_gsiv": 40
+  },
+  "m1n1": {
+    "authenticated_image_base": "0x100037d0000",
+    "commit": "5b54d17e3cf7c82a9af54512fc63dcd292abd72c",
+    "dtb_sha256": "e5173fabd3c53373626ead98dd63cb09724c4334910573773bf00b3d91228ea3",
+    "entrypoint": "dt_set_gpu",
+    "executable_sha256": "d1976daabaed691e6ffc86bc86868098b82aace4ee5c92f980f7513e1d17068a",
+    "gpu_firmware_started": false,
+    "guest_started": false,
+    "image_sha256": "d4d9da57bf154b99ae2d302118f79b586e506068412b7fa6c1b58cfa9e808775",
+    "image_size": 901120,
+    "reported_base": "0x100037d0000",
+    "reported_base_delta": 0
+  },
+  "machine": {
+    "chip_id": "0x6020",
+    "target": "J414s"
+  },
+  "power": {
+    "afr_min_state": 4,
+    "afr_ps_offset": "0x100",
+    "base": "0x404e80000",
+    "gfx_ps_offset": "0x108",
+    "gpx_always_on": true,
+    "gpx_ps_offset": "0x0",
+    "size": "0x4000",
+    "source": "/soc/power-management@404e80000"
+  },
+  "resources": {
+    "globals": {
+      "base": "0x103db278000",
+      "crc32": "8ac088ef",
+      "payload_size": "0x1715c",
+      "sha256": "cce96053f8045b2a48788b2a0150ca9da776038f1fda2008ceea835ac03848df",
+      "size": "0x18000",
+      "source": "/reserved-memory/globals"
+    },
+    "hw_data_a": {
+      "base": "0x103db294000",
+      "crc32": "fac3327a",
+      "payload_size": "0x6c34",
+      "sha256": "c8efed1fd8c006eb12440feb9c8222c2821d806bab17fee25776ec717b4ae5a2",
+      "size": "0x8000",
+      "source": "/reserved-memory/hw-cal-a"
+    },
+    "hw_data_b": {
+      "base": "0x103db290000",
+      "crc32": "8360bea5",
+      "payload_size": "0x1884",
+      "sha256": "6b6bb90e16b806c2d26bd20b7413c6612130a396a530b7991ddb45534582a9bf",
+      "size": "0x4000",
+      "source": "/reserved-memory/hw-cal-b"
+    },
+    "uat_handoff": {
+      "base": "0x103fff70000",
+      "size": "0x4000",
+      "source": "/reserved-memory/uat-handoff"
+    },
+    "uat_pagetables": {
+      "base": "0x103fff78000",
+      "size": "0x40000",
+      "source": "/reserved-memory/uat-pagetables"
+    },
+    "uat_ttbs": {
+      "base": "0x103fffb8000",
+      "size": "0x4000",
+      "source": "/reserved-memory/uat-ttbs"
+    }
+  },
+  "schema_version": 2
+}

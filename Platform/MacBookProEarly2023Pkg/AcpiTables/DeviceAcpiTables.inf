@@ -24,6 +24,7 @@
   DSDT.asl
   KBL.asl
   MTP.asl
+  GPU.asl
   SMCG.asl
 
 [Packages]
