@@ -146,9 +146,14 @@ class PlatformBuilder( UefiBuilder, BuildSettingsManager):
 
     def GetPackagesPath(self):
         ''' Return a list of paths that should be mapped as edk2 PackagesPath '''
-        result = [
-            shell_environment.GetBuildVars().GetValue("FEATURE_CONFIG_PATH", "")
-        ]
+        feature_config_path = shell_environment.GetBuildVars().GetValue(
+            "FEATURE_CONFIG_PATH", ""
+        )
+        # An unset optional feature path must not become an empty package-root
+        # entry.  edk2-pytool-extensions 0.27.6 later resolves Conf templates
+        # through this list and otherwise passes None to os.path.join(), making
+        # a clean Linux/container build fail before any EDK2 source compiles.
+        result = [feature_config_path] if feature_config_path else []
         for a in CommonPlatform.PackagesPath:
             result.append(a)
         return result
