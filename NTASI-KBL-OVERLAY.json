@@ -1,0 +1,29 @@
+{
+  "kbd_backlight": {
+    "enabled": true,
+    "source_sha256": "f3f56b201e1b58e27dfa9a6338064b17684d6e12b783c96b1b5748071f0f4a05",
+    "hardware_id": "ACPI\\NTAS0051",
+    "platform": "J414s/T6020",
+    "crs": {
+      "memory": [
+        {
+          "base": "0x39b030000",
+          "length": "0x4000",
+          "role": "fpwm0-registers"
+        },
+        {
+          "base": "0x290280000",
+          "length": "0x1000",
+          "role": "pmgr-east-ps-page"
+        }
+      ],
+      "interrupts": []
+    },
+    "power_chain": {
+      "ps_sio_offset": "0x1c0",
+      "ps_fpwm0_offset": "0x1e8",
+      "policy": "driver raises sio then fpwm0; never lowers sio"
+    },
+    "preboot": "none required"
+  }
+}
