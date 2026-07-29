@@ -38,6 +38,11 @@
 
   gAppleSiliconPkgTokenSpaceGuid.PcdSmbiosCpuModel|"Unknown Chip"|VOID*|0x00001009
   gAppleSiliconPkgTokenSpaceGuid.PcdSmbiosCpuIdentifier|"Unknown ID"|VOID*|0x0000100a
+  # CPU frequency reporting for SMBIOS Type 4 (MHz, 0 = unknown/do not report).
+  # Set per SoC family; see the family .dsc.inc for the numbers and sources.
+  gAppleSiliconPkgTokenSpaceGuid.PcdSmbiosECoreMaxFreqMhz|0|UINT32|0x00001010
+  gAppleSiliconPkgTokenSpaceGuid.PcdSmbiosPCoreMaxFreqMhz|0|UINT32|0x00001011
+  gAppleSiliconPkgTokenSpaceGuid.PcdSmbiosBootFreqMhz|0|UINT32|0x00001012
   gAppleSiliconPkgTokenSpaceGuid.PcdSmbiosSystemModel|"Unknown Mac"|VOID*|0x0000100b
   gAppleSiliconPkgTokenSpaceGuid.PcdSmbiosSystemModelNumber|"Mac??,?"|VOID*|0x0000100c
   gAppleSiliconPkgTokenSpaceGuid.PcdSmbiosSystemFamily|"Mac Placeholder"|VOID*|0x0000100d

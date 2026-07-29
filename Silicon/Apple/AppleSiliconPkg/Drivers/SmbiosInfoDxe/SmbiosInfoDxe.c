@@ -49,6 +49,7 @@ be found at http://opensource.org/licenses/bsd-license.php
 #include <Library/BaseLib.h>
 #include <Library/BaseMemoryLib.h>
 #include <Library/DebugLib.h>
+#include <Library/PcdLib.h>
 #include <Library/PrintLib.h>
 #include <Library/MemoryAllocationLib.h>
 #include <Library/UefiBootServicesTableLib.h>
@@ -293,9 +294,9 @@ SMBIOS_TABLE_TYPE4 mProcessorInfoType4 = {
            // zero.
         0  // ProcessorVoltageIndicateLegacy      :1;
     },
-    0,                     // ExternalClock;
-    3228,                  // MaxSpeed;
-    0,                  // CurrentSpeed;
+    24,                    // ExternalClock; 24 MHz SoC reference clock
+    0,                     // MaxSpeed;     0 = unknown, patched at runtime from PcdSmbiosPCoreMaxFreqMhz
+    0,                     // CurrentSpeed; 0 = unknown, patched at runtime from PcdSmbiosBootFreqMhz
     0x41,                  // Status;
     ProcessorUpgradeOther, // ProcessorUpgrade;      ///< The enumeration value
                            // from PROCESSOR_UPGRADE.
@@ -305,16 +306,118 @@ SMBIOS_TABLE_TYPE4 mProcessorInfoType4 = {
     0,                     // SerialNumber;
     0,                     // AssetTag;
     4,                     // PartNumber;
-    6, // CoreCount; (note - for Apple platforms, on all we will default to 6 cores, this will get changed by the code to the right value)
-    6, // EnabledCoreCount;
-    6, // ThreadCount;
+    6, // CoreCount; patched at runtime from the ADT /cpus/cpuN nodes
+    6, // EnabledCoreCount; patched at runtime from the ADT /cpus/cpuN nodes
+    6, // ThreadCount; patched at runtime (Apple cores are single-threaded)
     0xAC,                        // ProcessorCharacteristics;
-    ProcessorFamilyARM,          // ARM Processor Family;
+    ProcessorFamilyARMv8,        // ARM Processor Family;
 };
 
 CHAR8 *mProcessorInfoType4Strings[] = {
     "Apple", "Apple Inc.", "Not Specified",
     "Not Specified", NULL};
+
+//
+// Runtime buffers for the Type 4 ProcessorVersion / PartNumber strings.
+// The version string is what ARM64 Windows surfaces as the processor name
+// (registry ProcessorNameString -> Task Manager), so it carries the real
+// chip name plus the per-cluster core counts and maximum frequencies; a
+// single "speed" field cannot describe a heterogeneous part honestly.
+//
+STATIC CHAR8 mProcessorVersionString[64];
+STATIC CHAR8 mProcessorPartNumberString[8];
+
+typedef struct {
+  UINT32       ChipId;
+  CONST CHAR8  *Name;
+} APPLE_CHIP_NAME_MAP;
+
+//
+// chip-id comes from the ADT /chosen node (same source m1n1 uses in
+// src/main.c). Fall back to PcdSmbiosCpuModel for unknown IDs.
+//
+STATIC CONST APPLE_CHIP_NAME_MAP mAppleChipNames[] = {
+  { 0x8103, "Apple M1"       },
+  { 0x6000, "Apple M1 Pro"   },
+  { 0x6001, "Apple M1 Max"   },
+  { 0x6002, "Apple M1 Ultra" },
+  { 0x8112, "Apple M2"       },
+  { 0x6020, "Apple M2 Pro"   },
+  { 0x6021, "Apple M2 Max"   },
+  { 0x6022, "Apple M2 Ultra" },
+};
+
+/**
+  Read the SoC chip identifier (e.g. 0x6020 for T6020/M2 Pro) from the
+  ADT /chosen node. Returns 0 when the node or property is absent
+  (dt_get_u32 would dereference NULL in that case, so guard it here).
+**/
+STATIC UINT32 GetAdtChipId(VOID)
+{
+  dt_node_t *ChosenNode;
+  UINT32    *ChipIdProp;
+  UINTN     ChipIdLength;
+
+  ChosenNode = dt_get("/chosen");
+  if (ChosenNode == NULL) {
+    return 0;
+  }
+
+  ChipIdLength = 0;
+  ChipIdProp = dt_node_prop(ChosenNode, "chip-id", &ChipIdLength);
+  if ((ChipIdProp == NULL) || (ChipIdLength < sizeof(UINT32))) {
+    return 0;
+  }
+
+  return *ChipIdProp;
+}
+
+/**
+  Return the amount of physically installed DRAM in bytes.
+
+  PcdSystemMemorySize only covers the RAM window this firmware was handed
+  by its loader (under the m1n1 hypervisor that excludes m1n1's own
+  reservations and Apple's preboot carveouts), so it understates the
+  installed capacity. The iBoot/m1n1 boot-args carry the real DRAM size in
+  mem_size_actual; the entry point copied them to PcdBootArgsPointer.
+**/
+STATIC UINT64 GetInstalledMemoryBytes(VOID)
+{
+  struct boot_args *BootArgs;
+  UINT64           MemSizeActual;
+
+  MemSizeActual = 0;
+  BootArgs = (struct boot_args *)(UINTN)FixedPcdGet64(PcdBootArgsPointer);
+  if (BootArgs != NULL) {
+    switch (BootArgs->revision) {
+      case 1:
+        MemSizeActual = BootArgs->rv1.mem_size_actual;
+        break;
+      case 2:
+        MemSizeActual = BootArgs->rv2.mem_size_actual;
+        break;
+      case 3:
+        MemSizeActual = BootArgs->rv3.mem_size_actual;
+        break;
+      default:
+        break;
+    }
+  }
+
+  //
+  // Sanity-gate the boot-args value (zero or absurd sizes) and fall back
+  // to the published UEFI memory window so we never report less than the
+  // OS can already see.
+  //
+  if ((MemSizeActual == 0) || (MemSizeActual > (1ULL << 40))) {
+    DEBUG((DEBUG_WARN,
+      "SmbiosInfoDxe: boot-args mem_size_actual unusable (0x%lx), "
+      "falling back to PcdSystemMemorySize\n", MemSizeActual));
+    MemSizeActual = PcdGet64(PcdSystemMemorySize);
+  }
+
+  return MemSizeActual;
+}
 
 /***********************************************************************
         SMBIOS data definition  TYPE7  Cache Information
@@ -542,7 +645,9 @@ SMBIOS_TABLE_TYPE17 mMemDevInfoType17 = {
     0,    // ConfiguredMemoryClockSpeed;
 };
 
-CHAR8 *mMemDevInfoType17Strings[] = {"On SoC", "Bank 0", "Micron", "Not Specified", "Not Specified", "H9HKNNNEBMAVAR-NEH", NULL};
+// Manufacturer/part number of the on-package DRAM are not discoverable from
+// firmware; report them as unknown instead of a fabricated part number.
+CHAR8 *mMemDevInfoType17Strings[] = {"On SoC", "Bank 0", "Unknown", "Not Specified", "Not Specified", "Not Specified", NULL};
 
 /***********************************************************************
         SMBIOS data definition  TYPE19  Memory Array Mapped Address Information
@@ -738,6 +843,113 @@ VOID EnclosureInfoUpdateSmbiosType3(VOID)
 VOID ProcessorInfoUpdateSmbiosType4(IN UINTN MaxCpus)
 {
   EFI_SMBIOS_HANDLE SmbiosHandle;
+  UINT32            Index;
+  UINT32            ECoreCount;
+  UINT32            PCoreCount;
+  UINT32            TotalCoreCount;
+  UINT32            ChipId;
+  CONST CHAR8       *ChipName;
+  UINT32            ECoreMaxMhz;
+  UINT32            PCoreMaxMhz;
+  UINT32            BootFreqMhz;
+  CHAR8             CpuNodeName[16];
+
+  ECoreCount  = 0;
+  PCoreCount  = 0;
+  ChipName    = NULL;
+  ECoreMaxMhz = FixedPcdGet32(PcdSmbiosECoreMaxFreqMhz);
+  PCoreMaxMhz = FixedPcdGet32(PcdSmbiosPCoreMaxFreqMhz);
+  BootFreqMhz = FixedPcdGet32(PcdSmbiosBootFreqMhz);
+
+  //
+  // Count the cores that actually exist on this machine from the ADT.
+  // ADT cpu node numbering is sparse on binned parts (a 10-core J414s
+  // has cpu0..cpu6 and cpu8..cpu10, with no cpu7), so probe every slot
+  // up to the family-wide PcdCoreCount and classify each present node by
+  // its "cluster-type" property ('E' or 'P', as consumed by m1n1).
+  //
+  for (Index = 0; Index < PcdGet32(PcdCoreCount); Index++) {
+    dt_node_t *CpuNode;
+    CONST CHAR8 *ClusterType;
+    UINTN ClusterTypeLength;
+
+    AsciiSPrint(CpuNodeName, sizeof(CpuNodeName), "/cpus/cpu%u", Index);
+    CpuNode = dt_get(CpuNodeName);
+    if (CpuNode == NULL) {
+      continue;
+    }
+
+    ClusterTypeLength = 0;
+    ClusterType = dt_node_prop(CpuNode, "cluster-type", &ClusterTypeLength);
+    if ((ClusterType != NULL) && (ClusterTypeLength >= 1) && (ClusterType[0] == 'P')) {
+      PCoreCount++;
+    } else {
+      ECoreCount++;
+    }
+  }
+  TotalCoreCount = ECoreCount + PCoreCount;
+
+  //
+  // Resolve the marketing chip name from the ADT chip-id.
+  //
+  ChipId = GetAdtChipId();
+  for (Index = 0; Index < ARRAY_SIZE(mAppleChipNames); Index++) {
+    if (mAppleChipNames[Index].ChipId == ChipId) {
+      ChipName = mAppleChipNames[Index].Name;
+      break;
+    }
+  }
+  if (ChipName == NULL) {
+    ChipName = (CONST CHAR8 *)PcdGetPtr(PcdSmbiosCpuModel);
+  }
+
+  if ((TotalCoreCount != 0) && (ECoreMaxMhz != 0) && (PCoreMaxMhz != 0)) {
+    AsciiSPrint(
+      mProcessorVersionString, sizeof(mProcessorVersionString),
+      "%a (%uE @ %u.%02u GHz + %uP @ %u.%02u GHz)",
+      ChipName,
+      ECoreCount, ECoreMaxMhz / 1000, (ECoreMaxMhz % 1000) / 10,
+      PCoreCount, PCoreMaxMhz / 1000, (PCoreMaxMhz % 1000) / 10);
+  } else {
+    AsciiSPrint(
+      mProcessorVersionString, sizeof(mProcessorVersionString),
+      "%a", ChipName);
+  }
+  mProcessorInfoType4Strings[2] = mProcessorVersionString;
+
+  if (ChipId != 0) {
+    AsciiSPrint(
+      mProcessorPartNumberString, sizeof(mProcessorPartNumberString),
+      "T%x", ChipId);
+    mProcessorInfoType4Strings[3] = mProcessorPartNumberString;
+  }
+
+  //
+  // MaxSpeed: fastest cluster's maximum p-state.
+  // CurrentSpeed: the P-cluster clock the machine actually boots (and,
+  // absent an OS DVFS driver, keeps running) at.
+  //
+  if (PCoreMaxMhz != 0) {
+    mProcessorInfoType4.MaxSpeed = (UINT16)PCoreMaxMhz;
+  }
+  if (BootFreqMhz != 0) {
+    mProcessorInfoType4.CurrentSpeed = (UINT16)BootFreqMhz;
+  }
+
+  if (TotalCoreCount == 0) {
+    // ADT unavailable: fall back to the build-time core count.
+    TotalCoreCount = (UINT32)MaxCpus;
+  }
+  if ((TotalCoreCount != 0) && (TotalCoreCount < 0xFF)) {
+    mProcessorInfoType4.CoreCount        = (UINT8)TotalCoreCount;
+    mProcessorInfoType4.EnabledCoreCount = (UINT8)TotalCoreCount;
+    mProcessorInfoType4.ThreadCount      = (UINT8)TotalCoreCount;
+  }
+
+  DEBUG((DEBUG_INFO,
+    "SmbiosInfoDxe: Type4 '%a' cores=%u (%uE+%uP) max=%u MHz boot=%u MHz\n",
+    mProcessorVersionString, TotalCoreCount, ECoreCount, PCoreCount,
+    mProcessorInfoType4.MaxSpeed, mProcessorInfoType4.CurrentSpeed));
 
   LogSmbiosData(
       (EFI_SMBIOS_TABLE_HEADER *)&mCacheInfoType7_L1DC, mCacheInfoType7_L1DC_Strings,
@@ -773,6 +985,17 @@ VOID CacheInfoUpdateSmbiosType7(VOID)
 VOID PhyMemArrayInfoUpdateSmbiosType16(VOID)
 {
   EFI_SMBIOS_HANDLE MemArraySmbiosHande;
+  UINT64            InstalledKilobytes;
+
+  //
+  // Report the real installed capacity (memory is soldered, so the
+  // maximum equals the installed amount).
+  //
+  InstalledKilobytes = GetInstalledMemoryBytes() >> 10;
+  if ((InstalledKilobytes != 0) && (InstalledKilobytes < 0x80000000ULL)) {
+    mPhyMemArrayInfoType16.MaximumCapacity         = (UINT32)InstalledKilobytes;
+    mPhyMemArrayInfoType16.ExtendedMaximumCapacity = 0;
+  }
 
   LogSmbiosData(
       (EFI_SMBIOS_TABLE_HEADER *)&mPhyMemArrayInfoType16,
@@ -789,6 +1012,49 @@ VOID PhyMemArrayInfoUpdateSmbiosType16(VOID)
 ************************************************************************/
 VOID MemDevInfoUpdateSmbiosType17(VOID)
 {
+  UINT64 InstalledMegabytes;
+  UINT32 ChipId;
+
+  //
+  // Windows' GetPhysicallyInstalledSystemMemory (Task Manager's headline
+  // memory figure) sums SMBIOS Type 17 sizes; report the real installed
+  // DRAM from boot-args mem_size_actual, not a placeholder.
+  //
+  InstalledMegabytes = GetInstalledMemoryBytes() >> 20;
+  if (InstalledMegabytes != 0) {
+    if (InstalledMegabytes < 0x7FFF) {
+      mMemDevInfoType17.Size         = (UINT16)InstalledMegabytes;
+      mMemDevInfoType17.ExtendedSize = 0;
+    } else {
+      mMemDevInfoType17.Size         = 0x7FFF;
+      mMemDevInfoType17.ExtendedSize = (UINT32)InstalledMegabytes;
+    }
+  }
+
+  //
+  // M1 Pro/Max/Ultra, M2, and M2 Pro/Max/Ultra all ship LPDDR5-6400.
+  //
+  ChipId = GetAdtChipId();
+  switch (ChipId) {
+    case 0x6000:
+    case 0x6001:
+    case 0x6002:
+    case 0x8112:
+    case 0x6020:
+    case 0x6021:
+    case 0x6022:
+      mMemDevInfoType17.MemoryType = MemoryTypeLpddr5;
+      mMemDevInfoType17.Speed      = 6400;
+      break;
+    default:
+      break;
+  }
+
+  DEBUG((DEBUG_INFO,
+    "SmbiosInfoDxe: Type17 installed=%lu MB type=%u speed=%u\n",
+    InstalledMegabytes, mMemDevInfoType17.MemoryType,
+    mMemDevInfoType17.Speed));
+
   LogSmbiosData(
       (EFI_SMBIOS_TABLE_HEADER *)&mMemDevInfoType17, mMemDevInfoType17Strings,
       NULL);

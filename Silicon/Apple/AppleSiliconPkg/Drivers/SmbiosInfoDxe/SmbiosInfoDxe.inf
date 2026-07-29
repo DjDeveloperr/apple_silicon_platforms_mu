@@ -13,6 +13,11 @@
   gArmTokenSpaceGuid.PcdSystemMemoryBase
   gArmTokenSpaceGuid.PcdSystemMemorySize
   gAppleSiliconPkgTokenSpaceGuid.PcdCoreCount
+  gAppleSiliconPkgTokenSpaceGuid.PcdBootArgsPointer
+  gAppleSiliconPkgTokenSpaceGuid.PcdSmbiosCpuModel
+  gAppleSiliconPkgTokenSpaceGuid.PcdSmbiosECoreMaxFreqMhz
+  gAppleSiliconPkgTokenSpaceGuid.PcdSmbiosPCoreMaxFreqMhz
+  gAppleSiliconPkgTokenSpaceGuid.PcdSmbiosBootFreqMhz
   
 [Packages]
   ArmPkg/ArmPkg.dec
@@ -33,6 +38,7 @@
   UefiDriverEntryPoint
   BaseMemoryLib
   DebugLib
+  PrintLib
   CompilerIntrinsicsLib
   AppleDTLib
 

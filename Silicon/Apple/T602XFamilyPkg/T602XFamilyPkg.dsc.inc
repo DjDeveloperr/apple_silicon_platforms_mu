@@ -39,6 +39,17 @@
   gAppleSiliconPkgTokenSpaceGuid.PcdInitializeRamdisk|TRUE
   gAppleSiliconPkgTokenSpaceGuid.PcdSmbiosCpuIdentifier|"T602x"
   gAppleSiliconPkgTokenSpaceGuid.PcdSmbiosCpuModel|"Apple M2 Pro/Max/Ultra (Rhodes)"
+  # SMBIOS Type 4 frequencies (MHz) for T602x (M2 Pro/Max/Ultra).
+  # Cluster maximums per Asahi Linux arch/arm64/boot/dts/apple/t602x-common.dtsi:
+  #   blizzard_opp (E) tops out at 2424 MHz; avalanche_opp (P) at 3504 MHz
+  #   (3360/3408/3504 are turbo-mode states). t6020.dtsi adds no overrides.
+  # Boot/current speed per m1n1 src/cpufreq.c t6020_clusters: the P clusters
+  #   are pinned at p-state 6 = 1968 MHz (E at p-state 5 = 2004 MHz) and no
+  #   OS-side DVFS driver exists yet, so 1968 MHz is what the machine
+  #   actually runs at under Windows.
+  gAppleSiliconPkgTokenSpaceGuid.PcdSmbiosECoreMaxFreqMhz|2424
+  gAppleSiliconPkgTokenSpaceGuid.PcdSmbiosPCoreMaxFreqMhz|3504
+  gAppleSiliconPkgTokenSpaceGuid.PcdSmbiosBootFreqMhz|1968
   gAppleSiliconPkgTokenSpaceGuid.PcdSecPhaseStackBase|0x10300000000
   gAppleSiliconPkgTokenSpaceGuid.PcdAppleSartVersion|3
   gAppleSiliconPkgTokenSpaceGuid.PcdXhciPcieDeviceNumber|3
