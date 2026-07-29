@@ -115,10 +115,10 @@ DefinitionBlock ("MTP.aml", "SSDT", 0x02, "Apple", "J414MTP", 0x00000001)
                 // any other pairing, so this order is a contract.
                 //
                 GpioIo (Exclusive, PullNone, 0, 0, IoRestrictionOutputOnly,
-                    "\_SB.SMCG", 0, ResourceConsumer)
+                    "\\_SB.SMCG", 0, ResourceConsumer)
                 { 25 }
                 GpioIo (Exclusive, PullNone, 0, 0, IoRestrictionOutputOnly,
-                    "\_SB.SMCG", 0, ResourceConsumer)
+                    "\\_SB.SMCG", 0, ResourceConsumer)
                 { 26 }
             })
 
