@@ -3,6 +3,22 @@
   "ans_mmio_gate": {
     "enabled": false
   },
+  "appended_ramdisk": {
+    "allocation": "cacheable EFI_RESOURCE_SYSTEM_MEMORY plus EfiReservedMemoryType allocation HOB",
+    "dxe_location": "versioned GUID HOB published from relocated PEI PCD instance",
+    "dxe_source_sha256": "5c580ebc957610477aa9f08289f211b08ba162a86097c43d91077b0dee3b09c9",
+    "enabled": true,
+    "header_size": 4096,
+    "header_source_sha256": "cc7d97bb8f76b8e277f792384e5f271714936d73a67ef3e4299ab6f316277c26",
+    "maximum_image_size": "0x40000000",
+    "placement": "PEI-published versioned location HOB",
+    "registration_type": "gEfiVirtualDiskGuid",
+    "virtual_memory_descriptors": {
+      "capacity": 44,
+      "spare": 2,
+      "used": 42
+    }
+  },
   "driver_commit": "7799fcc",
   "fadt_oem_id": {
     "ascii": "Apple",
