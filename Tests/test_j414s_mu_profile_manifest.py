@@ -107,6 +107,17 @@ class ContractShapeTests(unittest.TestCase):
                 manifest["profile"]["experimental_features"]["wifi_profile_available"],
                 enabled,
             )
+            self.assertEqual(
+                manifest["profile"]["baseline_capabilities"]["xhc2_right_usb_c"],
+                {
+                    "acpi_uid": 2,
+                    "gsiv": 39,
+                    "typec_policy_owner": "m1n1_non_proxy_source_dfp_v1",
+                    "usb2_host_phy": True,
+                    "superspeed": False,
+                    "live_validated": False,
+                },
+            )
         self.assertEqual(len(abis), len(M.PROFILES))
 
     def test_unknown_field_is_rejected(self):
@@ -211,6 +222,11 @@ class FileAndTreeTests(unittest.TestCase):
 
 
 class EvidenceParserTests(unittest.TestCase):
+    def test_wireless_builder_invokes_authoritative_m1n1_verifier(self):
+        wrapper = (REPO / "Tools/build-j414s-windows-profile.sh").read_text()
+        self.assertIn("j414s-wireless-handoff-manifest.py", wrapper)
+        self.assertIn("verify --manifest \"$wireless_manifest\"", wrapper)
+
     def test_build_evidence_parsers_fail_closed(self):
         log = "Edk2 build parameters are -D NTASI_ENABLE_ANS=FALSE -D NTASI_ENABLE_WIRELESS_DART_HANDOFF=0\n"
         self.assertEqual(M.parse_defines(log)["NTASI_ENABLE_ANS"], "FALSE")

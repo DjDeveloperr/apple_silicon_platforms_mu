@@ -13,6 +13,7 @@ import struct
 import subprocess
 import sys
 import tempfile
+import zlib
 from pathlib import Path
 from typing import Any
 
@@ -21,6 +22,14 @@ SCHEMA = "ntasi.j414s.mu-profile.v2"
 BRANCH = "feature/j414s-windows-unified"
 PLATFORM_BUILD = "MacBookProEarly2023-AARCH64/DEBUG_CLANGPDB"
 FD_NAME = "MACBOOKPROEARLY2023_EFI.fd"
+WIRELESS_DESCRIPTOR_FORMAT = "<IHHIHHQQQQQQQQIIII"
+WIRELESS_DESCRIPTOR_FIELDS = (
+    "signature", "version", "structure_size", "flags", "sid",
+    "page_shift", "reservation_base", "reservation_size",
+    "guest_memory_top", "physical_memory_top", "dart_base", "l1_physical",
+    "msi_l2_physical", "descriptor_physical", "l1_crc32", "msi_l2_crc32",
+    "descriptor_crc32", "reserved",
+)
 PROFILES = {
     "baseline": {
         "profile_abi": "ntasi.j414s.windows.baseline.v1",
@@ -393,6 +402,14 @@ def profile_policy(profile: str) -> dict[str, Any]:
             "mu_dcp_firmware_driver": False,
             "ramdisk_gpt_fat": True,
             "apple_silicon_pci_platform_dxe": False,
+            "xhc2_right_usb_c": {
+                "acpi_uid": 2,
+                "gsiv": 39,
+                "typec_policy_owner": "m1n1_non_proxy_source_dfp_v1",
+                "usb2_host_phy": True,
+                "superspeed": False,
+                "live_validated": False,
+            },
         },
         "experimental_features": {
             "ans_publication": selected["ans"],
@@ -456,6 +473,53 @@ def wireless_handoff_record(output_root: Path, profile: str) -> dict[str, Any] |
             not re.fullmatch(r"[0-9a-f]{40}", m1n1.get("source_commit", "")) or
             not re.fullmatch(r"[0-9a-f]{64}", m1n1.get("manifest_sha256", ""))):
         raise ManifestError("wireless handoff evidence layout/provenance mismatch")
+    m1n1_path = Path(m1n1.get("manifest_path", ""))
+    capture_path = Path(reservation.get("capture_path", ""))
+    if (not m1n1_path.is_absolute() or not m1n1_path.is_file() or
+            not capture_path.is_absolute() or not capture_path.is_file() or
+            sha256(m1n1_path) != m1n1["manifest_sha256"] or
+            capture_path.stat().st_size != size or
+            reservation.get("capture_size") != size or
+            sha256(capture_path) != reservation.get("capture_sha256")):
+        raise ManifestError("wireless handoff source evidence is missing or changed")
+    m1n1_manifest = json.loads(m1n1_path.read_text(encoding="utf-8"))
+    m1n1_profile = m1n1_manifest.get("profile", {})
+    if (m1n1_manifest.get("schema") != "ntasi.j414s.m1n1-unified.v1" or
+            m1n1_profile.get("authoritative_wireless_contract") !=
+                "dynamic_reserved_wireless_handoff_v2" or
+            m1n1_profile.get("bcm4388_descriptor_transaction") !=
+                "legacy_reference_fixed_layout_no_current_abi_no_call_site" or
+            m1n1_manifest.get("source", {}).get("commit") !=
+                m1n1.get("source_commit") or
+            m1n1_manifest.get("files", {}).get("m1n1.macho", {}).get("sha256") !=
+                m1n1.get("macho_sha256")):
+        raise ManifestError("wireless handoff m1n1 provenance/policy mismatch")
+    capture = capture_path.read_bytes()
+    descriptor_size = struct.calcsize(WIRELESS_DESCRIPTOR_FORMAT)
+    unpacked = struct.unpack_from(WIRELESS_DESCRIPTOR_FORMAT, capture, 0xc000)
+    captured_descriptor = dict(zip(WIRELESS_DESCRIPTOR_FIELDS, unpacked, strict=True))
+    expected_identity = {
+        "signature": 0x3248574e, "version": 2,
+        "structure_size": descriptor_size, "flags": 1, "sid": 1,
+        "page_shift": 14, "reservation_base": base,
+        "reservation_size": size, "dart_base": 0x594000000,
+        "l1_physical": base, "msi_l2_physical": base + 0x4000,
+        "descriptor_physical": base + 0xc000, "reserved": 0,
+    }
+    raw_descriptor = bytearray(capture[0xc000:0xc000 + descriptor_size])
+    struct.pack_into("<I", raw_descriptor, descriptor_size - 8, 0)
+    expected_crcs = {
+        "l1_crc32": zlib.crc32(capture[:0x4000]) & 0xffffffff,
+        "msi_l2_crc32": zlib.crc32(capture[0x4000:0x8000]) & 0xffffffff,
+        "descriptor_crc32": zlib.crc32(raw_descriptor) & 0xffffffff,
+    }
+    if (any(captured_descriptor.get(name) != value
+            for name, value in {**expected_identity, **expected_crcs}.items()) or
+            captured_descriptor != descriptor or
+            captured_descriptor["guest_memory_top"] + 0x4000 > base or
+            captured_descriptor["physical_memory_top"] < base + size or
+            any(expected_crcs[name] == 0 for name in expected_crcs)):
+        raise ManifestError("wireless handoff capture descriptor/CRC mismatch")
     return {
         "manifest": file_record(path, output_root),
         "schema": evidence["schema"],

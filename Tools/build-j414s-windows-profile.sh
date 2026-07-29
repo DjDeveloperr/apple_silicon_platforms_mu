@@ -63,6 +63,13 @@ fi
 trap 'rmdir "$lock_dir" 2>/dev/null || true' EXIT HUP INT TERM
 mkdir -p "$build_dir" "$conf_dir" "$artifact_dir"
 if test "$profile" = wireless; then
+    m1n1_root=${NTASI_M1N1_ROOT:-/Users/dj/Developer/m1n1}
+    m1n1_verifier=$m1n1_root/tools/j414s-wireless-handoff-manifest.py
+    test -f "$m1n1_verifier" || {
+        echo "error: authoritative m1n1 wireless manifest verifier is missing" >&2
+        exit 1
+    }
+    python3 "$m1n1_verifier" verify --manifest "$wireless_manifest"
     cp "$wireless_manifest" "$output_dir/wireless-handoff.json"
     wireless_manifest=$output_dir/wireless-handoff.json
 else
