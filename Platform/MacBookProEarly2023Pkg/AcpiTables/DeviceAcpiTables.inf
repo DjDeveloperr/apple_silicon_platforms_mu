@@ -23,6 +23,8 @@
   FADT.aslc
   #MCFG.aslc
   DSDT.asl
+  MTP.asl
+  SMCG.asl
 
 [Packages]
   ArmPkg/ArmPkg.dec
