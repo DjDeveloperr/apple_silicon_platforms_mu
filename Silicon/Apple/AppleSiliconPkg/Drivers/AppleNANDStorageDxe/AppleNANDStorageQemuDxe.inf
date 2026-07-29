@@ -35,6 +35,7 @@
   AppleSiliconPkg/AppleSiliconPkg.dec
 
 [LibraryClasses]
+  PcdLib
   ArmLib
   BaseLib
   BaseMemoryLib
@@ -52,6 +53,9 @@
 
 [Guids]
   gEfiEventExitBootServicesGuid
+
+[Pcd]
+  gAppleSiliconPkgTokenSpaceGuid.PcdAppleAnsPublishBlockIo    ## CONSUMES
 
 [Depex]
   TRUE
