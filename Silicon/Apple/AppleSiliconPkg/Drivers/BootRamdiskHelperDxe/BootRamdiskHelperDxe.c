@@ -31,7 +31,7 @@ PrioritizeRamdiskBoot (
 
   FileDevicePathOnly = FileDevicePath (
                          NULL,
-                         L"\\EFI\\BOOT\\BOOTAA64.EFI"
+                         L"\\EFI\\Microsoft\\Boot\\bootmgfw.efi"
                          );
   if (FileDevicePathOnly == NULL) {
     return EFI_OUT_OF_RESOURCES;
