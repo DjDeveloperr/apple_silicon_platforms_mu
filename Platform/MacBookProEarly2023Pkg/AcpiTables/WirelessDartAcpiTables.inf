@@ -15,3 +15,8 @@
 
 [Packages]
   MdePkg/MdePkg.dec
+  AppleSiliconPkg/AppleSiliconPkg.dec
+
+[FixedPcd]
+  gAppleSiliconPkgTokenSpaceGuid.PcdAppleWirelessDartPageTableBase
+  gAppleSiliconPkgTokenSpaceGuid.PcdAppleWirelessDartPageTableSize
