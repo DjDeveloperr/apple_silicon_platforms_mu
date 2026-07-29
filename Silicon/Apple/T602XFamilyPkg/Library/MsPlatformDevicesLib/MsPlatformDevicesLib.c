@@ -87,7 +87,23 @@ PlatformIsDevicePathUsb (
   IN EFI_DEVICE_PATH_PROTOCOL  *DevicePath
   )
 {
-  return TRUE;
+  EFI_DEVICE_PATH_PROTOCOL  *Node;
+
+  if (DevicePath == NULL) {
+    return FALSE;
+  }
+
+  for (Node = DevicePath; !IsDevicePathEnd (Node); Node = NextDevicePathNode (Node)) {
+    if ((DevicePathType (Node) == MESSAGING_DEVICE_PATH) &&
+        ((DevicePathSubType (Node) == MSG_USB_CLASS_DP) ||
+         (DevicePathSubType (Node) == MSG_USB_WWID_DP) ||
+         (DevicePathSubType (Node) == MSG_USB_DP)))
+    {
+      return TRUE;
+    }
+  }
+
+  return FALSE;
 }
 
 /**
