@@ -29,10 +29,10 @@
   },
   "appended_ramdisk": {
     "allocation": "in-place EFI_RESOURCE_MEMORY_RESERVED when inside advertised RAM",
-    "dxe_source_sha256": "0a8d03ac02d903463cb52d0e47e63cc8e7131b17028ddd249e6f4520d8eb82e5",
+    "dxe_source_sha256": "145874c6ccf1ac83d846ab25b501c57eb3ce4113aac319110de1e7e1efd1f50e",
     "enabled": true,
     "header_size": 32,
-    "header_source_sha256": "b8a769d15d52e45fd38dad26355978287e3282c4b479f0621ef8bd4a478b0937",
+    "header_source_sha256": "2baff0ac962373956072af0b47d7129bfc829751a551f54927394577a0467344",
     "maximum_image_size": "0x40000000",
     "placement": "PcdFdBaseAddress + PcdFdSize",
     "registration_type": "gEfiVirtualDiskGuid",

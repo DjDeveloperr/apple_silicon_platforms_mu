@@ -7,6 +7,7 @@
 #include <PiDxe.h>
 
 #include "BootRamdiskHelperDxe.h"
+#define NTASI_APPENDED_RAMDISK_INCLUDE_FAT_VALIDATOR  1
 #include <AppendedRamdisk.h>
 
 STATIC

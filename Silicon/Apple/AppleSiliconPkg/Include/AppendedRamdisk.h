@@ -29,7 +29,6 @@ STATIC_ASSERT (
   );
 
 STATIC
-INLINE
 UINT32
 NtasiAppendedRamdiskCrc32 (
   IN CONST VOID  *Buffer,
@@ -62,7 +61,6 @@ NtasiAppendedRamdiskCrc32 (
   corrupted explicit payload, never an invitation to use unrelated memory.
 **/
 STATIC
-INLINE
 BOOLEAN
 NtasiValidateAppendedRamdisk (
   IN  CONST NTASI_APPENDED_RAMDISK_HEADER  *Header,
@@ -123,8 +121,8 @@ NtasiValidateAppendedRamdisk (
   return TRUE;
 }
 
+#ifdef NTASI_APPENDED_RAMDISK_INCLUDE_FAT_VALIDATOR
 STATIC
-INLINE
 BOOLEAN
 NtasiValidateFatBootSector (
   IN CONST VOID  *Image,
@@ -165,5 +163,6 @@ NtasiValidateFatBootSector (
          (TotalSectors != 0) &&
          (((UINT64)TotalSectors * BytesPerSector) == ImageSize);
 }
+#endif
 
 #endif
