@@ -1,9 +1,12 @@
 # Continuation of [FV.FvMain]
-  #INF MsGraphicsPkg/GopOverrideDxe/GopOverrideDxe.inf
+  # GopOverride + RenderingEngine are what let SimpleWindowManagerDxe come up;
+  # without them every MsGraphics UI consumer (SWM, DisplayEngine, OSK,
+  # FrontPage, BootMenu, HwhMenu) is packaged but inert.
+  INF MsGraphicsPkg/GopOverrideDxe/GopOverrideDxe.inf
   INF DfciPkg/AuthManagerNull/AuthManagerNull.inf #change when non-volatile storage is ready
   INF DfciPkg/SettingsManager/SettingsManagerDxe.inf
   INF MsGraphicsPkg/MsUiTheme/Dxe/MsUiThemeProtocol.inf
-  #INF MsGraphicsPkg/RenderingEngineDxe/RenderingEngineDxe.inf
+  INF MsGraphicsPkg/RenderingEngineDxe/RenderingEngineDxe.inf
   INF MsGraphicsPkg/DisplayEngineDxe/DisplayEngineDxe.inf
   INF OemPkg/BootMenu/BootMenu.inf
   INF OemPkg/FrontPage/FrontPage.inf

@@ -414,11 +414,26 @@ MsBootOptionsLibRegisterDefaultBootOptions (
   VOID
   )
 {
+  //
+  // Order is the contract.  The variable store is volatile (EmuVariable), so
+  // this exact sequence is rebuilt on every boot:
+  //   1. USB Storage      - the deploy stick (Windows loader), USB nodes only
+  //                         now that PlatformIsDevicePathUsb() checks paths.
+  //   2. Internal Storage - the ANS SSD, when PcdAppleAnsPublishBlockIo lets
+  //                         the DXE publish Block I/O.
+  //   3. PXE Network
+  //   4. FrontPage        - terminal fallback: a rendered, answerable UI
+  //                         instead of DeviceBootManagerUnableToBoot()'s
+  //                         warm-reset loop (OsIndications cannot survive a
+  //                         reset on this RAM-loaded firmware).
+  //   5. Shell            - never reached implicitly; exists so the Boot
+  //                         Menu can offer it deliberately.
+  //
   RegisterFvBootOption (&gMsBootPolicyFileGuid, MS_USB_BOOT, (UINTN)-1, LOAD_OPTION_ACTIVE, (UINT8 *)MS_USB_BOOT_PARM, sizeof (MS_USB_BOOT_PARM));
   RegisterFvBootOption (&gMsBootPolicyFileGuid, MS_SDD_BOOT, (UINTN)-1, LOAD_OPTION_ACTIVE, (UINT8 *)MS_SDD_BOOT_PARM, sizeof (MS_SDD_BOOT_PARM));
-  //RegisterFvBootOption (PcdGetPtr (PcdShellFile), INTERNAL_UEFI_SHELL_NAME, (UINTN)-1, LOAD_OPTION_ACTIVE, NULL, 0);
   RegisterFvBootOption (&gMsBootPolicyFileGuid, MS_PXE_BOOT, (UINTN)-1, LOAD_OPTION_ACTIVE, (UINT8 *)MS_PXE_BOOT_PARM, sizeof (MS_PXE_BOOT_PARM));
-  //RegisterFvBootOption (PcdGetPtr (PcdUIApplicationFile), INTERNAL_UEFI_FP_NAME, (UINTN)-1, LOAD_OPTION_ACTIVE, NULL, 0);
+  RegisterFvBootOption (PcdGetPtr (PcdUIApplicationFile), INTERNAL_UEFI_FP_NAME, (UINTN)-1, LOAD_OPTION_ACTIVE, NULL, 0);
+  RegisterFvBootOption (PcdGetPtr (PcdShellFile), INTERNAL_UEFI_SHELL_NAME, (UINTN)-1, LOAD_OPTION_ACTIVE, NULL, 0);
 }
 
 /**

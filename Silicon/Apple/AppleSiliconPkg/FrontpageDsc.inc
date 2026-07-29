@@ -256,11 +256,17 @@
   #
   # Produces EfiGraphicsOutputProtocol to draw graphics to the screen.
   #
-  #MsGraphicsPkg/RenderingEngineDxe/RenderingEngineDxe.inf
+  # Required: SimpleWindowManagerDxe defers its own protocol install until it
+  # can locate gMsSREProtocolGuid (WindowManager.c GopRegisteredCallback), so
+  # without the Rendering Engine SWM never publishes, DisplayEngineDxe's depex
+  # never satisfies ("Driver ... was discovered but not loaded!!"), OSK logs
+  # "Failed to find Simple Window Manager protocol", and FrontPage/BootMenu/
+  # HwhMenu are dead weight in the FV.  Measured on J414s 2026-07-29.
+  MsGraphicsPkg/RenderingEngineDxe/RenderingEngineDxe.inf
   #
   # Finds and takes ownership of gEfiGraphicsOutputProtocolGuid so RenderingEngine can use it.
   #
-  #MsGraphicsPkg/GopOverrideDxe/GopOverrideDxe.inf
+  MsGraphicsPkg/GopOverrideDxe/GopOverrideDxe.inf
   #
   # Driver for On Screen Keyboard.
   #
