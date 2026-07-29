@@ -1,0 +1,25 @@
+{
+  "aic": "AIC2",
+  "ans_mmio_gate": {
+    "enabled": false
+  },
+  "driver_commit": "7799fcc",
+  "fadt_oem_id": {
+    "ascii": "Apple",
+    "hex": "4170706c6500",
+    "temporary_windows_carrier_spoof": false
+  },
+  "mu_base_commit": "cd581a5e9cdec4f14f0249816fab2c9608ab6288",
+  "pcie": {
+    "enabled": true,
+    "physical_launch_authorized": false,
+    "source_already_enabled": true
+  },
+  "pcie_already_enabled_in_source": true,
+  "purpose": "isolated-wireless-dart-profile",
+  "soc": "T6020",
+  "wireless_dart_carveout": {
+    "base": "0x10022000000",
+    "size": "0x10000"
+  }
+}

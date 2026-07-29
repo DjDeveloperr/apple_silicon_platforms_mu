@@ -33,7 +33,7 @@ class CommonPlatform():
     PackagesSupported = ("MacBookProEarly2023Pkg",)
     ArchSupported = ("AARCH64",)
     TargetsSupported = ("DEBUG", "RELEASE", "NOOPT")
-    Scopes = ('MacBookProEarly2023', 'gcc_aarch64_linux', 'edk2-build', 'cibuild')
+    Scopes = ('MacBookProEarly2023', 'gcc_aarch64_linux')
     WorkspaceRoot = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
     PackagesPath = ("Platform", "MU_BASECORE", "Common/MU", "Common/TIANO", "Common/MU_OEM_SAMPLE", "Silicon/ARM/TIANO", "Silicon/Apple", "Common/MU_DFCI", "mu_feature_debugger")
 
