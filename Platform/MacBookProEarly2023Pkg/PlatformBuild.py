@@ -208,7 +208,7 @@ class PlatformBuilder( UefiBuilder, BuildSettingsManager):
         )
         self.env.SetValue(
             "BLD_*_NTASI_ENABLE_WIRELESS_DART_HANDOFF",
-            "FALSE",
+            "0",
             "Unified baseline does not assume an m1n1 wireless DART handoff",
         )
 

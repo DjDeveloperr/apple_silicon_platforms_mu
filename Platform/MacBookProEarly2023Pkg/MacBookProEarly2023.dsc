@@ -17,8 +17,8 @@
 
 [Defines]
   PLATFORM_NAME                  = MacBookProEarly2023
-  DEFINE NTASI_ENABLE_WIRELESS_DART_HANDOFF = FALSE
-  DEFINE NTASI_J414S_GPU_RESOURCE_PROFILE = FALSE
+  DEFINE NTASI_ENABLE_WIRELESS_DART_HANDOFF = 0
+  DEFINE NTASI_J414S_GPU_RESOURCE_PROFILE = 0
   PLATFORM_GUID                  = d70b31ca-2cbc-433b-885f-b8bbda409959
   PLATFORM_VERSION               = 1.0
   DSC_SPECIFICATION              = 0x00010005
@@ -63,7 +63,7 @@
   gAppleSiliconPkgTokenSpaceGuid.PcdAppleAnsPmgrApcieSt1SysBase|0x28E080410
   # Exact m1n1 wireless_handoff_init() carveout. Mu only reserves and
   # publishes it; it never creates or modifies the DART tables.
-!if $(NTASI_ENABLE_WIRELESS_DART_HANDOFF) == TRUE
+!if $(NTASI_ENABLE_WIRELESS_DART_HANDOFF) == 1
   gAppleSiliconPkgTokenSpaceGuid.PcdAppleWirelessDartPageTableBase|0x10022000000
   gAppleSiliconPkgTokenSpaceGuid.PcdAppleWirelessDartPageTableSize|0x10000
 !else
@@ -74,10 +74,10 @@
 [Components.common]
 
   MacBookProEarly2023Pkg/AcpiTables/DeviceAcpiTables.inf
-!if $(NTASI_ENABLE_WIRELESS_DART_HANDOFF) == TRUE
+!if $(NTASI_ENABLE_WIRELESS_DART_HANDOFF) == 1
   MacBookProEarly2023Pkg/AcpiTables/WirelessDartAcpiTables.inf
 !endif
-!if $(NTASI_J414S_GPU_RESOURCE_PROFILE) == TRUE
+!if $(NTASI_J414S_GPU_RESOURCE_PROFILE) == 1
   MacBookProEarly2023Pkg/AcpiTables/GpuAcpiTables.inf
 !endif
 
