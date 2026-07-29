@@ -1,8 +1,35 @@
 {
   "aic": "AIC2",
-  "csrt_fixture_sha256": "c124eb06f3bddd1277319407fa37d21d79897433fcd2a27e7cda22cc07d9a9d4",
-  "csrt_source_sha256": "d57c133487da5f68fd1aaff5863bee977926805a7e570f1457a619a3bcd5b3d9",
-  "driver_commit": "5cb4158a6f703ca76f1549ddf5969339b58f59db",
+  "ans_mmio_gate": {
+    "ans_dxe_enabled": true,
+    "apertures": {
+      "ans-asc-and-mailbox": {
+        "covered_by": "APPLE_CORE_SYSTEM_MMIO_RANGE_17",
+        "span": [
+          "0x347400000",
+          "0x34740C000"
+        ]
+      },
+      "ans-nvme": {
+        "covered_by": "APPLE_CORE_SYSTEM_MMIO_RANGE_17",
+        "span": [
+          "0x34BCC0000",
+          "0x34BD00000"
+        ]
+      },
+      "ans-sart": {
+        "covered_by": "APPLE_CORE_SYSTEM_MMIO_RANGE_17",
+        "span": [
+          "0x34BC50000",
+          "0x34BC60000"
+        ]
+      }
+    },
+    "missing": []
+  },
+  "csrt_fixture_sha256": "cdee0da81d9c54c17d2964510271de453ae2ff0428fe0ff13e69efa9406521a5",
+  "csrt_source_sha256": "c26831a8641070fdd2a1141ea54831a3694064e27f1f3b6de676c9dbaf7879ce",
+  "driver_commit": "ec695ec8481b8b4eede9a77502bb0e15535db778",
   "fadt_oem_id": {
     "ascii": "Apple",
     "hex": "4170706c6500",
@@ -19,8 +46,70 @@
       "nasm"
     ]
   },
-  "mu_base_commit": "bfe3e9d24e983b57749a3159acba077ef4f79f07",
+  "mtp_input": {
+    "crs": {
+      "interrupt": {
+        "gsiv": 677,
+        "polarity": "active-high",
+        "trigger": "level"
+      },
+      "memory": [
+        {
+          "base": "0x2a9b14000",
+          "length": "0x1000",
+          "role": "dockchannel-parent-irq"
+        },
+        {
+          "base": "0x2a9b30000",
+          "length": "0x1000",
+          "role": "dockchannel-remote-config"
+        },
+        {
+          "base": "0x2a9b34000",
+          "length": "0x1000",
+          "role": "dockchannel-remote-data"
+        },
+        {
+          "base": "0x1800000",
+          "length": "0x100000",
+          "role": "multitouch-firmware-staging",
+          "translation": "0x1001e800000"
+        }
+      ]
+    },
+    "enabled": true,
+    "firmware_staging": {
+      "bus_address": "0x1800000",
+      "hazard": "the staging window sits inside m1n1's proxy scratch heap; a session that allocates more than 299.9 MiB from it would overwrite the staged multitouch firmware and the preboot RTKit buffer pool",
+      "physical_base": "0x10020000000",
+      "reservation_effective_only_if": "guest RAM base <= 0x10020000000; with the current 768 MiB proxy scratch heap the guest base is 0x1003D41C000, so this call is inert",
+      "reserved_by": "T602XFamilyPkg MemoryInitPeiLib ReserveMemoryRegion",
+      "rtkit_pool_base": "0x10020100000",
+      "rtkit_pool_size": "0x100000",
+      "size": "0x200000",
+      "staging_size": "0x100000"
+    },
+    "hardware_id": "ACPI\\NTAS0050",
+    "platform": "J414s/T6020",
+    "preboot": {
+      "afe_reset_gpio": 25,
+      "asc_base": "0x2a9400000",
+      "dart_base": "0x2a9808000",
+      "dart_fault_gsiv": 676,
+      "dart_stream_id": 1,
+      "firmware": "apple/tpmtfw-j414s.bin",
+      "owner": "m1n1",
+      "stm_reset_gpio": 26
+    },
+    "source_sha256": "a3ff87f1f5b9fe938ee47832ed9daf3bcd2ed77b6ed625b7034f81640b790af7"
+  },
+  "mtp_trackpad": {
+    "enabled": false
+  },
+  "mu_base_commit": "93c8b4cd271aeae23189cfda7fa16b2f307b0e34",
   "platform": "MacBookProEarly2023Pkg",
   "schema_version": 1,
-  "soc": "T6020"
+  "soc": "T6020",
+  "source_mode": "materialized-submodules",
+  "stuart_submodule_fetch_bypassed_in_disposable_output": true
 }
