@@ -129,7 +129,19 @@
     "enabled": true,
     "requires_driver": "AppleSmcGpio (ACPI\\NTAS0052)"
   },
-  "mu_base_commit": "083c739eee1e078d445af396e6bfa7c26e220127",
+  "pcie": {
+    "enabled": true,
+    "endpoint_policy": "J414s APCIE port 0 only; exact BCM4388 Wi-Fi and Bluetooth functions",
+    "mcfg_base": "0x580000000",
+    "wireless_dart": {
+      "carveout_base": "0x10022000000",
+      "carveout_size": "0x10000",
+      "hardware_id": "ACPI\\NTAS0011",
+      "physical_base": "0x594000000",
+      "stream_id": 1
+    }
+  },
+  "mu_base_commit": "030a5174c3f8a7b56fcfacee0353fbe6588c64ee",
   "platform": "MacBookProEarly2023Pkg",
   "schema_version": 1,
   "soc": "T6020",

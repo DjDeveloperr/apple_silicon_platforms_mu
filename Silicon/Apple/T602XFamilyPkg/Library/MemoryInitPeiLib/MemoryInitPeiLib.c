@@ -367,6 +367,42 @@ EFI_STATUS EFIAPI MemoryPeim(IN EFI_PHYSICAL_ADDRESS UefiMemoryBase, IN UINT64 U
     DEBUG ((DEBUG_INFO, "MemoryInitPeiLib: mapped appended ramdisk and published location HOB at 0x%lx (0x%lx bytes)\n", FdTop, mAppendedRamdiskReservationSize));
   }
 
+  // Preserve the SID-1 DART tables installed by m1n1's J414s wireless
+  // handoff.  Keep the range cacheable and CPU-readable so AppleDart can
+  // validate it, while the allocation HOB prevents DXE/OS reuse.
+  {
+    EFI_PHYSICAL_ADDRESS  WirelessDartBase;
+    UINT32                WirelessDartSize;
+
+    WirelessDartBase = PcdGet64 (PcdAppleWirelessDartPageTableBase);
+    WirelessDartSize = PcdGet32 (PcdAppleWirelessDartPageTableSize);
+    if ((WirelessDartBase == 0) != (WirelessDartSize == 0)) {
+      DEBUG ((DEBUG_ERROR, "MemoryInitPeiLib: incomplete wireless DART reservation 0x%lx/+0x%x\n", WirelessDartBase, WirelessDartSize));
+      return EFI_INVALID_PARAMETER;
+    }
+    if (WirelessDartBase != 0) {
+      if (((WirelessDartBase | WirelessDartSize) & 0x3fff) != 0 ||
+          (WirelessDartSize < 0xc000) ||
+          (WirelessDartBase < PcdGet64 (PcdSystemMemoryBase)) ||
+          (WirelessDartBase > MAX_UINT64 - WirelessDartSize) ||
+          (WirelessDartBase + WirelessDartSize > SystemMemoryTop))
+      {
+        DEBUG ((DEBUG_ERROR, "MemoryInitPeiLib: invalid wireless DART reservation 0x%lx/+0x%x\n", WirelessDartBase, WirelessDartSize));
+        return EFI_INVALID_PARAMETER;
+      }
+      if (!ReserveAllocatedSystemMemoryRegion (
+             WirelessDartBase,
+             WirelessDartSize,
+             ResourceAttributes
+             ))
+      {
+        DEBUG ((DEBUG_ERROR, "MemoryInitPeiLib: cannot reserve wireless DART tables\n"));
+        return EFI_OUT_OF_RESOURCES;
+      }
+      DEBUG ((DEBUG_INFO, "MemoryInitPeiLib: reserved wireless DART tables at 0x%lx (0x%x bytes)\n", WirelessDartBase, WirelessDartSize));
+    }
+  }
+
   //reserve secondary stacks carveouts passed into cpm-impl-reg 
   for(int i = 0; i < PcdGet32(PcdCoreCount); i++){
     CHAR8 CpuNodeName[14];

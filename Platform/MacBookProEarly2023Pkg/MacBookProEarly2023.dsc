@@ -52,6 +52,10 @@
   # Windows consumes GSIV 38; the AIC2 CSRT translates it to T6020 line 1832.
   gAppleSiliconPkgTokenSpaceGuid.PcdAppleAnsPublishedInterrupt|38
   gAppleSiliconPkgTokenSpaceGuid.PcdAppleAnsExpectedPhysicalInterrupt|1832
+  # Exact m1n1 wireless_handoff_init() carveout. Mu only reserves and
+  # publishes it; it never creates or modifies the DART tables.
+  gAppleSiliconPkgTokenSpaceGuid.PcdAppleWirelessDartPageTableBase|0x10022000000
+  gAppleSiliconPkgTokenSpaceGuid.PcdAppleWirelessDartPageTableSize|0x10000
 
 [Components.common]
 

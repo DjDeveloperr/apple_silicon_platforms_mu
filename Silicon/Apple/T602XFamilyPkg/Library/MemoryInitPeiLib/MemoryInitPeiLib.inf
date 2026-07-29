@@ -64,6 +64,8 @@
   gAppleSiliconPkgTokenSpaceGuid.PcdFrameBufferAddress
   gAppleSiliconPkgTokenSpaceGuid.PcdFrameBufferSize
   gAppleSiliconPkgTokenSpaceGuid.PcdCoreCount
+  gAppleSiliconPkgTokenSpaceGuid.PcdAppleWirelessDartPageTableBase
+  gAppleSiliconPkgTokenSpaceGuid.PcdAppleWirelessDartPageTableSize
 
 [Depex]
   TRUE
