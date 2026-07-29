@@ -81,14 +81,20 @@
 
   #variable size
   gEfiMdeModulePkgTokenSpaceGuid.PcdMaxVariableSize|0x2000
-  # Zero, not 3.  A non-zero timeout makes BDS wait for a keypress, and that
-  # wait is what connects ConIn -- "Connect ConIn in first ReadKeyStoke in
-  # Lazy ConIn mode".  On J414s that connect reaches an AbsPtr handle and
-  # hangs inside ConSplitterDxe+0x3fb8, measured 2026-07-29 on the
-  # ANS-enabled image, which stalls before Windows ever starts.  The
-  # non-ANS image boots fast enough never to reach the wait, which is why
-  # only ANS images showed it.  Nothing can answer the prompt anyway: Mu
-  # does not drive the internal MTP keyboard.
+  # Zero: with PcdConInConnectOnDemand, BdsWait's BdsReadKeys() returns
+  # immediately (MU_BASECORE BdsEntry.c:294) and no hotkeys are registered,
+  # so a non-zero timeout is a pure fixed delay; it neither reads keys nor
+  # connects ConIn.  The 2026-07-29 stall this value was first changed for
+  # was NOT in BdsWait: the hang session (mu-secondary-uart.log lines
+  # ~1002710-1004470) shows BdsWait(3)->(1) completing with no ConIn
+  # activity; the first-ever ReadKeyStroke -- and the lazy ConIn connect --
+  # came from Fedora GRUB, launched off the ANS-published internal SSD's
+  # ESP by the then-unfiltered "USB Storage" option.  ConSplitterDxe+0x3fb8
+  # is inside ConSplitterTextInReadKeyStrokeEx (build map 0x3e0c-0x4030),
+  # i.e. GRUB polling forever for a key that no ConIn device could deliver,
+  # not a wedged AbsPtr connect.  Keep 0 as the headless-safe bound; the
+  # deliberate way into the firmware UI is the FrontPage boot option (last
+  # in BootOrder) or a menu-first build.
   gEfiMdePkgTokenSpaceGuid.PcdPlatformBootTimeOut|0
   gEfiMdePkgTokenSpaceGuid.PcdUartDefaultBaudRate|115200
   #
