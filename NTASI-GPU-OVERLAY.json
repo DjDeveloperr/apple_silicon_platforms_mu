@@ -1,0 +1,38 @@
+{
+  "gpu_gsiv_alias": {
+    "physical": 1146,
+    "published": 40
+  },
+  "hardware_id": "ACPI\\NTAS0023",
+  "hardware_touched": false,
+  "lineage": {
+    "ancestor": "030a5174c3f8a7b56fcfacee0353fbe6588c64ee"
+  },
+  "manifest_sha256": "e2417e4ce6c653ac3ac354632fc0e37d50aaf6ed9906ebaf8d6f454d0c8cf9f2",
+  "outputs": {
+    "Platform/MacBookProEarly2023Pkg/AcpiTables/DeviceAcpiTables.inf": "67f05f9e4d9ce6ab2ca314c3ec118d6191c7931a06422d65d249c20dab0cc793",
+    "Platform/MacBookProEarly2023Pkg/AcpiTables/GPU-HANDOFF.json": "e2417e4ce6c653ac3ac354632fc0e37d50aaf6ed9906ebaf8d6f454d0c8cf9f2",
+    "Platform/MacBookProEarly2023Pkg/AcpiTables/GPU.asl": "d7e53e355aa5af48cfb662d9cd3d173486355fc839f96373f4f50470164b4970",
+    "Platform/MacBookProEarly2023Pkg/MacBookProEarly2023.dsc": "08b6d252027e050a164133682c6fb50c1b864175bd5bfcf983ad7beb4dd4aabe",
+    "Silicon/Apple/T602XFamilyPkg/AcpiTables/CSRT.aslc": "b973c19891a03c20a1faac16fb5f0dceea6124e4ffa59b5cb10e35d3730a6ebf",
+    "Silicon/Apple/T602XFamilyPkg/Library/MemoryInitPeiLib/MemoryInitPeiLib.c": "b4e567be6322be6647f4f928fc1c2fae17fd5b8b401bdf53eaf3a19efe14a201"
+  },
+  "profile": {
+    "aic_dart_preserved": true,
+    "appended_hob_gpt_preserved": true,
+    "display_preserved": true,
+    "gpu_device_requires_valid_handoff_manifest": true,
+    "gpu_resource_profile_default": false,
+    "gpu_resource_profile_define": "NTASI_J414S_GPU_RESOURCE_PROFILE",
+    "input_gpio_smc_kbl_preserved": true,
+    "name": "j414s-full-canonical-plus-gpu-resource-only",
+    "pre_ebs_usb_storage_preserved": true,
+    "sparse_cpu_reset_framebuffer_preserved": true,
+    "unified_platform_baseline_preserved": true
+  },
+  "provenance_guard_commit": "88413d5c489a53ecf7a28a45e6097a061addb04e",
+  "schema_version": 2,
+  "source": {
+    "base_head": "8e722c8f83ead3881be0c5a817a9fa9eee6bfad8"
+  }
+}

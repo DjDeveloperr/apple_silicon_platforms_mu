@@ -403,6 +403,21 @@ EFI_STATUS EFIAPI MemoryPeim(IN EFI_PHYSICAL_ADDRESS UefiMemoryBase, IN UINT64 U
     }
   }
 
+#if NTASI_J414S_GPU_RESOURCE_PROFILE
+  // Generated AppleAgxGpu preboot reservations. Keep these exact
+  // addresses in lockstep with GPU.asl and the m1n1 handoff manifest.
+  if (
+      !ReserveAllocatedSystemMemoryRegion (0x103FFFB8000ULL, 0x4000, ResourceAttributes) ||
+      !ReserveAllocatedSystemMemoryRegion (0x103FFF78000ULL, 0x40000, ResourceAttributes) ||
+      !ReserveAllocatedSystemMemoryRegion (0x103FFF70000ULL, 0x4000, ResourceAttributes) ||
+      !ReserveAllocatedSystemMemoryRegion (0x103DB294000ULL, 0x8000, ResourceAttributes) ||
+      !ReserveAllocatedSystemMemoryRegion (0x103DB290000ULL, 0x4000, ResourceAttributes) ||
+      !ReserveAllocatedSystemMemoryRegion (0x103DB278000ULL, 0x18000, ResourceAttributes)
+     ) {
+    DEBUG ((DEBUG_ERROR, "AppleAgxGpu: preboot reservation is outside system memory\n"));
+    return EFI_DEVICE_ERROR;
+  }
+#endif // NTASI_J414S_GPU_RESOURCE_PROFILE
   //reserve secondary stacks carveouts passed into cpm-impl-reg 
   for(int i = 0; i < PcdGet32(PcdCoreCount); i++){
     CHAR8 CpuNodeName[14];
