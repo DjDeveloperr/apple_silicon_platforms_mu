@@ -168,10 +168,7 @@ AcpiPlatformInstallAppleAnsTable (
   BOOLEAN                      Legacy;
   CONST CHAR8                  *HardwareId;
 
-  // A zero published interrupt is the fail-closed selector for the bounded
-  // display/WinPE profile. It prevents an ADT-present ANS device from being
-  // surfaced while retaining the common source and its compile-time checks.
-  if (FixedPcdGet32 (PcdAppleAnsPublishedInterrupt) == 0) {
+  if (!FeaturePcdGet (PcdAppleAnsAcpiEnabled)) {
     return EFI_NOT_FOUND;
   }
 
