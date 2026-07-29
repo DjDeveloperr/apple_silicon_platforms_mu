@@ -21,6 +21,5 @@ APRIORI DXE {
   #
   # Temporary hack: disable PCIe support while debugging why the ASMedia controller isn't working
   #
-  INF AppleSiliconPkg/Drivers/AppleSiliconPciPlatformDxe/AppleSiliconPciPlatformDxe.inf
   INF AppleSiliconPkg/Drivers/AppleUsbTypeCBringupDxe/AppleUsbTypeCBringupDxe.inf
 }
