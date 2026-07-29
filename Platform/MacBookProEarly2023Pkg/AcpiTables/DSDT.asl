@@ -122,6 +122,34 @@
             Name (_UID, Zero)
             Name (_CCA, One)
 
+            //
+            // Resource 0: the immutable T8110 register aperture.
+            //
+            // Resource 1: the SID-1 page-table carveout that m1n1 installs
+            // before Mu runs.  Windows' pci.sys sets PCI_COMMAND_MASTER on
+            // both BCM4388 functions before any KMDF driver's
+            // EvtDevicePrepareHardware (proved in the NTASI repository at
+            // docs/evidence/windows-pci-bme-before-kmdf.md), so a
+            // Windows-side provider cannot be the first owner of SID 1.
+            // m1n1's wireless handoff therefore leaves SID 1 translating a
+            // deny-all domain whose only valid entry is the APCIE port-0 MSI
+            // doorbell, with the L1 and dedicated MSI L2 tables in this
+            // fixed physical range.
+            //
+            // Publishing the carveout as a second memory resource means
+            // AppleDart.sys *adopts* that live domain instead of building a
+            // second one underneath running hardware.  MemoryInitPeiLib
+            // removes exactly this range from the UEFI memory map, so
+            // Windows can never allocate it.
+            //
+            //   +0x0000  SID-1 L1         (16 KiB)
+            //   +0x4000  dedicated MSI L2 (16 KiB)
+            //   +0x8000  client L2 the provider installs later (32 KiB)
+            //
+            // Keep in lockstep with WLAN_PT_CARVEOUT_PHYS / _SIZE in the
+            // m1n1 patch and with APPLE_DART_J414S_PT_CARVEOUT_* in
+            // drivers/AppleDart/AppleDart.h.
+            //
             Name (_CRS, ResourceTemplate () {
                 QWordMemory (
                     ResourceConsumer,
@@ -135,6 +163,19 @@
                     0x0000000594003FFF,
                     0x0000000000000000,
                     0x0000000000004000
+                    )
+                QWordMemory (
+                    ResourceConsumer,
+                    PosDecode,
+                    MinFixed,
+                    MaxFixed,
+                    NonCacheable,
+                    ReadWrite,
+                    0x0000000000000000,
+                    0x0000010022000000,
+                    0x000001002200FFFF,
+                    0x0000000000000000,
+                    0x0000000000010000
                     )
             })
 

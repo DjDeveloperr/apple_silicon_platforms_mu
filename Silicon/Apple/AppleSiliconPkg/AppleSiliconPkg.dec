@@ -70,6 +70,17 @@
   gAppleSiliconPkgTokenSpaceGuid.PcdAdtPointer|0|UINT64|0x00003901
   gAppleSiliconPkgTokenSpaceGuid.PcdBootArgsPointer|0|UINT64|0x00003905
 
+  #
+  # BCM4388 SID-1 DART page-table carveout installed by m1n1's wireless
+  # handoff.  Zero (the default) means no wireless build; MemoryInitPeiLib
+  # then reserves nothing and every other profile is byte-identical.
+  # A wireless build sets these to the same values as WLAN_PT_CARVEOUT_PHYS /
+  # WLAN_PT_CARVEOUT_SIZE in the m1n1 patch and the second DRT0 _CRS memory
+  # resource in the platform DSDT.
+  #
+  gAppleSiliconPkgTokenSpaceGuid.PcdAppleWirelessDartPageTableBase|0|UINT64|0x00003910
+  gAppleSiliconPkgTokenSpaceGuid.PcdAppleWirelessDartPageTableSize|0|UINT32|0x00003911
+
 
 [PcdsDynamic.common]
 

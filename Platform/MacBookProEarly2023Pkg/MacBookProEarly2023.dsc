@@ -50,6 +50,19 @@
   gAppleSiliconPkgTokenSpaceGuid.PcdAppleNumDwc3Controllers|3 # M2 Pro case is hardcoded for now.
   gAppleSiliconPkgTokenSpaceGuid.PcdAppleNumDwc3Darts|6 # M2 Pro case is hardcoded for now.
 
+  #
+  # BCM4388 SID-1 DART page-table carveout.  m1n1's wireless handoff installs
+  # a deny-all SID-1 domain whose L1 / dedicated MSI L2 tables live here, and
+  # they must outlive m1n1: Windows' pci.sys enables bus mastering on both
+  # BCM4388 functions before any KMDF driver runs, so the domain has to be
+  # live and its tables non-conventional across the whole handoff.
+  #
+  # Keep in lockstep with WLAN_PT_CARVEOUT_PHYS / WLAN_PT_CARVEOUT_SIZE in
+  # the m1n1 patch and the second DRT0 _CRS memory resource in DSDT.asl.
+  #
+  gAppleSiliconPkgTokenSpaceGuid.PcdAppleWirelessDartPageTableBase|0x10022000000
+  gAppleSiliconPkgTokenSpaceGuid.PcdAppleWirelessDartPageTableSize|0x10000
+
 [Components.common]
 
   MacBookProEarly2023Pkg/AcpiTables/DeviceAcpiTables.inf
