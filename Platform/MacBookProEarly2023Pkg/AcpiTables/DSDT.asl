@@ -112,7 +112,74 @@
         // Omitted from the input/ANS profile: DRT0 is not qualified yet.
 
 
-        // Omitted from the input/ANS profile: PCI0 is not qualified yet.
+        //
+        // Native J414s PCI Express root. m1n1 owns link training after
+        // hv.init(); Mu assigns BARs; Windows consumes this ACPI namespace.
+        // This table does not authorize a physical launch without the
+        // persistent deny-all DART0/SID-1 preboot handoff.
+        //
+        Device (PCI0) {
+            Name (_HID, EISAID ("PNP0A08"))
+            Name (_CID, EISAID ("PNP0A03"))
+            Name (_SEG, Zero)
+            Name (_BBN, Zero)
+            Name (_UID, "PCI0")
+            Name (_CCA, One)
+
+            Method (_STA) {
+                Return (0x0F)
+            }
+
+            Method (_CBA, 0, NotSerialized) {
+                Return (FixedPcdGet64 (PcdPciExpressBaseAddress))
+            }
+
+            Name (_CRS, ResourceTemplate () {
+                WordBusNumber (
+                    ResourceProducer,
+                    MinFixed,
+                    MaxFixed,
+                    PosDecode,
+                    0x0000,
+                    0x0000,
+                    0x0004,
+                    0x0000,
+                    0x0005
+                    )
+
+                // PCI 0xC0000000..0xFFFFFFFF maps to CPU
+                // 0x5C0000000..0x5FFFFFFFF.
+                QWordMemory (
+                    ResourceProducer,
+                    PosDecode,
+                    MinFixed,
+                    MaxFixed,
+                    NonCacheable,
+                    ReadWrite,
+                    0x0000000000000000,
+                    0x00000000C0000000,
+                    0x00000000FFFFFFFF,
+                    0x0000000500000000,
+                    0x0000000040000000
+                    )
+
+                // 64-bit prefetchable BAR window is identity mapped.
+                QWordMemory (
+                    ResourceProducer,
+                    PosDecode,
+                    MinFixed,
+                    MaxFixed,
+                    Prefetchable,
+                    ReadWrite,
+                    0x0000000000000000,
+                    0x00000005A0000000,
+                    0x00000005BFFFFFFF,
+                    0x0000000000000000,
+                    0x0000000020000000
+                    )
+            })
+        }
+
 
         //
         // The DWC3 blocks expose a standards-compliant xHCI register interface.
