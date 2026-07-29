@@ -30,6 +30,7 @@
 //Device memory map configuration file for UEFI (this is to help with pagetable initialization)
 #include <Library/T602XFamilyVirtualMemoryMapDefines.h>
 #include <AppendedRamdisk.h>
+#include <IndustryStandard/J414sWirelessHandoff.h>
 
 #define MAX_VIRTUAL_MEMORY_MAP_DESCRIPTORS 44
 #define DDR_ATTRIBUTES_CACHED           ARM_MEMORY_REGION_ATTRIBUTE_WRITE_BACK
@@ -37,6 +38,84 @@
 
 STATIC BOOLEAN  mAppendedRamdiskCorrupt;
 STATIC UINT64   mAppendedRamdiskReservationSize;
+
+STATIC
+UINT32
+NtasiWirelessCrc32 (
+  IN CONST VOID  *Data,
+  IN UINT32      Length
+  )
+{
+  CONST UINT8  *Bytes;
+  UINT32       Crc;
+  UINT32       Index;
+  UINT32       Bit;
+
+  Bytes = Data;
+  Crc   = MAX_UINT32;
+  for (Index = 0; Index < Length; Index++) {
+    Crc ^= Bytes[Index];
+    for (Bit = 0; Bit < 8; Bit++) {
+      Crc = (Crc >> 1) ^ (0xedb88320U & (0U - (Crc & 1U)));
+    }
+  }
+
+  return ~Crc;
+}
+
+STATIC
+BOOLEAN
+NtasiValidateWirelessHandoffV2 (
+  IN EFI_PHYSICAL_ADDRESS  Base,
+  IN UINT32                Size,
+  IN EFI_PHYSICAL_ADDRESS  GuestMemoryTop
+  )
+{
+  CONST NTASI_WIRELESS_HANDOFF_DESCRIPTOR_V2  *Descriptor;
+  NTASI_WIRELESS_HANDOFF_DESCRIPTOR_V2        Copy;
+  UINT32                                       DescriptorCrc;
+
+  if ((Size != NTASI_WIRELESS_HANDOFF_V2_RESERVATION_SIZE) ||
+      ((Base & (NTASI_WIRELESS_HANDOFF_V2_PAGE_SIZE - 1)) != 0) ||
+      (Base > MAX_UINT64 - Size))
+  {
+    return FALSE;
+  }
+
+  Descriptor = (CONST VOID *)(UINTN)(Base + NTASI_WIRELESS_HANDOFF_V2_DESCRIPTOR_OFFSET);
+  if ((Descriptor->Signature != NTASI_WIRELESS_HANDOFF_V2_SIGNATURE) ||
+      (Descriptor->Version != NTASI_WIRELESS_HANDOFF_V2_VERSION) ||
+      (Descriptor->StructureSize != sizeof (*Descriptor)) ||
+      (Descriptor->Flags != NTASI_WIRELESS_HANDOFF_V2_FLAG_INSTALLED) ||
+      (Descriptor->Sid != NTASI_WIRELESS_HANDOFF_V2_SID) ||
+      (Descriptor->PageShift != NTASI_WIRELESS_HANDOFF_V2_PAGE_SHIFT) ||
+      (Descriptor->Reserved != 0) ||
+      (Descriptor->ReservationBase != Base) ||
+      (Descriptor->ReservationSize != Size) ||
+      (Descriptor->GuestMemoryTop != GuestMemoryTop) ||
+      (Descriptor->PhysicalMemoryTop < Base + Size) ||
+      (Descriptor->DartBase != NTASI_WIRELESS_HANDOFF_V2_DART_BASE) ||
+      (Descriptor->L1Physical != Base + NTASI_WIRELESS_HANDOFF_V2_L1_OFFSET) ||
+      (Descriptor->MsiL2Physical != Base + NTASI_WIRELESS_HANDOFF_V2_MSI_L2_OFFSET) ||
+      (Descriptor->DescriptorPhysical != Base + NTASI_WIRELESS_HANDOFF_V2_DESCRIPTOR_OFFSET))
+  {
+    return FALSE;
+  }
+
+  Copy          = *Descriptor;
+  DescriptorCrc = Copy.DescriptorCrc32;
+  Copy.DescriptorCrc32 = 0;
+  return (DescriptorCrc != 0) &&
+         (NtasiWirelessCrc32 (&Copy, sizeof (Copy)) == DescriptorCrc) &&
+         (NtasiWirelessCrc32 (
+            (CONST VOID *)(UINTN)(Base + NTASI_WIRELESS_HANDOFF_V2_L1_OFFSET),
+            NTASI_WIRELESS_HANDOFF_V2_PAGE_SIZE
+            ) == Descriptor->L1Crc32) &&
+         (NtasiWirelessCrc32 (
+            (CONST VOID *)(UINTN)(Base + NTASI_WIRELESS_HANDOFF_V2_MSI_L2_OFFSET),
+            NTASI_WIRELESS_HANDOFF_V2_PAGE_SIZE
+            ) == Descriptor->MsiL2Crc32);
+}
 
 STATIC CONST EFI_GUID  mNtasiAppendedRamdiskLocationHobGuid =
   NTASI_APPENDED_RAMDISK_LOCATION_HOB_GUID;
@@ -382,25 +461,31 @@ EFI_STATUS EFIAPI MemoryPeim(IN EFI_PHYSICAL_ADDRESS UefiMemoryBase, IN UINT64 U
       return EFI_INVALID_PARAMETER;
     }
     if (WirelessDartBase != 0) {
-      if (((WirelessDartBase | WirelessDartSize) & 0x3fff) != 0 ||
-          (WirelessDartSize < 0xc000) ||
-          (WirelessDartBase < PcdGet64 (PcdSystemMemoryBase)) ||
-          (WirelessDartBase > MAX_UINT64 - WirelessDartSize) ||
-          (WirelessDartBase + WirelessDartSize > SystemMemoryTop))
-      {
-        DEBUG ((DEBUG_ERROR, "MemoryInitPeiLib: invalid wireless DART reservation 0x%lx/+0x%x\n", WirelessDartBase, WirelessDartSize));
-        return EFI_INVALID_PARAMETER;
-      }
-      if (!ReserveAllocatedSystemMemoryRegion (
+      if (!NtasiValidateWirelessHandoffV2 (
              WirelessDartBase,
              WirelessDartSize,
-             ResourceAttributes
+             SystemMemoryTop
              ))
       {
-        DEBUG ((DEBUG_ERROR, "MemoryInitPeiLib: cannot reserve wireless DART tables\n"));
-        return EFI_OUT_OF_RESOURCES;
+        DEBUG ((DEBUG_ERROR, "MemoryInitPeiLib: invalid wireless DART ABI v2 descriptor 0x%lx/+0x%x\n", WirelessDartBase, WirelessDartSize));
+        return EFI_COMPROMISED_DATA;
       }
-      DEBUG ((DEBUG_INFO, "MemoryInitPeiLib: reserved wireless DART tables at 0x%lx (0x%x bytes)\n", WirelessDartBase, WirelessDartSize));
+
+      // top_of_memory_alloc() removes this reservation from boot_args before
+      // Mu. Publish it as cacheable RAM, then reserve its allocation so DXE
+      // and Windows can validate it but can never reuse it.
+      BuildResourceDescriptorHob (
+        EFI_RESOURCE_SYSTEM_MEMORY,
+        ResourceAttributes,
+        WirelessDartBase,
+        WirelessDartSize
+        );
+      BuildMemoryAllocationHob (
+        WirelessDartBase,
+        WirelessDartSize,
+        EfiReservedMemoryType
+        );
+      DEBUG ((DEBUG_INFO, "MemoryInitPeiLib: authenticated and reserved wireless DART ABI v2 at 0x%lx (0x%x bytes)\n", WirelessDartBase, WirelessDartSize));
     }
   }
 #endif // NTASI_ENABLE_WIRELESS_DART_HANDOFF
@@ -736,6 +821,26 @@ VOID BuildVirtualMemoryMap(OUT ARM_MEMORY_REGION_DESCRIPTOR **VirtualMemoryMap)
   }
 
   //System DRAM
+  if (NTASI_ENABLE_WIRELESS_DART_HANDOFF) {
+    EFI_PHYSICAL_ADDRESS  WirelessDartBase;
+    UINT32                WirelessDartSize;
+    EFI_PHYSICAL_ADDRESS  MapSystemTop;
+
+    WirelessDartBase = PcdGet64 (PcdAppleWirelessDartPageTableBase);
+    WirelessDartSize = PcdGet32 (PcdAppleWirelessDartPageTableSize);
+    MapSystemTop = PcdGet64 (PcdSystemMemoryBase) + PcdGet64 (PcdSystemMemorySize);
+    if ((WirelessDartBase != 0) && (WirelessDartSize != 0) &&
+        ((WirelessDartBase < PcdGet64 (PcdSystemMemoryBase)) ||
+         (WirelessDartBase + WirelessDartSize > MapSystemTop)))
+    {
+      ASSERT ((Index + 3) <= MAX_VIRTUAL_MEMORY_MAP_DESCRIPTORS);
+      VirtualMemoryTable[++Index].PhysicalBase = WirelessDartBase;
+      VirtualMemoryTable[Index].VirtualBase    = WirelessDartBase;
+      VirtualMemoryTable[Index].Length         = WirelessDartSize;
+      VirtualMemoryTable[Index].Attributes     = CacheAttributes;
+    }
+  }
+
   VirtualMemoryTable[++Index].PhysicalBase = PcdGet64(PcdSystemMemoryBase);
   VirtualMemoryTable[Index].VirtualBase    = PcdGet64(PcdSystemMemoryBase);
   VirtualMemoryTable[Index].Length         = PcdGet64(PcdSystemMemorySize);

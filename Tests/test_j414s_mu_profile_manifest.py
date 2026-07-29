@@ -37,6 +37,12 @@ def valid_shape(profile: str = "baseline") -> dict[str, object]:
             "container_ffs_guid": M.ACPI_CONTAINERS["GPU.aml"],
             "occurrences_in_ffs": 1,
         }
+    if profile == "wireless":
+        tables["WDRT.aml"] = {
+            **record("Build/WDRT.aml"),
+            "container_ffs_guid": M.ACPI_CONTAINERS["WDRT.aml"],
+            "occurrences_in_ffs": 1,
+        }
     return {
         "schema": M.SCHEMA,
         "artifact_status": "READY_FOR_SUPERVISED_HARDWARE_TEST",
@@ -79,11 +85,12 @@ def valid_shape(profile: str = "baseline") -> dict[str, object]:
             "optional_guids": M.OPTIONAL_FFS,
         },
         "acpi": {"tables": tables, "assertions": {}, "mcfg": {}},
+        "wireless_handoff": None,
     }
 
 
 class ContractShapeTests(unittest.TestCase):
-    def test_all_profile_abis_are_distinct_and_wireless_is_unavailable(self):
+    def test_all_profile_abis_are_distinct_and_wireless_is_explicit(self):
         abis = set()
         for profile in M.PROFILES:
             manifest = valid_shape(profile)
@@ -91,8 +98,15 @@ class ContractShapeTests(unittest.TestCase):
             M.validate_policy(manifest)
             M.validate_builder(manifest["builder"])
             abis.add(manifest["profile"]["profile_abi"])
-            self.assertFalse(manifest["profile"]["experimental_features"]["wireless_dart_handoff"])
-            self.assertFalse(manifest["profile"]["experimental_features"]["wifi_profile_available"])
+            enabled = profile == "wireless"
+            self.assertEqual(
+                manifest["profile"]["experimental_features"]["wireless_dart_handoff"],
+                enabled,
+            )
+            self.assertEqual(
+                manifest["profile"]["experimental_features"]["wifi_profile_available"],
+                enabled,
+            )
         self.assertEqual(len(abis), len(M.PROFILES))
 
     def test_unknown_field_is_rejected(self):

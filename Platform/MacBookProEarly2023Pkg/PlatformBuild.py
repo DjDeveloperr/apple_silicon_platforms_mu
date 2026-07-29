@@ -6,6 +6,7 @@
 # SPDX-License-Identifier: BSD-2-Clause-Patent
 ##
 import datetime
+import json
 import logging
 import os
 import uuid
@@ -184,10 +185,11 @@ class PlatformBuilder( UefiBuilder, BuildSettingsManager):
             "baseline": {"ans": "FALSE", "gpu": "0"},
             "ans": {"ans": "TRUE", "gpu": "0"},
             "gpu": {"ans": "FALSE", "gpu": "1"},
+            "wireless": {"ans": "FALSE", "gpu": "0"},
         }
         if profile not in profile_values:
             raise ValueError(
-                "NTASI_MU_PROFILE must be one of: baseline, ans, gpu"
+                "NTASI_MU_PROFILE must be one of: baseline, ans, gpu, wireless"
             )
         logging.info("Building the J414s Windows Mu profile: %s", profile)
 
@@ -223,10 +225,42 @@ class PlatformBuilder( UefiBuilder, BuildSettingsManager):
             profile_values[profile]["gpu"],
             "Selected by NTASI_MU_PROFILE",
         )
+        wireless_base = 0
+        wireless_size = 0
+        if profile == "wireless":
+            manifest_path = os.environ.get("NTASI_WIRELESS_HANDOFF_MANIFEST", "")
+            if manifest_path != "/wireless-handoff.json":
+                raise ValueError("wireless profile requires the mounted handoff manifest")
+            manifest = json.loads(Path(manifest_path).read_text(encoding="utf-8"))
+            if (manifest.get("schema") != "ntasi.j414s.wireless-handoff.v2" or
+                    manifest.get("artifact_status") !=
+                    "READY_FOR_SAME_INSTANCE_MU_BUILD" or
+                    manifest.get("contract", {}).get("name") !=
+                    "dynamic_reserved_wireless_handoff_v2" or
+                    manifest.get("contract", {}).get("descriptor_version") != 2 or
+                    manifest.get("contract", {}).get("descriptor_size") != 96 or
+                    manifest.get("contract", {}).get("descriptor_offset") != 0xc000):
+                raise ValueError("wireless handoff manifest ABI/state mismatch")
+            wireless_base = int(manifest["reservation"]["base"])
+            wireless_size = int(manifest["reservation"]["size"])
+            if (wireless_size != 0x10000 or wireless_base & 0x3fff or
+                    int(manifest["descriptor"]["reservation_base"]) != wireless_base or
+                    int(manifest["descriptor"]["reservation_size"]) != wireless_size):
+                raise ValueError("wireless handoff manifest reservation mismatch")
         self.env.SetValue(
             "BLD_*_NTASI_ENABLE_WIRELESS_DART_HANDOFF",
-            "0",
-            "Unified baseline does not assume an m1n1 wireless DART handoff",
+            "1" if profile == "wireless" else "0",
+            "Selected only by a same-instance wireless handoff manifest",
+        )
+        self.env.SetValue(
+            "BLD_*_NTASI_WIRELESS_DART_BASE",
+            f"0x{wireless_base:x}",
+            "Exact same-instance m1n1 reservation base",
+        )
+        self.env.SetValue(
+            "BLD_*_NTASI_WIRELESS_DART_SIZE",
+            f"0x{wireless_size:x}",
+            "Exact same-instance m1n1 reservation size",
         )
 
         return 0

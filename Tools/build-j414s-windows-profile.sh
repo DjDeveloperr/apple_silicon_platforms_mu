@@ -3,11 +3,11 @@
 set -eu
 
 usage() {
-    echo "usage: $0 baseline|ans|gpu" >&2
+    echo "usage: $0 baseline|ans|gpu|wireless [wireless-handoff-manifest.json]" >&2
     exit 2
 }
 
-test "$#" -eq 1 || usage
+test "$#" -ge 1 && test "$#" -le 2 || usage
 profile=$1
 case "$profile" in
     baseline)
@@ -16,8 +16,16 @@ case "$profile" in
         ;;
     gpu)
         ;;
+    wireless)
+        test "$#" -eq 2 || usage
+        wireless_manifest=$(CDPATH= cd -- "$(dirname -- "$2")" && pwd)/$(basename -- "$2")
+        test -f "$wireless_manifest" || { echo "error: missing wireless handoff manifest" >&2; exit 1; }
+        ;;
     *) usage ;;
 esac
+if test "$profile" != wireless && test "$#" -ne 1; then
+    usage
+fi
 
 source_root=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
 source_parent=$(dirname -- "$source_root")
@@ -54,6 +62,12 @@ if ! mkdir "$lock_dir" 2>/dev/null; then
 fi
 trap 'rmdir "$lock_dir" 2>/dev/null || true' EXIT HUP INT TERM
 mkdir -p "$build_dir" "$conf_dir" "$artifact_dir"
+if test "$profile" = wireless; then
+    cp "$wireless_manifest" "$output_dir/wireless-handoff.json"
+    wireless_manifest=$output_dir/wireless-handoff.json
+else
+    wireless_manifest=/dev/null
+fi
 
 docker image inspect "$image" >/dev/null
 image_id=$(docker image inspect --format '{{.Id}}' "$image")
@@ -69,11 +83,13 @@ docker run --rm --platform linux/arm64 \
     -e GIT_CONFIG_KEY_1=diff.ignoreSubmodules \
     -e GIT_CONFIG_VALUE_1=all \
     -e NTASI_MU_PROFILE="$profile" \
+    -e NTASI_WIRELESS_HANDOFF_MANIFEST=/wireless-handoff.json \
     -e NTASI_M2_PRO_MU_REFRESH=never \
     -e NTASI_M2_PRO_MU_RECIPE_IMAGE="$image" \
     -v "$source_root:/work:ro" \
     -v "$build_dir:/work/Build:rw" \
     -v "$conf_dir:/work/Conf:rw" \
+    -v "$wireless_manifest:/wireless-handoff.json:ro" \
     "$image"
 
 fd=$build_dir/MacBookProEarly2023-AARCH64/DEBUG_CLANGPDB/FV/MACBOOKPROEARLY2023_EFI.fd
