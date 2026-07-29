@@ -14,7 +14,7 @@
     "Platform/MacBookProEarly2023Pkg/AcpiTables/GPU-HANDOFF.json": "e2417e4ce6c653ac3ac354632fc0e37d50aaf6ed9906ebaf8d6f454d0c8cf9f2",
     "Platform/MacBookProEarly2023Pkg/AcpiTables/GPU.asl": "d7e53e355aa5af48cfb662d9cd3d173486355fc839f96373f4f50470164b4970",
     "Platform/MacBookProEarly2023Pkg/MacBookProEarly2023.dsc": "6e670de0daad2fb6220977f6f3d970f6ef72e3f7a8cd650507912e8f22316130",
-    "Silicon/Apple/T602XFamilyPkg/AcpiTables/CSRT.aslc": "b973c19891a03c20a1faac16fb5f0dceea6124e4ffa59b5cb10e35d3730a6ebf",
+    "Silicon/Apple/T602XFamilyPkg/AcpiTables/CSRT.aslc": "b4d6a51f32bbb198c6dc90801ed3d142b62cf03cde66fe4dc2599a1f0f74dacd",
     "Silicon/Apple/T602XFamilyPkg/Library/MemoryInitPeiLib/MemoryInitPeiLib.c": "8d47a108f8241a7d8634a08df37d32ce23f1d137a5c8535778636aa1168f8ef7"
   },
   "profile": {

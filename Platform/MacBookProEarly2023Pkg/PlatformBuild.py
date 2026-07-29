@@ -179,6 +179,18 @@ class PlatformBuilder( UefiBuilder, BuildSettingsManager):
 
     def SetPlatformEnv(self):
         logging.debug("PlatformBuilder SetPlatformEnv")
+        profile = os.environ.get("NTASI_MU_PROFILE", "baseline").strip().lower()
+        profile_values = {
+            "baseline": {"ans": "FALSE", "gpu": "0"},
+            "ans": {"ans": "TRUE", "gpu": "0"},
+            "gpu": {"ans": "FALSE", "gpu": "1"},
+        }
+        if profile not in profile_values:
+            raise ValueError(
+                "NTASI_MU_PROFILE must be one of: baseline, ans, gpu"
+            )
+        logging.info("Building the J414s Windows Mu profile: %s", profile)
+
         self.env.SetValue("PRODUCT_NAME", "MacBookProEarly2023", "Platform Hardcoded")
         self.env.SetValue("ACTIVE_PLATFORM", "MacBookProEarly2023Pkg/MacBookProEarly2023.dsc", "Platform Hardcoded")
         self.env.SetValue("TARGET_ARCH", "AARCH64", "Platform Hardcoded")
@@ -203,8 +215,13 @@ class PlatformBuilder( UefiBuilder, BuildSettingsManager):
         )
         self.env.SetValue(
             "BLD_*_NTASI_ENABLE_ANS",
-            "FALSE",
-            "Unified baseline keeps experimental ANS publication disabled",
+            profile_values[profile]["ans"],
+            "Selected by NTASI_MU_PROFILE",
+        )
+        self.env.SetValue(
+            "BLD_*_NTASI_J414S_GPU_RESOURCE_PROFILE",
+            profile_values[profile]["gpu"],
+            "Selected by NTASI_MU_PROFILE",
         )
         self.env.SetValue(
             "BLD_*_NTASI_ENABLE_WIRELESS_DART_HANDOFF",
