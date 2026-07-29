@@ -1,0 +1,22 @@
+{
+  "gpu_gsiv_alias": {
+    "physical": 1146,
+    "published": 40
+  },
+  "hardware_id": "ACPI\\NTAS0023",
+  "hardware_touched": false,
+  "manifest_sha256": "7d2b11281e649afa2cab5534d6f4d78f9cc7681e7e148e78157e06718dc90b90",
+  "outputs": {
+    "Platform/MacBookProEarly2023Pkg/AcpiTables/DSDT.asl": "9fb24066c8a6799c8ebffa07579738c9250fdc6c48ffde86abd3127343c47da2",
+    "Platform/MacBookProEarly2023Pkg/AcpiTables/DeviceAcpiTables.inf": "4941075252b6c7c32e4970d1fa68f58f774f72ba8dd4bab671357e8a5ec8374b",
+    "Platform/MacBookProEarly2023Pkg/AcpiTables/GPU-HANDOFF.json": "7d2b11281e649afa2cab5534d6f4d78f9cc7681e7e148e78157e06718dc90b90",
+    "Platform/MacBookProEarly2023Pkg/AcpiTables/GPU.asl": "3b1236d6e446de9193e3fb0b652a242847f3593744ba43bf464f802eecf8a775",
+    "Platform/MacBookProEarly2023Pkg/MacBookProEarly2023.fdf": "9c0bf52eafc9c4c3b7bd50508e5fb5aaa64c8ad9d4e47fa838474298ccfffc0a",
+    "Silicon/Apple/AppleSiliconPkg/AppleSiliconPkg.dsc.inc": "d697002f7a4a3659088f28e539d095675834dd006d9d00d6b182d5a121928247",
+    "Silicon/Apple/AppleSiliconPkg/Include/DXEApriori.fdf.inc": "c72b89bf3d9058c4e98a3c29d5c6adbd9ae8d9a630cbc085c906cc9dce8a771e",
+    "Silicon/Apple/T602XFamilyPkg/AcpiTables/CSRT.aslc": "b973c19891a03c20a1faac16fb5f0dceea6124e4ffa59b5cb10e35d3730a6ebf",
+    "Silicon/Apple/T602XFamilyPkg/Library/MemoryInitPeiLib/MemoryInitPeiLib.c": "80ca8db12b277eeff65cefccf599278031005e2944b9da36d757264f627b0ced"
+  },
+  "profile": "J414s AppleAgxGpu isolated physical GPU",
+  "schema_version": 1
+}

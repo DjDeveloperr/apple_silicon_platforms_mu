@@ -1,0 +1,75 @@
+{
+  "schema_version": 2,
+  "manifest_kind": "synthetic_compile_fixture_do_not_launch",
+  "launch_authorized": false,
+  "machine": {
+    "target": "J414s",
+    "chip_id": "0x6020"
+  },
+  "firmware": {
+    "compat_major": 13,
+    "compat_minor": 5
+  },
+  "m1n1": {
+    "commit": "5b54d17e3cf7c82a9af54512fc63dcd292abd72c",
+    "image_sha256": "d4d9da57bf154b99ae2d302118f79b586e506068412b7fa6c1b58cfa9e808775"
+  },
+  "gpu": {
+    "max_frequency_khz": 1398000
+  },
+  "interrupt": {
+    "published_gsiv": 40,
+    "physical_aic_line": 1146
+  },
+  "power": {
+    "source": "/soc/power-management@404e80000",
+    "base": "0x404e80000",
+    "size": "0x4000",
+    "gpx_ps_offset": "0x0",
+    "afr_ps_offset": "0x100",
+    "gfx_ps_offset": "0x108",
+    "gpx_always_on": true,
+    "afr_min_state": 4
+  },
+  "resources": {
+    "uat_ttbs": {
+      "source": "/reserved-memory/uat-ttbs",
+      "base": "0x10010000000",
+      "size": "0x40000"
+    },
+    "uat_pagetables": {
+      "source": "/reserved-memory/uat-pagetables",
+      "base": "0x10010040000",
+      "size": "0x400000"
+    },
+    "uat_handoff": {
+      "source": "/reserved-memory/uat-handoff",
+      "base": "0x10010440000",
+      "size": "0x40000"
+    },
+    "hw_data_a": {
+      "source": "/reserved-memory/hw-cal-a",
+      "base": "0x10011000000",
+      "size": "0x8000",
+      "payload_size": "0x6c34",
+      "sha256": "2323232323232323232323232323232323232323232323232323232323232323",
+      "crc32": "1234abcd"
+    },
+    "hw_data_b": {
+      "source": "/reserved-memory/hw-cal-b",
+      "base": "0x10011008000",
+      "size": "0x4000",
+      "payload_size": "0x1884",
+      "sha256": "3434343434343434343434343434343434343434343434343434343434343434",
+      "crc32": "2345bcde"
+    },
+    "globals": {
+      "source": "/reserved-memory/globals",
+      "base": "0x1001100c000",
+      "size": "0x18000",
+      "payload_size": "0x1715c",
+      "sha256": "4545454545454545454545454545454545454545454545454545454545454545",
+      "crc32": "3456cdef"
+    }
+  }
+}
