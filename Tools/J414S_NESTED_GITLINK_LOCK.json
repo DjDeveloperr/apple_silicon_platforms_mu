@@ -1,0 +1,59 @@
+{
+  "nested_gitlinks": [
+    {
+      "commit": "98ef964e1e9a0c39c7efb67143d3a13a819432e0",
+      "materialized_tree_sha256": "dba62c7abb124ecfa8e0b32aabe38c5b670d44dd55fe5b54c7b4ee4ef723640b",
+      "owner": "Common/TIANO",
+      "path": "SecurityPkg/DeviceSecurity/SpdmLib/libspdm"
+    },
+    {
+      "commit": "028fb5a23661f123017c060daa546b55cf4bde29",
+      "materialized_tree_sha256": "5780b1a9ec7051e685d09ef0358bbec795afa1d39cb1a7876cace774274c25ac",
+      "owner": "MU_BASECORE",
+      "path": "BaseTools/Source/C/BrotliCompress/brotli"
+    },
+    {
+      "commit": "028fb5a23661f123017c060daa546b55cf4bde29",
+      "materialized_tree_sha256": "5780b1a9ec7051e685d09ef0358bbec795afa1d39cb1a7876cace774274c25ac",
+      "owner": "MU_BASECORE",
+      "path": "MdeModulePkg/Library/BrotliCustomDecompressLib/brotli"
+    },
+    {
+      "commit": "abfc8ff81df4067f309032467785e06975678f0d",
+      "materialized_tree_sha256": "2c4759771a90c04410dca712621044a492df0db3dfe65fd08011077e5ae970e2",
+      "owner": "MU_BASECORE",
+      "path": "MdeModulePkg/Universal/RegularExpressionDxe/oniguruma"
+    },
+    {
+      "commit": "cfff805481bdea27f900c32698171286542b8d3c",
+      "materialized_tree_sha256": "f917290cf5353a50e5c28fba52bab2869467997d605a82f827ac4dcb565da052",
+      "owner": "MU_BASECORE",
+      "path": "MdePkg/Library/BaseFdtLib/libfdt"
+    },
+    {
+      "commit": "370b5944c046bab043dd8b133727b2135af7747a",
+      "materialized_tree_sha256": "f387f2a7f7f21931048ce1f995582ad000ac2a23c192e6311bb5d3cd700d4bbe",
+      "owner": "MU_BASECORE",
+      "path": "MdePkg/Library/MipiSysTLib/mipisyst"
+    },
+    {
+      "commit": "1cc9cde3448cdd2e000886a26acf1caac2db7cf1",
+      "materialized_tree_sha256": "644d34b70207ae90f41efc4b11732f142b92163e1e9a14697c2e4f5b8dfc8ba2",
+      "owner": "MU_BASECORE",
+      "path": "UnitTestFrameworkPkg/Library/CmockaLib/cmocka"
+    },
+    {
+      "commit": "86add13493e5c881d7e4ba77fb91c1f57752b3a4",
+      "materialized_tree_sha256": "03f158cf9dd1a71f1bb085bf78df4b063d1ac7868aa96937383b51f1726079f6",
+      "owner": "MU_BASECORE",
+      "path": "UnitTestFrameworkPkg/Library/GoogleTestLib/googletest"
+    },
+    {
+      "commit": "83d4e1ebef3588fae48b69a7352cc21801cb70bc",
+      "materialized_tree_sha256": "6d7bdc089e838bf9677afdfbd41663756817e89a9b4e51ba81696490fe0acb8a",
+      "owner": "MU_BASECORE",
+      "path": "UnitTestFrameworkPkg/Library/SubhookLib/subhook"
+    }
+  ],
+  "schema": "ntasi.j414s.nested-gitlink-lock.v1"
+}

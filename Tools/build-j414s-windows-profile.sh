@@ -11,16 +11,10 @@ test "$#" -eq 1 || usage
 profile=$1
 case "$profile" in
     baseline)
-        ans=false
-        gpu=false
         ;;
     ans)
-        ans=true
-        gpu=false
         ;;
     gpu)
-        ans=false
-        gpu=true
         ;;
     *) usage ;;
 esac
@@ -40,8 +34,8 @@ if test "$branch" != "$expected_branch"; then
     echo "error: expected $expected_branch, found $branch" >&2
     exit 1
 fi
-if test -n "$(git -C "$source_root" status --porcelain=v1 --untracked-files=no --ignore-submodules=none)"; then
-    echo "error: unified Mu source or a pinned top-level submodule is dirty" >&2
+if test -n "$(git -C "$source_root" status --porcelain=v1 --untracked-files=all --ignore-submodules=none)"; then
+    echo "error: unified Mu source, build tooling, or a pinned top-level submodule is dirty" >&2
     exit 1
 fi
 
@@ -62,6 +56,8 @@ trap 'rmdir "$lock_dir" 2>/dev/null || true' EXIT HUP INT TERM
 mkdir -p "$build_dir" "$conf_dir" "$artifact_dir"
 
 docker image inspect "$image" >/dev/null
+image_id=$(docker image inspect --format '{{.Id}}' "$image")
+image_repo_digests_json=$(docker image inspect --format '{{json .RepoDigests}}' "$image")
 docker run --rm --platform linux/arm64 \
     --read-only \
     --tmpfs /tmp:rw,exec,nosuid,size=4g \
@@ -85,39 +81,26 @@ test -f "$fd"
 artifact=$artifact_dir/MACBOOKPROEARLY2023_EFI.fd
 cp "$fd" "$artifact"
 
+manifest=$artifact_dir/manifest.json
+python3 "$source_root/Tools/j414s_mu_profile_manifest.py" seal \
+    --source-root "$source_root" \
+    --output-root "$output_dir" \
+    --profile "$profile" \
+    --image-ref "$image" \
+    --image-id "$image_id" \
+    --image-repo-digests-json "$image_repo_digests_json"
+
 if command -v sha256sum >/dev/null 2>&1; then
     fd_sha=$(sha256sum "$artifact" | awk '{print $1}')
+    manifest_sha=$(sha256sum "$manifest" | awk '{print $1}')
 else
     fd_sha=$(shasum -a 256 "$artifact" | awk '{print $1}')
+    manifest_sha=$(shasum -a 256 "$manifest" | awk '{print $1}')
 fi
-fd_size=$(wc -c < "$artifact" | tr -d ' ')
-created=$(date -u '+%Y-%m-%dT%H:%M:%SZ')
-manifest=$artifact_dir/manifest.json
-printf '%s\n' \
-    '{' \
-    '  "schema_version": 1,' \
-    "  \"created_utc\": \"$created\"," \
-    "  \"profile\": \"$profile\"," \
-    "  \"source_branch\": \"$branch\"," \
-    "  \"source_commit\": \"$commit\"," \
-    "  \"build_image\": \"$image\"," \
-    '  "features": {' \
-    '    "pcie": true,' \
-    '    "mcfg": true,' \
-    '    "usb_gpio_storage_input_display": true,' \
-    "    \"ans\": $ans," \
-    "    \"gpu\": $gpu," \
-    '    "wireless_dart_handoff": false' \
-    '  },' \
-    '  "artifact": {' \
-    '    "path": "artifacts/MACBOOKPROEARLY2023_EFI.fd",' \
-    "    \"size\": $fd_size," \
-    "    \"sha256\": \"$fd_sha\"" \
-    '  }' \
-    '}' > "$manifest"
 
 echo "READY_TO_TEST $profile"
 echo "source=$commit"
 echo "fd=$artifact"
 echo "sha256=$fd_sha"
 echo "manifest=$manifest"
+echo "manifest_sha256=$manifest_sha"
