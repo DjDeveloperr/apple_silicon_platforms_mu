@@ -411,6 +411,7 @@ def parse_pcd_values(build_report: str) -> dict[str, int]:
         "PcdAppleAnsPublishBlockIo",
         "PcdAppleWirelessDartPageTableBase",
         "PcdAppleWirelessDartPageTableSize",
+        "PcdAppleWirelessDartPageTableLimit",
     )
     result: dict[str, int] = {}
     for name in names:
@@ -618,6 +619,10 @@ def generate_manifest(args: argparse.Namespace) -> dict[str, Any]:
         "PcdAppleAnsPublishBlockIo": 0,
         "PcdAppleWirelessDartPageTableBase": wireless_handoff["base"] if wireless_handoff else 0,
         "PcdAppleWirelessDartPageTableSize": wireless_handoff["size"] if wireless_handoff else 0,
+        "PcdAppleWirelessDartPageTableLimit": (
+            wireless_handoff["base"] + wireless_handoff["size"] - 1
+            if wireless_handoff else 0
+        ),
     }
     if pcd_values != expected_pcds:
         raise ManifestError("PCD values violate the selected profile policy")
@@ -743,6 +748,10 @@ def verify_manifest(manifest_path: Path, source_root: Path | None = None) -> dic
         "PcdAppleAnsPublishBlockIo": 0,
         "PcdAppleWirelessDartPageTableBase": wireless_handoff["base"] if wireless_handoff else 0,
         "PcdAppleWirelessDartPageTableSize": wireless_handoff["size"] if wireless_handoff else 0,
+        "PcdAppleWirelessDartPageTableLimit": (
+            wireless_handoff["base"] + wireless_handoff["size"] - 1
+            if wireless_handoff else 0
+        ),
     }
     if manifest["build"].get("pcds") != pcds or pcds != expected_pcds:
         raise ManifestError("recorded PCD evidence violates profile policy")

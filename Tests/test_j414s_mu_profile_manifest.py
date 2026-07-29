@@ -223,6 +223,7 @@ class EvidenceParserTests(unittest.TestCase):
                 ("PcdAppleAnsPublishBlockIo", "0"),
                 ("PcdAppleWirelessDartPageTableBase", "0x0"),
                 ("PcdAppleWirelessDartPageTableSize", "0x0"),
+                ("PcdAppleWirelessDartPageTableLimit", "0x0"),
             )
         )
         self.assertEqual(set(M.parse_pcd_values(report)), {
@@ -230,6 +231,7 @@ class EvidenceParserTests(unittest.TestCase):
             "PcdAppleAnsPublishBlockIo",
             "PcdAppleWirelessDartPageTableBase",
             "PcdAppleWirelessDartPageTableSize",
+            "PcdAppleWirelessDartPageTableLimit",
         })
         with self.assertRaises(M.ManifestError):
             M.parse_pcd_values(report.replace("PcdAppleAnsPublishBlockIo", "missing"))

@@ -27,8 +27,7 @@ DefinitionBlock ("WDRT.aml", "SSDT", 0x02, "Apple", "J414WDR", 0x00000001)
                 QWordMemory (ResourceConsumer, PosDecode, MinFixed, MaxFixed,
                     NonCacheable, ReadWrite, 0,
                     FixedPcdGet64 (PcdAppleWirelessDartPageTableBase),
-                    (FixedPcdGet64 (PcdAppleWirelessDartPageTableBase) +
-                     FixedPcdGet32 (PcdAppleWirelessDartPageTableSize) - 1),
+                    FixedPcdGet64 (PcdAppleWirelessDartPageTableLimit),
                     0, FixedPcdGet32 (PcdAppleWirelessDartPageTableSize))
             })
             Name (_DSD, Package ()

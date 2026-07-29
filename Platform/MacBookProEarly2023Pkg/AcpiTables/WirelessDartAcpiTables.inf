@@ -20,3 +20,4 @@
 [FixedPcd]
   gAppleSiliconPkgTokenSpaceGuid.PcdAppleWirelessDartPageTableBase
   gAppleSiliconPkgTokenSpaceGuid.PcdAppleWirelessDartPageTableSize
+  gAppleSiliconPkgTokenSpaceGuid.PcdAppleWirelessDartPageTableLimit

@@ -227,6 +227,7 @@ class PlatformBuilder( UefiBuilder, BuildSettingsManager):
         )
         wireless_base = 0
         wireless_size = 0
+        wireless_limit = 0
         if profile == "wireless":
             manifest_path = os.environ.get("NTASI_WIRELESS_HANDOFF_MANIFEST", "")
             if manifest_path != "/wireless-handoff.json":
@@ -247,6 +248,9 @@ class PlatformBuilder( UefiBuilder, BuildSettingsManager):
                     int(manifest["descriptor"]["reservation_base"]) != wireless_base or
                     int(manifest["descriptor"]["reservation_size"]) != wireless_size):
                 raise ValueError("wireless handoff manifest reservation mismatch")
+            wireless_limit = wireless_base + wireless_size - 1
+            if wireless_limit < wireless_base or wireless_limit > 0xffffffffffffffff:
+                raise ValueError("wireless handoff reservation overflows UINT64")
         self.env.SetValue(
             "BLD_*_NTASI_ENABLE_WIRELESS_DART_HANDOFF",
             "1" if profile == "wireless" else "0",
@@ -261,6 +265,11 @@ class PlatformBuilder( UefiBuilder, BuildSettingsManager):
             "BLD_*_NTASI_WIRELESS_DART_SIZE",
             f"0x{wireless_size:x}",
             "Exact same-instance m1n1 reservation size",
+        )
+        self.env.SetValue(
+            "BLD_*_NTASI_WIRELESS_DART_LIMIT",
+            f"0x{wireless_limit:x}",
+            "Exact same-instance m1n1 reservation inclusive limit",
         )
 
         return 0

@@ -68,9 +68,11 @@
 !if $(NTASI_ENABLE_WIRELESS_DART_HANDOFF) == 1
   gAppleSiliconPkgTokenSpaceGuid.PcdAppleWirelessDartPageTableBase|$(NTASI_WIRELESS_DART_BASE)
   gAppleSiliconPkgTokenSpaceGuid.PcdAppleWirelessDartPageTableSize|$(NTASI_WIRELESS_DART_SIZE)
+  gAppleSiliconPkgTokenSpaceGuid.PcdAppleWirelessDartPageTableLimit|$(NTASI_WIRELESS_DART_LIMIT)
 !else
   gAppleSiliconPkgTokenSpaceGuid.PcdAppleWirelessDartPageTableBase|0
   gAppleSiliconPkgTokenSpaceGuid.PcdAppleWirelessDartPageTableSize|0
+  gAppleSiliconPkgTokenSpaceGuid.PcdAppleWirelessDartPageTableLimit|0
 !endif
 
 [Components.common]
