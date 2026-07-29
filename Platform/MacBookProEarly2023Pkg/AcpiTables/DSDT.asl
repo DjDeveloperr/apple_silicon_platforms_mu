@@ -109,7 +109,49 @@
         })
 
 
-        // Omitted from the input/ANS profile: DRT0 is not qualified yet.
+        //
+        // T8110 DART0 owns the shared BCM4388 SID 1. m1n1 installs the
+        // deny-all domain before Mu; Mu only reserves its page tables and
+        // publishes both immutable resources for AppleDart to adopt.
+        //
+        Device (DRT0) {
+            Name (_HID, "NTAS0011")
+            Name (_UID, Zero)
+            Name (_CCA, One)
+
+            Name (_CRS, ResourceTemplate () {
+                QWordMemory (
+                    ResourceConsumer,
+                    PosDecode,
+                    MinFixed,
+                    MaxFixed,
+                    NonCacheable,
+                    ReadWrite,
+                    0x0000000000000000,
+                    0x0000000594000000,
+                    0x0000000594003FFF,
+                    0x0000000000000000,
+                    0x0000000000004000
+                    )
+                QWordMemory (
+                    ResourceConsumer,
+                    PosDecode,
+                    MinFixed,
+                    MaxFixed,
+                    NonCacheable,
+                    ReadWrite,
+                    0x0000000000000000,
+                    0x0000010022000000,
+                    0x000001002200FFFF,
+                    0x0000000000000000,
+                    0x0000000000010000
+                    )
+            })
+
+            Method (_STA) {
+                Return (0x0F)
+            }
+        }
 
 
         //
