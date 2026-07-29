@@ -57,20 +57,8 @@ class SettingsManager(UpdateSettingsManager, SetupSettingsManager, PrEvalSetting
         return CommonPlatform.TargetsSupported
 
     def GetRequiredSubmodules(self):
-        """Return iterable containing RequiredSubmodule objects.
-        
-        !!! note
-            If no RequiredSubmodules return an empty iterable
-        """
-        return [
-            RequiredSubmodule("MU_BASECORE", True),
-            RequiredSubmodule("Common/MU", True),
-            RequiredSubmodule("Common/TIANO", True),
-            RequiredSubmodule("Common/MU_OEM_SAMPLE", True),
-            RequiredSubmodule("Silicon/ARM/TIANO", True),
-            RequiredSubmodule("Common/MU_DFCI", True),
-            RequiredSubmodule("mu_feature_debugger", True),
-        ]
+        """Use this disposable local source snapshot as-is."""
+        return []
 
     def SetArchitectures(self, list_of_requested_architectures):
         ''' Confirm the requests architecture list is valid and configure SettingsManager
