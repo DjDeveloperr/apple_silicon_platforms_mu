@@ -1143,14 +1143,8 @@ AcpiPlatformEntryPoint (
 
   // Status = AcpiPlatformInstallMadtTable();
 
-  // Publish ANS after the static namespace has been installed.  Failure is
-  // fatal when the ADT contains ANS: silently omitting the boot controller
-  // would make the Windows storage driver impossible to bind.
-  Status = AcpiPlatformInstallAppleAnsTable (AcpiTable);
-  if (EFI_ERROR (Status) && (Status != EFI_NOT_FOUND)) {
-    DEBUG ((DEBUG_ERROR, "AppleANS ACPI: SSDT installation failed: %r\n", Status));
-    return EFI_ABORTED;
-  }
+  // This bounded GPU resource-probe profile deliberately omits ANS. External
+  // USB is the only storage path published to Windows by this firmware.
 
 
   //

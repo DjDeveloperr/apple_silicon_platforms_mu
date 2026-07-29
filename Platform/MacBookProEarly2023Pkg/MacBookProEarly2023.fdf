@@ -142,16 +142,6 @@ FvNameGuid         = 02e6c12f-69f7-4626-b5de-e3cfd6c0dc56
 
   INF AppleSiliconPkg/Drivers/SimpleFbDxe/SimpleFbDxe.inf
 
-  #
-  # PCIe Support (required to bring up USB-A among other fun stuff)
-  #
-  INF ArmPkg/Drivers/ArmPciCpuIo2Dxe/ArmPciCpuIo2Dxe.inf
-  INF MdeModulePkg/Bus/Pci/PciHostBridgeDxe/PciHostBridgeDxe.inf
-  INF MdeModulePkg/Bus/Pci/PciBusDxe/PciBusDxe.inf
-  INF MdeModulePkg/Bus/Pci/NonDiscoverablePciDeviceDxe/NonDiscoverablePciDeviceDxe.inf
-
-  #NVMe Support
-  INF AppleSiliconPkg/Drivers/AppleNANDStorageDxe/AppleNANDStorageDxe.inf
   #INF MdeModulePkg/Bus/Pci/NvmExpressDxe/NvmExpressDxe.inf
 
   #
@@ -165,12 +155,6 @@ FvNameGuid         = 02e6c12f-69f7-4626-b5de-e3cfd6c0dc56
 
   INF AppleSiliconPkg/Drivers/AppleEmbeddedGpioControllerDxe/AppleEmbeddedGpioControllerDxe.inf
   #
-  # PCIe support is disabled for now.
-  #
-  #INF AppleSiliconPkg/Drivers/AppleSiliconPciPlatformDxe/AppleSiliconPciPlatformDxe.inf
-  #INF AppleSiliconPkg/Drivers/AppleBootTimeEmbeddedFirmwareHelperDxe/AppleBootTimeEmbeddedFirmwareHelperDxe.inf
-
-  #
   # DWC3 bringup module.
   #
   INF AppleSiliconPkg/Drivers/AppleUsbTypeCBringupDxe/AppleUsbTypeCBringupDxe.inf
@@ -178,9 +162,6 @@ FvNameGuid         = 02e6c12f-69f7-4626-b5de-e3cfd6c0dc56
   #
   # Usb Support
   #
-  INF  MdeModulePkg/Bus/Pci/UhciDxe/UhciDxe.inf
-  INF  MdeModulePkg/Bus/Pci/EhciDxe/EhciDxe.inf
-  INF  MdeModulePkg/Bus/Pci/XhciDxe/XhciDxe.inf
   INF MdeModulePkg/Bus/Usb/UsbKbDxe/UsbKbDxe.inf
   INF MdeModulePkg/Bus/Usb/UsbMouseAbsolutePointerDxe/UsbMouseAbsolutePointerDxe.inf
   #
