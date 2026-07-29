@@ -48,6 +48,11 @@
   # Physical xHCI line 1274 is published as arbiter-legal GSIV 37; AIC2 ALI2
   # translates it back before native-controller MMIO.
   gAppleSiliconPkgTokenSpaceGuid.PcdAppleXhciPublishedInterrupt|37
+  # m1n1's J414s wireless handoff owns these persistent SID-1 tables. Mu
+  # reserves them out of conventional memory and publishes the same range as
+  # DRT0 resource 1; it never initializes or rewrites the table bytes.
+  gAppleSiliconPkgTokenSpaceGuid.PcdAppleWirelessDartPageTableBase|0x10022000000
+  gAppleSiliconPkgTokenSpaceGuid.PcdAppleWirelessDartPageTableSize|0x10000
 
 [Components.common]
 

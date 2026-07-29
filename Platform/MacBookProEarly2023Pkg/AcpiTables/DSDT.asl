@@ -460,6 +460,23 @@
                     0x0000000000000000,
                     0x0000000000004000
                 )
+                // Persistent J414s BCM4388 SID-1 page tables installed by
+                // m1n1 before Mu. AppleDart.sys accepts this resource only
+                // after the live TTBR/TCR and the exact MSI-only table shape
+                // both validate read-only.
+                QWordMemory(
+                    ResourceConsumer,
+                    PosDecode,
+                    MinFixed,
+                    MaxFixed,
+                    NonCacheable,
+                    ReadWrite,
+                    0x0000000000000000,
+                    0x0000010022000000,
+                    0x000001002200ffff,
+                    0x0000000000000000,
+                    0x0000000000010000
+                )
             })
             Method (_STA) {
                 Return (0xF)

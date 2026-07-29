@@ -61,7 +61,7 @@ STATIC VOID InitMmu(IN ARM_MEMORY_REGION_DESCRIPTOR *MemoryTable)
 
 
 //borrowed from edk2-platforms:Armada7k8kMemoryInitPeiLib
-STATIC VOID ReserveMemoryRegion ( IN EFI_PHYSICAL_ADDRESS ReservedRegionBase, IN UINT32 ReservedRegionSize)
+STATIC BOOLEAN ReserveMemoryRegion ( IN EFI_PHYSICAL_ADDRESS ReservedRegionBase, IN UINT32 ReservedRegionSize)
 {
   EFI_RESOURCE_ATTRIBUTE_TYPE  ResourceAttributes;
   EFI_PHYSICAL_ADDRESS         ReservedRegionTop;
@@ -132,10 +132,12 @@ STATIC VOID ReserveMemoryRegion ( IN EFI_PHYSICAL_ADDRESS ReservedRegionBase, IN
         ReservedRegionBase,
         ReservedRegionSize);
 
-      break;
+      return TRUE;
     }
     NextHob.Raw = GET_NEXT_HOB (NextHob);
   }
+
+  return FALSE;
 }
 
 //Borrowed from ArmPlatformPkg
@@ -276,6 +278,45 @@ EFI_STATUS EFIAPI MemoryPeim(IN EFI_PHYSICAL_ADDRESS UefiMemoryBase, IN UINT64 U
     }
 
     ASSERT (Found);
+  }
+
+  // Preserve the page tables installed by m1n1's J414s wireless handoff.
+  // They must not become conventional memory, and Mu must not rewrite them.
+  // The matching DRT0 _CRS resource lets AppleDart.sys validate and adopt the
+  // live deny-all SID-1 domain after Windows starts.
+  {
+    EFI_PHYSICAL_ADDRESS WirelessDartBase =
+      PcdGet64 (PcdAppleWirelessDartPageTableBase);
+    UINT32 WirelessDartSize =
+      PcdGet32 (PcdAppleWirelessDartPageTableSize);
+
+    if ((WirelessDartBase == 0) != (WirelessDartSize == 0)) {
+      DEBUG ((DEBUG_ERROR,
+        "MemoryInitPeiLib: incomplete wireless DART reservation %lx/+%x\n",
+        WirelessDartBase,
+        WirelessDartSize));
+      return EFI_INVALID_PARAMETER;
+    }
+    if (WirelessDartBase != 0) {
+      if (((WirelessDartBase | WirelessDartSize) & 0x3fff) != 0 ||
+          WirelessDartSize < 0xc000) {
+        DEBUG ((DEBUG_ERROR,
+          "MemoryInitPeiLib: invalid wireless DART reservation %lx/+%x\n",
+          WirelessDartBase,
+          WirelessDartSize));
+        return EFI_INVALID_PARAMETER;
+      }
+      if (!ReserveMemoryRegion (WirelessDartBase, WirelessDartSize)) {
+        DEBUG ((DEBUG_ERROR,
+          "MemoryInitPeiLib: wireless DART reservation is outside system memory\n"));
+        return EFI_NOT_FOUND;
+      }
+      BuildMemoryAllocationHob (
+        WirelessDartBase,
+        WirelessDartSize,
+        EfiReservedMemoryType
+        );
+    }
   }
 
   //reserve secondary stacks carveouts passed into cpm-impl-reg 
