@@ -22,6 +22,8 @@
   #EINJ.asl
   FADT.aslc
   DSDT.asl
+  MTP.asl
+  SMCG.asl
 
 [Packages]
   ArmPkg/ArmPkg.dec

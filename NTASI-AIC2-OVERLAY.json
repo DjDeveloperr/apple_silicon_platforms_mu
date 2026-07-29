@@ -1,0 +1,127 @@
+{
+  "aic": "AIC2",
+  "ans_mmio_gate": {
+    "ans_dxe_enabled": false
+  },
+  "appended_ramdisk": {
+    "allocation": "cacheable EFI_RESOURCE_SYSTEM_MEMORY plus EfiReservedMemoryType allocation HOB",
+    "dxe_location": "versioned GUID HOB published from relocated PEI PCD instance",
+    "dxe_source_sha256": "5c580ebc957610477aa9f08289f211b08ba162a86097c43d91077b0dee3b09c9",
+    "enabled": true,
+    "header_size": 4096,
+    "header_source_sha256": "cc7d97bb8f76b8e277f792384e5f271714936d73a67ef3e4299ab6f316277c26",
+    "maximum_image_size": "0x40000000",
+    "placement": "PEI-published versioned location HOB",
+    "registration_type": "gEfiVirtualDiskGuid",
+    "virtual_memory_descriptors": {
+      "capacity": 44,
+      "spare": 2,
+      "used": 42
+    }
+  },
+  "csrt_fixture_sha256": "cdee0da81d9c54c17d2964510271de453ae2ff0428fe0ff13e69efa9406521a5",
+  "csrt_source_sha256": "c26831a8641070fdd2a1141ea54831a3694064e27f1f3b6de676c9dbaf7879ce",
+  "driver_commit": "c3f38a2132dd3dc6e01f2a0f62c74fa436ea1474",
+  "fadt_oem_id": {
+    "ascii": "Apple",
+    "hex": "4170706c6500",
+    "temporary_windows_carrier_spoof": false
+  },
+  "linux_arm64_build_compatibility": {
+    "disabled_stuart_scopes": [
+      "cibuild",
+      "edk2-build"
+    ],
+    "removed_stale_arm_gic_arch_lib_override": true,
+    "system_tools": [
+      "iasl",
+      "nasm"
+    ]
+  },
+  "mtp_input": {
+    "crs": {
+      "interrupt": {
+        "gsiv": 677,
+        "polarity": "active-high",
+        "trigger": "level"
+      },
+      "memory": [
+        {
+          "base": "0x2a9b14000",
+          "length": "0x1000",
+          "role": "dockchannel-parent-irq"
+        },
+        {
+          "base": "0x2a9b30000",
+          "length": "0x1000",
+          "role": "dockchannel-remote-config"
+        },
+        {
+          "base": "0x2a9b34000",
+          "length": "0x1000",
+          "role": "dockchannel-remote-data"
+        },
+        {
+          "base": "0x1800000",
+          "length": "0x100000",
+          "role": "multitouch-firmware-staging",
+          "translation": "0x1001e800000"
+        }
+      ]
+    },
+    "enabled": true,
+    "firmware_staging": {
+      "bus_address": "0x1800000",
+      "hazard": "the staging window sits inside m1n1's proxy scratch heap; a session that allocates more than 299.9 MiB from it would overwrite the staged multitouch firmware and the preboot RTKit buffer pool",
+      "physical_base": "0x10020000000",
+      "reservation_effective_only_if": "guest RAM base <= 0x10020000000; with the current 768 MiB proxy scratch heap the guest base is 0x1003D41C000, so this call is inert",
+      "reserved_by": "T602XFamilyPkg MemoryInitPeiLib ReserveMemoryRegion",
+      "rtkit_pool_base": "0x10020100000",
+      "rtkit_pool_size": "0x100000",
+      "size": "0x200000",
+      "staging_size": "0x100000"
+    },
+    "hardware_id": "ACPI\\NTAS0050",
+    "platform": "J414s/T6020",
+    "preboot": {
+      "afe_reset_gpio": 25,
+      "asc_base": "0x2a9400000",
+      "dart_base": "0x2a9808000",
+      "dart_fault_gsiv": 676,
+      "dart_stream_id": 1,
+      "firmware": "apple/tpmtfw-j414s.bin",
+      "owner": "m1n1",
+      "stm_reset_gpio": 26
+    },
+    "source_sha256": "a3ff87f1f5b9fe938ee47832ed9daf3bcd2ed77b6ed625b7034f81640b790af7"
+  },
+  "mtp_trackpad": {
+    "connections": [
+      {
+        "index": 0,
+        "pin": 25,
+        "role": "afe-reset",
+        "smc_key": "gP19"
+      },
+      {
+        "index": 1,
+        "pin": 26,
+        "role": "stm-reset",
+        "smc_key": "gP1a"
+      }
+    ],
+    "controller_hardware_id": "ACPI\\NTAS0052",
+    "controller_source_sha256": "1e1748b8c23430a8fd65fff32950d7b6b6846113d7c58d819922087d737ed6b9",
+    "enabled": true,
+    "requires_driver": "AppleSmcGpio (ACPI\\NTAS0052)"
+  },
+  "mu_base_commit": "adf7a463b109e47ef6bf218084590a293997ec16",
+  "pcie": {
+    "enabled": false
+  },
+  "platform": "MacBookProEarly2023Pkg",
+  "schema_version": 1,
+  "soc": "T6020",
+  "source_mode": "materialized-submodules",
+  "stuart_submodule_fetch_bypassed_in_disposable_output": true
+}
