@@ -172,10 +172,16 @@ AcpiPlatformInstallAppleAnsTable (
   Table    = NULL;
 
   //
-  // Input profile: do not publish the ANS controller either.  Its DXE is absent
-  // here, so an NTAS2002 device would enumerate with no driver behind it.
+  // Do not publish the ANS controller in a build whose FV has no
+  // AppleNANDStorageDxe: an NTAS200x device would enumerate with no driver
+  // behind it.  This was an unconditional return while ANS was quarantined out
+  // of the input profile, which silently survived re-enabling the DXE and left
+  // the ANS build carrying a driver that nothing in ACPI ever pointed at.
   //
-  return EFI_NOT_FOUND;
+  if (!FixedPcdGetBool (PcdAppleAnsPublishAcpiDevice)) {
+    return EFI_NOT_FOUND;
+  }
+
   AnsNode  = dt_get ("/arm-io/ans");
   SartNode = dt_get ("/arm-io/sart-ans");
   if ((AnsNode == NULL) || (SartNode == NULL)) {

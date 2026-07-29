@@ -52,6 +52,8 @@
   # Windows consumes GSIV 38; the AIC2 CSRT translates it to T6020 line 1832.
   gAppleSiliconPkgTokenSpaceGuid.PcdAppleAnsPublishedInterrupt|38
   gAppleSiliconPkgTokenSpaceGuid.PcdAppleAnsExpectedPhysicalInterrupt|1832
+  # This branch's FV carries AppleNANDStorageDxe, so the SSDT may publish.
+  gAppleSiliconPkgTokenSpaceGuid.PcdAppleAnsPublishAcpiDevice|TRUE
 
 [Components.common]
 

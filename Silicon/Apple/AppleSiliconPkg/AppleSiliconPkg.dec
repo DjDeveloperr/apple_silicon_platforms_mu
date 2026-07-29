@@ -30,6 +30,10 @@
   # A zero/zero pair publishes the live physical line directly.
   gAppleSiliconPkgTokenSpaceGuid.PcdAppleAnsPublishedInterrupt|0|UINT32|0x00004719
   gAppleSiliconPkgTokenSpaceGuid.PcdAppleAnsExpectedPhysicalInterrupt|0|UINT32|0x0000471A
+  # Publish the ANS controller in ACPI.  This must be TRUE only in builds
+  # whose FV also carries AppleNANDStorageDxe: an NTAS200x device with no
+  # driver behind it enumerates and then strands Windows storage.
+  gAppleSiliconPkgTokenSpaceGuid.PcdAppleAnsPublishAcpiDevice|FALSE|BOOLEAN|0x0000471B
 
   # Stack stuff (128k stack by default)
   #Fallback stack base in case ModuleEntryPoint setup won't work.
