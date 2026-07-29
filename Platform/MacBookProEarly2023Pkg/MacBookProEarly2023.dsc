@@ -54,6 +54,15 @@
   gAppleSiliconPkgTokenSpaceGuid.PcdAppleAnsExpectedPhysicalInterrupt|1832
   # This branch's FV carries AppleNANDStorageDxe, so the SSDT may publish.
   gAppleSiliconPkgTokenSpaceGuid.PcdAppleAnsPublishAcpiDevice|TRUE
+  # Offer the internal SSD to the boot manager again.  1fb920e withheld
+  # Block I/O because "USB Storage" was booting the internal disk's Fedora
+  # ESP; the real defect was PlatformIsDevicePathUsb() returning TRUE for
+  # every device path, so the ANS disk passed MsBootPolicy's USB-only
+  # filter.  With that fixed, the internal SSD is exactly what the
+  # "Internal Storage" default option matches, ordered after "USB Storage":
+  # the deploy stick still wins whenever it is present.  Flip this back to
+  # FALSE for a single-variable A/B against the withheld configuration.
+  gAppleSiliconPkgTokenSpaceGuid.PcdAppleAnsPublishBlockIo|TRUE
 
 [Components.common]
 

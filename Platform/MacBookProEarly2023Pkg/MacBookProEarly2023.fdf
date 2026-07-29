@@ -132,6 +132,13 @@ FvNameGuid         = 02e6c12f-69f7-4626-b5de-e3cfd6c0dc56
   INF MdeModulePkg/Universal/Console/ConSplitterDxe/ConSplitterDxe.inf
   INF MdeModulePkg/Universal/Console/GraphicsConsoleDxe/GraphicsConsoleDxe.inf
   INF MdeModulePkg/Universal/Console/TerminalDxe/TerminalDxe.inf
+  # SerialDxe publishes SerialIo over AppleUartSerialPortLib (whose RX path
+  # is already implemented); TerminalDxe then provides SimpleTextIn/InEx on
+  # it.  Together with the serial console entry in T602X
+  # MsPlatformDevicesLib this is the only ConIn Mu can drive on J414s
+  # without an attached USB keyboard.  It was always in the DSC; it was
+  # never packaged into the flash image until now.
+  INF MdeModulePkg/Universal/SerialDxe/SerialDxe.inf
   INF ArmPkg/Drivers/TimerDxe/TimerDxe.inf
 !if $(AIC_BUILD) == FALSE
   INF ArmPkg/Drivers/ArmGicDxe/ArmGicDxe.inf
