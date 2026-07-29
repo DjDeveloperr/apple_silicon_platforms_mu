@@ -168,6 +168,10 @@ AcpiPlatformInstallAppleAnsTable (
   BOOLEAN                      Legacy;
   CONST CHAR8                  *HardwareId;
 
+  if (!FeaturePcdGet (PcdAppleAnsAcpiEnabled)) {
+    return EFI_NOT_FOUND;
+  }
+
   RootNode = NULL;
   Table    = NULL;
   AnsNode  = dt_get ("/arm-io/ans");
@@ -1143,8 +1147,12 @@ AcpiPlatformEntryPoint (
 
   // Status = AcpiPlatformInstallMadtTable();
 
-  // This bounded GPU resource-probe profile deliberately omits ANS. External
-  // USB is the only storage path published to Windows by this firmware.
+  // Publish ANS only for profiles that explicitly enable the feature PCD.
+  Status = AcpiPlatformInstallAppleAnsTable (AcpiTable);
+  if (EFI_ERROR (Status) && (Status != EFI_NOT_FOUND)) {
+    DEBUG ((DEBUG_ERROR, "AppleANS ACPI: SSDT installation failed: %r\n", Status));
+    return EFI_ABORTED;
+  }
 
 
   //

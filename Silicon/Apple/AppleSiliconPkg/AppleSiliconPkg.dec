@@ -83,6 +83,9 @@
 
 [PcdsDynamic.common]
 
+[PcdsFeatureFlag.common]
+  gAppleSiliconPkgTokenSpaceGuid.PcdAppleAnsAcpiEnabled|TRUE|BOOLEAN|0x0000471c
+
 [PcdsPatchableInModule.common]
   #Framebuffer (this will be filled in by iBoot)
   gAppleSiliconPkgTokenSpaceGuid.PcdFrameBufferAddress|0x0|UINT64|0x00004400
