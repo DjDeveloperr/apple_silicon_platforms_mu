@@ -38,6 +38,9 @@
 STATIC BOOLEAN  mAppendedRamdiskCorrupt;
 STATIC UINT64   mAppendedRamdiskReservationSize;
 
+STATIC CONST EFI_GUID  mNtasiAppendedRamdiskLocationHobGuid =
+  NTASI_APPENDED_RAMDISK_LOCATION_HOB_GUID;
+
 VOID BuildMemoryTypeInformationHob(VOID);
 
 VOID BuildVirtualMemoryMap(OUT ARM_MEMORY_REGION_DESCRIPTOR **VirtualMemoryMap);
@@ -331,6 +334,7 @@ EFI_STATUS EFIAPI MemoryPeim(IN EFI_PHYSICAL_ADDRESS UefiMemoryBase, IN UINT64 U
     EFI_PHYSICAL_ADDRESS  AppendedTop;
     EFI_PHYSICAL_ADDRESS  ReserveBase;
     EFI_PHYSICAL_ADDRESS  ReserveTop;
+    NTASI_APPENDED_RAMDISK_LOCATION  Location;
 
     AppendedTop = FdTop + mAppendedRamdiskReservationSize;
     ReserveBase = MAX (FdTop, PcdGet64 (PcdSystemMemoryBase));
@@ -346,7 +350,21 @@ EFI_STATUS EFIAPI MemoryPeim(IN EFI_PHYSICAL_ADDRESS UefiMemoryBase, IN UINT64 U
         return EFI_OUT_OF_RESOURCES;
       }
     }
-    DEBUG ((DEBUG_INFO, "MemoryInitPeiLib: mapped appended ramdisk at 0x%lx (0x%lx bytes)\n", FdTop, mAppendedRamdiskReservationSize));
+    Location.Signature             = NTASI_APPENDED_RAMDISK_LOCATION_SIGNATURE;
+    Location.Version               = NTASI_APPENDED_RAMDISK_LOCATION_VERSION;
+    Location.StructureSize         = sizeof (Location);
+    Location.HeaderPhysicalAddress = FdTop;
+    Location.ReservationSize       = mAppendedRamdiskReservationSize;
+    if (BuildGuidDataHob (
+          &mNtasiAppendedRamdiskLocationHobGuid,
+          &Location,
+          sizeof (Location)
+          ) == NULL)
+    {
+      DEBUG ((DEBUG_ERROR, "MemoryInitPeiLib: cannot publish appended ramdisk location HOB\n"));
+      return EFI_OUT_OF_RESOURCES;
+    }
+    DEBUG ((DEBUG_INFO, "MemoryInitPeiLib: mapped appended ramdisk and published location HOB at 0x%lx (0x%lx bytes)\n", FdTop, mAppendedRamdiskReservationSize));
   }
 
   //reserve secondary stacks carveouts passed into cpm-impl-reg 

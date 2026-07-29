@@ -13,6 +13,10 @@
 #define NTASI_APPENDED_RAMDISK_VERSION         1U
 #define NTASI_APPENDED_RAMDISK_MAX_IMAGE_SIZE  0x40000000ULL
 #define NTASI_APPENDED_RAMDISK_MAX_MAPPED_SPAN  0x40001000ULL
+#define NTASI_APPENDED_RAMDISK_LOCATION_SIGNATURE  SIGNATURE_64 ('N', 'T', 'A', 'S', 'I', 'H', 'O', 'B')
+#define NTASI_APPENDED_RAMDISK_LOCATION_VERSION    1U
+#define NTASI_APPENDED_RAMDISK_LOCATION_HOB_GUID  \
+  { 0x9d157fd4, 0x8f63, 0x4e6e, { 0xa4, 0x59, 0x64, 0x0e, 0x93, 0xf2, 0x38, 0x37 } }
 
 typedef struct {
   UINT64    Signature;
@@ -23,9 +27,22 @@ typedef struct {
   UINT32    HeaderCrc32;
 } NTASI_APPENDED_RAMDISK_HEADER;
 
+typedef struct {
+  UINT64                  Signature;
+  UINT32                  Version;
+  UINT32                  StructureSize;
+  EFI_PHYSICAL_ADDRESS    HeaderPhysicalAddress;
+  UINT64                  ReservationSize;
+} NTASI_APPENDED_RAMDISK_LOCATION;
+
 STATIC_ASSERT (
   sizeof (NTASI_APPENDED_RAMDISK_HEADER) == 32,
   "The appended ramdisk header is part of the m1n1/Mu ABI"
+  );
+
+STATIC_ASSERT (
+  sizeof (NTASI_APPENDED_RAMDISK_LOCATION) == 32,
+  "The appended ramdisk PEI/DXE location HOB is a versioned ABI"
   );
 
 STATIC
@@ -37,16 +54,22 @@ NtasiAppendedRamdiskCrc32 (
 {
   CONST UINT8  *Bytes;
   UINT32       Crc;
+  UINT32       Table[256];
   UINTN        Index;
   UINTN        Bit;
 
   Bytes = (CONST UINT8 *)Buffer;
+  for (Index = 0; Index < ARRAY_SIZE (Table); Index++) {
+    Table[Index] = (UINT32)Index;
+    for (Bit = 0; Bit < 8; Bit++) {
+      Table[Index] = (Table[Index] >> 1) ^
+                     ((0U - (Table[Index] & 1U)) & 0xEDB88320U);
+    }
+  }
+
   Crc   = MAX_UINT32;
   for (Index = 0; Index < BufferSize; Index++) {
-    Crc ^= Bytes[Index];
-    for (Bit = 0; Bit < 8; Bit++) {
-      Crc = (Crc >> 1) ^ ((0U - (Crc & 1U)) & 0xEDB88320U);
-    }
+    Crc = Table[(Crc ^ Bytes[Index]) & 0xFFU] ^ (Crc >> 8);
   }
 
   return ~Crc;

@@ -5,10 +5,14 @@
 **/
 
 #include <PiDxe.h>
+#include <Library/HobLib.h>
 
 #include "BootRamdiskHelperDxe.h"
 #define NTASI_APPENDED_RAMDISK_INCLUDE_FAT_VALIDATOR  1
 #include <AppendedRamdisk.h>
+
+STATIC CONST EFI_GUID  mNtasiAppendedRamdiskLocationHobGuid =
+  NTASI_APPENDED_RAMDISK_LOCATION_HOB_GUID;
 
 STATIC
 EFI_STATUS
@@ -51,18 +55,42 @@ RegisterAppendedRamdisk (
   VOID
   )
 {
-  EFI_PHYSICAL_ADDRESS                  FdTop;
+  VOID                                  *GuidHob;
+  CONST NTASI_APPENDED_RAMDISK_LOCATION *Location;
   CONST NTASI_APPENDED_RAMDISK_HEADER   *Header;
   CONST VOID                            *Image;
   UINT64                                ImageSize;
 
-  FdTop = PcdGet64 (PcdFdBaseAddress) + PcdGet32 (PcdFdSize);
-  if (FdTop < PcdGet64 (PcdFdBaseAddress)) {
+  GuidHob = GetFirstGuidHob (&mNtasiAppendedRamdiskLocationHobGuid);
+  if (GuidHob == NULL) {
     return EFI_NOT_FOUND;
   }
+  if (GET_GUID_HOB_DATA_SIZE (GuidHob) != sizeof (*Location)) {
+    DEBUG ((DEBUG_ERROR, "BootRamdiskHelperDxe: malformed location HOB size\n"));
+    return EFI_COMPROMISED_DATA;
+  }
 
-  DEBUG ((DEBUG_INFO, "BootRamdiskHelperDxe: probing appended header at 0x%lx\n", FdTop));
-  Header = (CONST NTASI_APPENDED_RAMDISK_HEADER *)(UINTN)FdTop;
+  Location = (CONST NTASI_APPENDED_RAMDISK_LOCATION *)GET_GUID_HOB_DATA (GuidHob);
+  if ((Location->Signature != NTASI_APPENDED_RAMDISK_LOCATION_SIGNATURE) ||
+      (Location->Version != NTASI_APPENDED_RAMDISK_LOCATION_VERSION) ||
+      (Location->StructureSize != sizeof (*Location)) ||
+      (Location->HeaderPhysicalAddress == 0) ||
+      (Location->ReservationSize < sizeof (*Header)) ||
+      (Location->ReservationSize > NTASI_APPENDED_RAMDISK_MAX_MAPPED_SPAN) ||
+      (Location->HeaderPhysicalAddress + Location->ReservationSize <
+       Location->HeaderPhysicalAddress))
+  {
+    DEBUG ((DEBUG_ERROR, "BootRamdiskHelperDxe: invalid location HOB\n"));
+    return EFI_COMPROMISED_DATA;
+  }
+
+  DEBUG ((
+    DEBUG_INFO,
+    "BootRamdiskHelperDxe: probing PEI-published header at 0x%lx (0x%lx-byte reservation)\n",
+    Location->HeaderPhysicalAddress,
+    Location->ReservationSize
+    ));
+  Header = (CONST NTASI_APPENDED_RAMDISK_HEADER *)(UINTN)Location->HeaderPhysicalAddress;
   if (Header->Signature != NTASI_APPENDED_RAMDISK_SIGNATURE) {
     return EFI_NOT_FOUND;
   }
@@ -70,8 +98,8 @@ RegisterAppendedRamdisk (
 
   if (!NtasiValidateAppendedRamdisk (
          Header,
-         NTASI_APPENDED_RAMDISK_MAX_MAPPED_SPAN,
-         FALSE,
+         Location->ReservationSize,
+         TRUE,
          &Image,
          &ImageSize,
          NULL
@@ -83,15 +111,9 @@ RegisterAppendedRamdisk (
     return EFI_COMPROMISED_DATA;
   }
 
-  // The launcher validates the sealed raw FAT SHA-256 immediately before
-  // transfer, while the header CRC covers ImageSize/ImageCrc32 and the BPB is
-  // checked above. A single gBS->CalculateCrc32 call over the 822 MiB image
-  // synchronously faulted in ArmCpuDxe on J414s even after GCD preserved the
-  // range as cacheable SystemMemory. Defer whole-payload integrity to the
-  // measured launcher instead of making firmware reread the entire disk.
   DEBUG ((
     DEBUG_INFO,
-    "BootRamdiskHelperDxe: header/FAT valid; sealed payload CRC is 0x%x\n",
+    "BootRamdiskHelperDxe: header/FAT/payload CRC valid (0x%x)\n",
     Header->ImageCrc32
     ));
 

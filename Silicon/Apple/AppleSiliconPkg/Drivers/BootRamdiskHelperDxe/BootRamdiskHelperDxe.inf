@@ -21,6 +21,7 @@
 
 #just a default set of libraries from HttpBootDxe for now, can scale back if needed
 [LibraryClasses]
+  HobLib
   UefiDriverEntryPoint
   UefiBootServicesTableLib
   MemoryAllocationLib
@@ -47,10 +48,6 @@
 
 [Pcd.common]
   gAppleSiliconPkgTokenSpaceGuid.PcdInitializeRamdisk
-  gArmTokenSpaceGuid.PcdFdBaseAddress
-
-[FixedPcd]
-  gArmTokenSpaceGuid.PcdFdSize
 
 
 [Depex]
