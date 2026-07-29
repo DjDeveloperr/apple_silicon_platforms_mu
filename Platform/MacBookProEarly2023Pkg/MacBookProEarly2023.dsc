@@ -52,8 +52,10 @@
   # Windows consumes GSIV 38; the AIC2 CSRT translates it to T6020 line 1832.
   gAppleSiliconPkgTokenSpaceGuid.PcdAppleAnsPublishedInterrupt|38
   gAppleSiliconPkgTokenSpaceGuid.PcdAppleAnsExpectedPhysicalInterrupt|1832
-  # This branch's FV carries AppleNANDStorageDxe, so the SSDT may publish.
-  gAppleSiliconPkgTokenSpaceGuid.PcdAppleAnsPublishAcpiDevice|TRUE
+  # Keep Mu's ANS initialization in the FV, but do not publish NTAS2003 to
+  # Windows. Hardware A/B on 2026-07-29 showed that the runtime ANS SSDT alone
+  # stalls Phase1Initialization in IopMountVolume before AppleNvmeSart3 loads.
+  gAppleSiliconPkgTokenSpaceGuid.PcdAppleAnsPublishAcpiDevice|FALSE
 
   #
   # BCM4388 SID-1 DART page-table carveout.  m1n1's wireless handoff installs
