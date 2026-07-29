@@ -30,6 +30,22 @@
   # A zero/zero pair publishes the live physical line directly.
   gAppleSiliconPkgTokenSpaceGuid.PcdAppleAnsPublishedInterrupt|0|UINT32|0x00004719
   gAppleSiliconPkgTokenSpaceGuid.PcdAppleAnsExpectedPhysicalInterrupt|0|UINT32|0x0000471A
+  # Publish the ANS controller in ACPI.  This must be TRUE only in builds
+  # whose FV also carries AppleNANDStorageDxe: an NTAS200x device with no
+  # driver behind it enumerates and then strands Windows storage.
+  gAppleSiliconPkgTokenSpaceGuid.PcdAppleAnsPublishAcpiDevice|FALSE|BOOLEAN|0x0000471B
+  # Offer the internal NVMe namespace to the UEFI boot manager.  FALSE keeps
+  # the controller fully initialized -- and, importantly, stopped before
+  # boot -- while publishing no Block I/O, so BDS cannot enumerate a boot
+  # option for it.  Windows does not need it: the NTAS200x device comes from
+  # the runtime SSDT, which reads the live ADT directly.
+  gAppleSiliconPkgTokenSpaceGuid.PcdAppleAnsPublishBlockIo|FALSE|BOOLEAN|0x0000471C
+  # Exact four-byte PMGR power-state registers exported only to NTAS2003.
+  # Windows owns the complete Asahi-pinned dependency chain during ANS start.
+  gAppleSiliconPkgTokenSpaceGuid.PcdAppleAnsPmgrResetBase|0|UINT64|0x0000471D
+  gAppleSiliconPkgTokenSpaceGuid.PcdAppleAnsPmgrApcieStBase|0|UINT64|0x0000471E
+  gAppleSiliconPkgTokenSpaceGuid.PcdAppleAnsPmgrApcieStSysBase|0|UINT64|0x0000471F
+  gAppleSiliconPkgTokenSpaceGuid.PcdAppleAnsPmgrApcieSt1SysBase|0|UINT64|0x00004720
 
   # Stack stuff (128k stack by default)
   #Fallback stack base in case ModuleEntryPoint setup won't work.

@@ -51,6 +51,11 @@
   gAppleSiliconPkgTokenSpaceGuid.PcdGenericAcpiTableStorageFile   ## CONSUMES
   gAppleSiliconPkgTokenSpaceGuid.PcdAppleAnsPublishedInterrupt    ## CONSUMES
   gAppleSiliconPkgTokenSpaceGuid.PcdAppleAnsExpectedPhysicalInterrupt ## CONSUMES
+  gAppleSiliconPkgTokenSpaceGuid.PcdAppleAnsPublishAcpiDevice    ## CONSUMES
+  gAppleSiliconPkgTokenSpaceGuid.PcdAppleAnsPmgrResetBase        ## CONSUMES
+  gAppleSiliconPkgTokenSpaceGuid.PcdAppleAnsPmgrApcieStBase     ## CONSUMES
+  gAppleSiliconPkgTokenSpaceGuid.PcdAppleAnsPmgrApcieStSysBase  ## CONSUMES
+  gAppleSiliconPkgTokenSpaceGuid.PcdAppleAnsPmgrApcieSt1SysBase ## CONSUMES
 
 [Depex]
   gEfiAcpiTableProtocolGuid

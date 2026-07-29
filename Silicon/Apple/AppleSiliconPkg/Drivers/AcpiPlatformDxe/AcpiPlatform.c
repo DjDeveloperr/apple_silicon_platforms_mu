@@ -30,9 +30,11 @@
 #include <Library/PcdLib.h>
 
 #include <IndustryStandard/Acpi.h>
+#include <Drivers/AppleAnsHardware.h>
 
 #define APPLE_ANS_ACPI_OEM_ID        "NTASP "
 #define APPLE_ANS_ACPI_OEM_TABLE_ID  "APPLEANS"
+#define APPLE_ANS_PMGR_RESET_SIZE     sizeof (UINT32)
 
 STATIC
 BOOLEAN
@@ -127,10 +129,15 @@ AppleAnsAddMemoryResource (
   hardware profile are derived from the live Apple Device Tree so one firmware
   binary does not bake in a board-specific MMIO map.
 
-  The three memory resources have a stable ABI with the Windows miniport:
+  The first three memory resources have a stable ABI with the Windows miniport:
     0: ASC CPU/mailbox aperture (mailbox registers are at +0x8000)
     1: ANS NVMe aperture (ADT reg[3])
     2: SART aperture
+  NTAS2003 appends four deliberately narrow resources in driver ABI order:
+    3: exact 4-byte ps_ans2 PMGR power/reset word
+    4: exact 4-byte ps_apcie_st parent power word
+    5: exact 4-byte ps_apcie_st_sys power word
+    6: exact 4-byte ps_apcie_st1_sys power word
 **/
 STATIC
 EFI_STATUS
@@ -154,6 +161,12 @@ AcpiPlatformInstallAppleAnsTable (
   UINT64                       NvmeSize;
   UINT64                       SartBase;
   UINT64                       SartSize;
+  UINT64                       PmgrResetBase;
+  UINT64                       PmgrApcieStBase;
+  UINT64                       PmgrApcieStSysBase;
+  UINT64                       PmgrApcieSt1SysBase;
+  UINT64                       NvmeMinimumSize;
+  UINT64                       SartMinimumSize;
   UINT32                       AcpiInterrupt;
   UINT32                       ExpectedPhysicalInterrupt;
   UINT32                       PhysicalInterrupt;
@@ -170,12 +183,22 @@ AcpiPlatformInstallAppleAnsTable (
 
   RootNode = NULL;
   Table    = NULL;
+  PmgrResetBase = 0;
+  PmgrApcieStBase = 0;
+  PmgrApcieStSysBase = 0;
+  PmgrApcieSt1SysBase = 0;
 
   //
-  // Input profile: do not publish the ANS controller either.  Its DXE is absent
-  // here, so an NTAS2002 device would enumerate with no driver behind it.
+  // Do not publish the ANS controller in a build whose FV has no
+  // AppleNANDStorageDxe: an NTAS200x device would enumerate with no driver
+  // behind it.  This was an unconditional return while ANS was quarantined out
+  // of the input profile, which silently survived re-enabling the DXE and left
+  // the ANS build carrying a driver that nothing in ACPI ever pointed at.
   //
-  return EFI_NOT_FOUND;
+  if (!FixedPcdGetBool (PcdAppleAnsPublishAcpiDevice)) {
+    return EFI_NOT_FOUND;
+  }
+
   AnsNode  = dt_get ("/arm-io/ans");
   SartNode = dt_get ("/arm-io/sart-ans");
   if ((AnsNode == NULL) || (SartNode == NULL)) {
@@ -271,6 +294,7 @@ AcpiPlatformInstallAppleAnsTable (
   }
 
   Legacy = AppleAnsPropertyContains (AnsNode, "compatible", "t8015");
+  NvmeMinimumSize = Legacy ? APPLE_ANS_NVME_T8015_MIN_SIZE : APPLE_ANS_NVME_MIN_SIZE;
   VersionProperty = dt_node_prop (SartNode, "sart-version", &PropertySize);
   if ((VersionProperty != NULL) && (PropertySize >= sizeof (*VersionProperty))) {
     SartVersion = *VersionProperty;
@@ -284,10 +308,36 @@ AcpiPlatformInstallAppleAnsTable (
 
   if (Legacy && (SartVersion == 0)) {
     HardwareId = "NTAS1000";
+    SartMinimumSize = APPLE_ANS_SART_V0_MIN_SIZE;
   } else if (!Legacy && (SartVersion == 2)) {
     HardwareId = "NTAS2002";
+    SartMinimumSize = APPLE_ANS_SART_V2_MIN_SIZE;
   } else if (!Legacy && (SartVersion == 3)) {
     HardwareId = "NTAS2003";
+    PmgrResetBase = FixedPcdGet64 (PcdAppleAnsPmgrResetBase);
+    PmgrApcieStBase = FixedPcdGet64 (PcdAppleAnsPmgrApcieStBase);
+    PmgrApcieStSysBase = FixedPcdGet64 (PcdAppleAnsPmgrApcieStSysBase);
+    PmgrApcieSt1SysBase = FixedPcdGet64 (PcdAppleAnsPmgrApcieSt1SysBase);
+    if ((PmgrResetBase == 0) || (PmgrApcieStBase == 0) ||
+        (PmgrApcieStSysBase == 0) || (PmgrApcieSt1SysBase == 0) ||
+        ((PmgrResetBase & (APPLE_ANS_PMGR_RESET_SIZE - 1)) != 0) ||
+        ((PmgrApcieStBase & (APPLE_ANS_PMGR_RESET_SIZE - 1)) != 0) ||
+        ((PmgrApcieStSysBase & (APPLE_ANS_PMGR_RESET_SIZE - 1)) != 0) ||
+        ((PmgrApcieSt1SysBase & (APPLE_ANS_PMGR_RESET_SIZE - 1)) != 0) ||
+        (PmgrResetBase == PmgrApcieStBase) ||
+        (PmgrResetBase == PmgrApcieStSysBase) ||
+        (PmgrResetBase == PmgrApcieSt1SysBase) ||
+        (PmgrApcieStBase == PmgrApcieStSysBase) ||
+        (PmgrApcieStBase == PmgrApcieSt1SysBase) ||
+        (PmgrApcieStSysBase == PmgrApcieSt1SysBase))
+    {
+      DEBUG ((
+        DEBUG_ERROR,
+        "AppleANS ACPI: NTAS2003 requires four aligned distinct PMGR words\n"
+        ));
+      return EFI_UNSUPPORTED;
+    }
+    SartMinimumSize = APPLE_ANS_SART_V3_MIN_SIZE;
   } else {
     DEBUG ((
       DEBUG_ERROR,
@@ -296,6 +346,26 @@ AcpiPlatformInstallAppleAnsTable (
       SartVersion
       ));
     return EFI_UNSUPPORTED;
+  }
+
+  if (!AppleAnsMmioRangeValid (CpuBase, CpuSize, APPLE_ANS_CPU_MIN_SIZE) ||
+      !AppleAnsMmioRangeValid (NvmeBase, NvmeSize, NvmeMinimumSize) ||
+      !AppleAnsMmioRangeValid (SartBase, SartSize, SartMinimumSize))
+  {
+    DEBUG ((
+      DEBUG_ERROR,
+      "AppleANS ACPI: refusing MMIO cpu=%Lx/%Lx nvme=%Lx/%Lx sart=%Lx/%Lx minimum=%Lx/%Lx/%Lx\n",
+      CpuBase,
+      CpuSize,
+      NvmeBase,
+      NvmeSize,
+      SartBase,
+      SartSize,
+      (UINT64)APPLE_ANS_CPU_MIN_SIZE,
+      NvmeMinimumSize,
+      SartMinimumSize
+      ));
+    return EFI_DEVICE_ERROR;
   }
 
   Status = AmlCodeGenDefinitionBlock (
@@ -359,6 +429,41 @@ AcpiPlatformInstallAppleAnsTable (
     goto Exit;
   }
 
+  if (SartVersion == 3) {
+    Status = AppleAnsAddMemoryResource (
+               CrsNode,
+               PmgrResetBase,
+               APPLE_ANS_PMGR_RESET_SIZE
+               );
+    if (EFI_ERROR (Status)) {
+      goto Exit;
+    }
+    Status = AppleAnsAddMemoryResource (
+               CrsNode,
+               PmgrApcieStBase,
+               APPLE_ANS_PMGR_RESET_SIZE
+               );
+    if (EFI_ERROR (Status)) {
+      goto Exit;
+    }
+    Status = AppleAnsAddMemoryResource (
+               CrsNode,
+               PmgrApcieStSysBase,
+               APPLE_ANS_PMGR_RESET_SIZE
+               );
+    if (EFI_ERROR (Status)) {
+      goto Exit;
+    }
+    Status = AppleAnsAddMemoryResource (
+               CrsNode,
+               PmgrApcieSt1SysBase,
+               APPLE_ANS_PMGR_RESET_SIZE
+               );
+    if (EFI_ERROR (Status)) {
+      goto Exit;
+    }
+  }
+
   Status = AmlCodeGenRdInterrupt (
              TRUE,                       // ResourceConsumer
              FALSE,                      // Level triggered
@@ -388,7 +493,7 @@ AcpiPlatformInstallAppleAnsTable (
   if (!EFI_ERROR (Status)) {
     DEBUG ((
       DEBUG_INFO,
-      "AppleANS ACPI: %a cpu=%lx/%lx nvme=%lx/%lx sart=%lx/%lx irq=%u physical=%u contract=%a\n",
+      "AppleANS ACPI: %a cpu=%lx/%lx nvme=%lx/%lx sart=%lx/%lx pmgr-ans2=%lx apcie-st=%lx st-sys=%lx st1-sys=%lx size=%x irq=%u physical=%u contract=%a\n",
       HardwareId,
       CpuBase,
       CpuSize,
@@ -396,6 +501,11 @@ AcpiPlatformInstallAppleAnsTable (
       NvmeSize,
       SartBase,
       SartSize,
+      PmgrResetBase,
+      PmgrApcieStBase,
+      PmgrApcieStSysBase,
+      PmgrApcieSt1SysBase,
+      SartVersion == 3 ? (UINT32)APPLE_ANS_PMGR_RESET_SIZE : 0,
       AcpiInterrupt,
       PhysicalInterrupt,
       InterruptContract

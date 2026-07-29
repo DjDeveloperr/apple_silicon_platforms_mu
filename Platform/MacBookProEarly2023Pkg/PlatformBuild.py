@@ -201,6 +201,11 @@ class PlatformBuilder( UefiBuilder, BuildSettingsManager):
             "0",
             "Default",
         )
+        self.env.SetValue(
+            "BLD_*_NTASI_ENABLE_ANS",
+            "FALSE",
+            "Unified baseline keeps experimental ANS publication disabled",
+        )
 
         return 0
 

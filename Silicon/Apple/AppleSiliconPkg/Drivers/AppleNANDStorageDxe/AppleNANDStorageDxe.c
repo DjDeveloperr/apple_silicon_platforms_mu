@@ -25,6 +25,7 @@
 #include <Library/UefiBootServicesTableLib.h>
 #include <Protocol/BlockIo.h>
 #include <Protocol/DevicePath.h>
+#include <Drivers/AppleAnsHardware.h>
 
 #include "Shared/AppleAscCore.h"
 #include "Shared/AppleNvmeBlockCore.h"
@@ -516,21 +517,13 @@ AnsWriteBlocks (
   )
 {
   EFI_STATUS  Status;
-  UINTN       Blocks;
 
   Status = ValidateBlockRequest (This, MediaId, Lba, BufferSize, Buffer);
   if (EFI_ERROR (Status) || (BufferSize == 0)) {
     return Status;
   }
 
-  if (This->Media->ReadOnly) {
-    return EFI_WRITE_PROTECTED;
-  }
-
-  Blocks = BufferSize / This->Media->BlockSize;
-  return MapBlockStatus (
-           ntasi_ans_block_write (&mAns->BlockDevice, Lba, Blocks, Buffer, BufferSize)
-           );
+  return EFI_WRITE_PROTECTED;
 }
 
 STATIC EFI_STATUS EFIAPI
@@ -544,7 +537,7 @@ AnsFlushBlocks (
     return EFI_DEVICE_ERROR;
   }
 
-  return MapBlockStatus (ntasi_ans_block_flush (&mAns->BlockDevice));
+  return EFI_SUCCESS;
 }
 
 STATIC VOID *
@@ -706,10 +699,14 @@ DiscoverHardware (
 #if !defined (APPLE_ANS_QEMU_TEST)
   dt_node_t  *AnsNode;
   dt_node_t  *SartNode;
-  UINT64     Size;
   UINT64     CpuBase;
+  UINT64     CpuSize;
   UINT64     NvmeBase;
+  UINT64     NvmeSize;
   UINT64     SartBase;
+  UINT64     SartSize;
+  UINT64     NvmeMinimumSize;
+  UINT64     SartMinimumSize;
   UINT32     SartVersion;
   UINTN      PropertySize;
   UINT32     *VersionProperty;
@@ -737,20 +734,15 @@ DiscoverHardware (
     return EFI_NOT_FOUND;
   }
 
-  if ((dt_node_reg (AnsNode, 0, &CpuBase, &Size) != 0) ||
-      (dt_node_reg (AnsNode, 3, &NvmeBase, &Size) != 0) ||
-      (dt_node_reg (SartNode, 0, &SartBase, &Size) != 0))
+  if ((dt_node_reg (AnsNode, 0, &CpuBase, &CpuSize) != 0) ||
+      (dt_node_reg (AnsNode, 3, &NvmeBase, &NvmeSize) != 0) ||
+      (dt_node_reg (SartNode, 0, &SartBase, &SartSize) != 0))
   {
     return EFI_NOT_FOUND;
   }
 
-  Device->CpuBase     = (UINTN)CpuBase;
-  Device->NvmeBase    = (UINTN)NvmeBase;
-  Device->SartBase    = (UINTN)SartBase;
-  Device->MailboxBase = Device->CpuBase + APPLE_ANS_MAILBOX_OFFSET;
   Legacy = PropertyContains (AnsNode, "compatible", "t8015");
-  Device->NvmeHw = Legacy ? &ntasi_ans_hw_t8015 : &ntasi_ans_hw_t8103;
-  *AscHw = Legacy ? &ntasi_asc_hw_t8015 : &ntasi_asc_hw_v4;
+  NvmeMinimumSize = Legacy ? APPLE_ANS_NVME_T8015_MIN_SIZE : APPLE_ANS_NVME_MIN_SIZE;
 
   VersionProperty = dt_node_prop (SartNode, "sart-version", &PropertySize);
   if ((VersionProperty != NULL) && (PropertySize >= sizeof (*VersionProperty))) {
@@ -765,21 +757,54 @@ DiscoverHardware (
 
   if (SartVersion == 0) {
     *SartParams = &ntasi_sart_params_v0;
+    SartMinimumSize = APPLE_ANS_SART_V0_MIN_SIZE;
   } else if (SartVersion == 2) {
     *SartParams = &ntasi_sart_params_v2;
+    SartMinimumSize = APPLE_ANS_SART_V2_MIN_SIZE;
   } else if (SartVersion == 3) {
     *SartParams = &ntasi_sart_params_v3;
+    SartMinimumSize = APPLE_ANS_SART_V3_MIN_SIZE;
   } else {
     return EFI_UNSUPPORTED;
   }
 
+  if (!AppleAnsMmioRangeValid (CpuBase, CpuSize, APPLE_ANS_CPU_MIN_SIZE) ||
+      !AppleAnsMmioRangeValid (NvmeBase, NvmeSize, NvmeMinimumSize) ||
+      !AppleAnsMmioRangeValid (SartBase, SartSize, SartMinimumSize))
+  {
+    ANS_DEBUG ((
+      DEBUG_ERROR,
+      "AppleANS: refusing MMIO cpu=%Lx/%Lx nvme=%Lx/%Lx sart=%Lx/%Lx minimum=%Lx/%Lx/%Lx\n",
+      CpuBase,
+      CpuSize,
+      NvmeBase,
+      NvmeSize,
+      SartBase,
+      SartSize,
+      (UINT64)APPLE_ANS_CPU_MIN_SIZE,
+      NvmeMinimumSize,
+      SartMinimumSize
+      ));
+    return EFI_DEVICE_ERROR;
+  }
+
+  Device->CpuBase     = (UINTN)CpuBase;
+  Device->NvmeBase    = (UINTN)NvmeBase;
+  Device->SartBase    = (UINTN)SartBase;
+  Device->MailboxBase = Device->CpuBase + APPLE_ANS_MAILBOX_OFFSET;
+  Device->NvmeHw      = Legacy ? &ntasi_ans_hw_t8015 : &ntasi_ans_hw_t8103;
+  *AscHw              = Legacy ? &ntasi_asc_hw_t8015 : &ntasi_asc_hw_v4;
+
   ANS_DEBUG ((
     DEBUG_INFO,
-    "AppleANS: cpu=%lx mailbox=%lx nvme=%lx sart=%lx legacy=%d sartv%d\n",
-    Device->CpuBase,
+    "AppleANS: cpu=%Lx/%Lx mailbox=%lx nvme=%Lx/%Lx sart=%Lx/%Lx legacy=%d sartv%d\n",
+    CpuBase,
+    CpuSize,
     Device->MailboxBase,
-    Device->NvmeBase,
-    Device->SartBase,
+    NvmeBase,
+    NvmeSize,
+    SartBase,
+    SartSize,
     Legacy,
     SartVersion
     ));
@@ -939,8 +964,8 @@ AppleNANDStorageDxeInitialize (
     .RemovableMedia   = FALSE,
     .MediaPresent     = TRUE,
     .LogicalPartition = FALSE,
-    .ReadOnly         = FALSE,
-    .WriteCaching     = TRUE,
+    .ReadOnly         = TRUE,
+    .WriteCaching     = FALSE,
     .BlockSize        = Device->BlockDevice.media.block_size,
     .IoAlign          = 1,
     .LastBlock        = Device->BlockDevice.media.block_count - 1,
@@ -987,16 +1012,33 @@ AppleNANDStorageDxeInitialize (
     goto Fail;
   }
 
-  Status = gBS->InstallMultipleProtocolInterfaces (
-                  &Device->Handle,
-                  &gEfiBlockIoProtocolGuid,
-                  &Device->BlockIo,
-                  &gEfiDevicePathProtocolGuid,
-                  &Device->DevicePath,
-                  NULL
-                  );
-  if (EFI_ERROR (Status)) {
-    goto Fail;
+  //
+  // Publishing Block I/O hands BDS a bootable device.  On J414s the internal
+  // SSD still carries its original OS loader, so the moment this appeared the
+  // boot manager chose it over the Windows loader on USB and booted GRUB --
+  // with no way to intervene, because Mu drives no keyboard on this machine.
+  // Windows never needs this protocol: it finds the controller through the
+  // NTAS200x runtime SSDT, which reads the live ADT.  Everything above still
+  // runs, including stopping the coprocessor before boot, so the controller is
+  // left in the state the Windows driver expects.
+  //
+  if (FixedPcdGetBool (PcdAppleAnsPublishBlockIo)) {
+    Status = gBS->InstallMultipleProtocolInterfaces (
+                    &Device->Handle,
+                    &gEfiBlockIoProtocolGuid,
+                    &Device->BlockIo,
+                    &gEfiDevicePathProtocolGuid,
+                    &Device->DevicePath,
+                    NULL
+                    );
+    if (EFI_ERROR (Status)) {
+      goto Fail;
+    }
+  } else {
+    ANS_DEBUG ((
+      DEBUG_INFO,
+      "AppleANS: Block I/O withheld from BDS by PcdAppleAnsPublishBlockIo\n"
+      ));
   }
 
   ANS_DEBUG ((

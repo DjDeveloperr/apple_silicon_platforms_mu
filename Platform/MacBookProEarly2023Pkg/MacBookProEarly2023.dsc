@@ -52,6 +52,13 @@
   # Windows consumes GSIV 38; the AIC2 CSRT translates it to T6020 line 1832.
   gAppleSiliconPkgTokenSpaceGuid.PcdAppleAnsPublishedInterrupt|38
   gAppleSiliconPkgTokenSpaceGuid.PcdAppleAnsExpectedPhysicalInterrupt|1832
+  # ANS publication is the only storage-firmware experiment.  The unified
+  # baseline leaves this FALSE; the ans build profile overrides it to TRUE.
+  gAppleSiliconPkgTokenSpaceGuid.PcdAppleAnsPublishAcpiDevice|$(NTASI_ENABLE_ANS)
+  gAppleSiliconPkgTokenSpaceGuid.PcdAppleAnsPmgrResetBase|0x28E0801A8
+  gAppleSiliconPkgTokenSpaceGuid.PcdAppleAnsPmgrApcieStBase|0x28E0801A0
+  gAppleSiliconPkgTokenSpaceGuid.PcdAppleAnsPmgrApcieStSysBase|0x28E080408
+  gAppleSiliconPkgTokenSpaceGuid.PcdAppleAnsPmgrApcieSt1SysBase|0x28E080410
   # Exact m1n1 wireless_handoff_init() carveout. Mu only reserves and
   # publishes it; it never creates or modifies the DART tables.
   gAppleSiliconPkgTokenSpaceGuid.PcdAppleWirelessDartPageTableBase|0x10022000000
