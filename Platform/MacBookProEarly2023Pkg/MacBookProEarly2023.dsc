@@ -43,8 +43,8 @@
   gAppleSiliconPkgTokenSpaceGuid.PcdAppleNumDwc3Darts|6 # M2 Pro case is hardcoded for now.
   # Windows' GIC arbiter cannot allocate T6020's physical ANS line 1832.
   # Publish the platform-reserved GSIV 38; the AIC2 CSRT maps it back to 1832.
-  gAppleSiliconPkgTokenSpaceGuid.PcdAppleAnsPublishedInterrupt|38
-  gAppleSiliconPkgTokenSpaceGuid.PcdAppleAnsExpectedPhysicalInterrupt|1832
+  gAppleSiliconPkgTokenSpaceGuid.PcdAppleAnsPublishedInterrupt|0
+  gAppleSiliconPkgTokenSpaceGuid.PcdAppleAnsExpectedPhysicalInterrupt|0
   # Physical xHCI line 1274 is published as arbiter-legal GSIV 37; AIC2 ALI2
   # translates it back before native-controller MMIO.
   gAppleSiliconPkgTokenSpaceGuid.PcdAppleXhciPublishedInterrupt|37

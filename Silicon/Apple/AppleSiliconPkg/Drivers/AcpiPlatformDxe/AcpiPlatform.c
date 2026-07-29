@@ -168,6 +168,13 @@ AcpiPlatformInstallAppleAnsTable (
   BOOLEAN                      Legacy;
   CONST CHAR8                  *HardwareId;
 
+  // A zero published interrupt is the fail-closed selector for the bounded
+  // display/WinPE profile. It prevents an ADT-present ANS device from being
+  // surfaced while retaining the common source and its compile-time checks.
+  if (FixedPcdGet32 (PcdAppleAnsPublishedInterrupt) == 0) {
+    return EFI_NOT_FOUND;
+  }
+
   RootNode = NULL;
   Table    = NULL;
   AnsNode  = dt_get ("/arm-io/ans");
@@ -1143,8 +1150,12 @@ AcpiPlatformEntryPoint (
 
   // Status = AcpiPlatformInstallMadtTable();
 
-  // This bounded display/WinPE profile deliberately omits ANS. The external
-  // USB storage path is the only storage device exposed to Windows here.
+  // Publish ANS only for profiles that selected a nonzero published line.
+  Status = AcpiPlatformInstallAppleAnsTable (AcpiTable);
+  if (EFI_ERROR (Status) && (Status != EFI_NOT_FOUND)) {
+    DEBUG ((DEBUG_ERROR, "AppleANS ACPI: SSDT installation failed: %r\n", Status));
+    return EFI_ABORTED;
+  }
 
 
   //
