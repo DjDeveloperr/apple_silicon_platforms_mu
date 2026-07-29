@@ -108,14 +108,47 @@
             },
         })
 
-        // Device(PCI0) {
-        //     Name (_HID, EISAID ("PNP0A08")) // PCI Express Root Bridge
-        //     Name (_CID, EISAID ("PNP0A03")) // Compatible PCI Root Bridge
-        //     Name (_SEG, Zero) // PCI Segment Group number
-        //     Name (_BBN, Zero) // PCI Base Bus Number
-        //     Name (_ADR, Zero)
-        //     Name (_UID, "PCI0")
-        // }
+        // DART for APCIE port 0.  Stream ID 1 is shared by the BCM4388 Wi-Fi
+        // and Bluetooth functions.  m1n1 owns the deny-all tables; Windows may
+        // validate/adopt but must never discover an uncontained endpoint.
+        Device (DRT0) {
+            Name (_HID, "NTAS0011")
+            Name (_UID, Zero)
+            Name (_CCA, One)
+            Name (_CRS, ResourceTemplate () {
+                QWordMemory (ResourceConsumer, PosDecode, MinFixed, MaxFixed,
+                    NonCacheable, ReadWrite, 0,
+                    0x0000000594000000, 0x0000000594003fff, 0, 0x4000)
+                QWordMemory (ResourceConsumer, PosDecode, MinFixed, MaxFixed,
+                    NonCacheable, ReadWrite, 0,
+                    0x0000010022000000, 0x000001002200ffff, 0, 0x10000)
+            })
+            Method (_STA) { Return (0x0f) }
+        }
+
+        Device (PCI0) {
+            Name (_HID, EISAID ("PNP0A08"))
+            Name (_CID, EISAID ("PNP0A03"))
+            Name (_SEG, Zero)
+            Name (_BBN, Zero)
+            Name (_UID, "PCI0")
+            Name (_CCA, One)
+            Name (_DEP, Package () { DRT0 })
+            Method (_CBA, 0, NotSerialized) {
+                Return (FixedPcdGet64 (PcdPciExpressBaseAddress))
+            }
+            Name (_CRS, ResourceTemplate () {
+                WordBusNumber (ResourceProducer, MinFixed, MaxFixed, PosDecode,
+                    0, 0, 4, 0, 5)
+                QWordMemory (ResourceProducer, PosDecode, MinFixed, MaxFixed,
+                    NonCacheable, ReadWrite, 0,
+                    0xc0000000, 0xffffffff, 0x500000000, 0x40000000)
+                QWordMemory (ResourceProducer, PosDecode, MinFixed, MaxFixed,
+                    Prefetchable, ReadWrite, 0,
+                    0x00000005a0000000, 0x00000005bfffffff, 0, 0x20000000)
+            })
+            Method (_STA) { Return (0x0f) }
+        }
 
         //
         // All known Apple devices to date have used the Samsung based UART that debuted on the 8900 (or a compatible implementation).

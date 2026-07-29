@@ -48,6 +48,10 @@
   # Physical xHCI line 1274 is published as arbiter-legal GSIV 37; AIC2 ALI2
   # translates it back before native-controller MMIO.
   gAppleSiliconPkgTokenSpaceGuid.PcdAppleXhciPublishedInterrupt|37
+  # Exact m1n1 wireless_handoff_init() carveout.  Mu only reserves and
+  # publishes it; it never creates or modifies the DART tables.
+  gAppleSiliconPkgTokenSpaceGuid.PcdAppleWirelessDartPageTableBase|0x10022000000
+  gAppleSiliconPkgTokenSpaceGuid.PcdAppleWirelessDartPageTableSize|0x10000
 
 [Components.common]
 

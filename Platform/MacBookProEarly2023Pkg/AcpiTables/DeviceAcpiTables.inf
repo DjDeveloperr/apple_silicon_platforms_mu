@@ -21,8 +21,8 @@
   DBG2.aslc
   #EINJ.asl
   FADT.aslc
+  MCFG.aslc
   DSDT.asl
-  DISP.asl
 
 [Packages]
   ArmPkg/ArmPkg.dec

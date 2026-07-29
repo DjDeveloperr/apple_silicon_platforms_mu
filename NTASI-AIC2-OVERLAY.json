@@ -22,58 +22,8 @@
   "csrt_fixture_sha256": "cdee0da81d9c54c17d2964510271de453ae2ff0428fe0ff13e69efa9406521a5",
   "csrt_source_sha256": "c26831a8641070fdd2a1141ea54831a3694064e27f1f3b6de676c9dbaf7879ce",
   "display": {
-    "enabled": true,
-    "geometry_cross_check": {
-      "fb_format": "BGRA8888",
-      "fb_height": 1964,
-      "fb_stride": 12096,
-      "fb_width": 3024,
-      "panel_height_mm": 196,
-      "panel_width_mm": 302
-    },
-    "hardware_id": "ACPI\\NTAS0070",
-    "platform": "J414s/T6020",
-    "preboot": "m1n1 configured DCP, retained both DART roots, left the framebuffer scanning, and quiesced RTKit",
-    "regression_safety": "demand-start driver; if it does not start, BasicDisplay keeps the panel",
-    "resources": {
-      "interrupts": [],
-      "memory": [
-        {
-          "length": 6406144,
-          "role": "reg0",
-          "start": 15166603264
-        },
-        {
-          "length": 16384,
-          "role": "dcp-dart",
-          "start": 15186575360
-        },
-        {
-          "length": 16384,
-          "role": "disp0-dart",
-          "start": 15186542592
-        },
-        {
-          "length": 16384,
-          "role": "reg1",
-          "start": 15186657280
-        },
-        {
-          "length": 16384,
-          "role": "reg2",
-          "start": 15186804736
-        },
-        {
-          "length": 8388608,
-          "role": "reg3",
-          "start": 15191769088
-        }
-      ],
-      "note": "six fixed DCP/DART MMIO ranges; the framebuffer still comes from DxgkCbAcquirePostDisplayOwnership, never _CRS; no unproven GSIVs are published"
-    },
-    "source_sha256": "10807f3eaa0940f340d22477520f21b76478e110985ecf0a0abed153719e4d11"
+    "enabled": false
   },
-  "driver_commit": "45672e3",
   "fadt_oem_id": {
     "ascii": "Apple",
     "hex": "4170706c6500",
@@ -98,7 +48,16 @@
   },
   "mu_base_commit": "74964aed5dce7a30139469ef69150232a3cd128b",
   "pcie": {
-    "enabled": false
+    "enabled": true,
+    "endpoint_policy": "J414s APCIE port 0 only; exact BCM4388 Wi-Fi and Bluetooth functions",
+    "mcfg_base": "0x580000000",
+    "wireless_dart": {
+      "carveout_base": "0x10022000000",
+      "carveout_size": "0x10000",
+      "hardware_id": "ACPI\\NTAS0011",
+      "physical_base": "0x594000000",
+      "stream_id": 1
+    }
   },
   "platform": "MacBookProEarly2023Pkg",
   "schema_version": 1,
