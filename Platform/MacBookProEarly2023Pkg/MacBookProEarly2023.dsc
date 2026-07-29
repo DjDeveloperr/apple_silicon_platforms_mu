@@ -70,3 +70,6 @@
   gArmTokenSpaceGuid.PcdArmArchTimerIntrNum|30
   gArmTokenSpaceGuid.PcdArmArchTimerVirtIntrNum|27
   gArmTokenSpaceGuid.PcdArmArchTimerHypIntrNum|26
+
+[PcdsFeatureFlag.common]
+  gAppleSiliconPkgTokenSpaceGuid.PcdAppleAnsAcpiEnabled|FALSE

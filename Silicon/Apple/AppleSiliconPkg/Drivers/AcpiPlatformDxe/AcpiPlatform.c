@@ -168,6 +168,10 @@ AcpiPlatformInstallAppleAnsTable (
   BOOLEAN                      Legacy;
   CONST CHAR8                  *HardwareId;
 
+  if (!FeaturePcdGet (PcdAppleAnsAcpiEnabled)) {
+    return EFI_NOT_FOUND;
+  }
+
   RootNode = NULL;
   Table    = NULL;
   AnsNode  = dt_get ("/arm-io/ans");
@@ -1143,9 +1147,7 @@ AcpiPlatformEntryPoint (
 
   // Status = AcpiPlatformInstallMadtTable();
 
-  // Publish ANS after the static namespace has been installed.  Failure is
-  // fatal when the ADT contains ANS: silently omitting the boot controller
-  // would make the Windows storage driver impossible to bind.
+  // Publish ANS only for profiles that explicitly enable the feature PCD.
   Status = AcpiPlatformInstallAppleAnsTable (AcpiTable);
   if (EFI_ERROR (Status) && (Status != EFI_NOT_FOUND)) {
     DEBUG ((DEBUG_ERROR, "AppleANS ACPI: SSDT installation failed: %r\n", Status));

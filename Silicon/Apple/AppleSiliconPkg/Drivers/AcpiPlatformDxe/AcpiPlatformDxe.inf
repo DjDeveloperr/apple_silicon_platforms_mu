@@ -52,6 +52,9 @@
   gAppleSiliconPkgTokenSpaceGuid.PcdAppleAnsPublishedInterrupt    ## CONSUMES
   gAppleSiliconPkgTokenSpaceGuid.PcdAppleAnsExpectedPhysicalInterrupt    ## CONSUMES
 
+[FeaturePcd]
+  gAppleSiliconPkgTokenSpaceGuid.PcdAppleAnsAcpiEnabled    ## CONSUMES
+
 [Depex]
   gEfiAcpiTableProtocolGuid
 
