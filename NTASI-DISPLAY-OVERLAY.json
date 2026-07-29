@@ -1,0 +1,54 @@
+{
+  "display": {
+    "enabled": true,
+    "source_sha256": "10807f3eaa0940f340d22477520f21b76478e110985ecf0a0abed153719e4d11",
+    "hardware_id": "ACPI\\NTAS0070",
+    "platform": "J414s/T6020",
+    "resources": {
+      "memory": [
+        {
+          "role": "reg0",
+          "start": 15166603264,
+          "length": 6406144
+        },
+        {
+          "role": "dcp-dart",
+          "start": 15186575360,
+          "length": 16384
+        },
+        {
+          "role": "disp0-dart",
+          "start": 15186542592,
+          "length": 16384
+        },
+        {
+          "role": "reg1",
+          "start": 15186657280,
+          "length": 16384
+        },
+        {
+          "role": "reg2",
+          "start": 15186804736,
+          "length": 16384
+        },
+        {
+          "role": "reg3",
+          "start": 15191769088,
+          "length": 8388608
+        }
+      ],
+      "interrupts": [],
+      "note": "six fixed DCP/DART MMIO ranges; the framebuffer still comes from DxgkCbAcquirePostDisplayOwnership, never _CRS; no unproven GSIVs are published"
+    },
+    "geometry_cross_check": {
+      "fb_width": 3024,
+      "fb_height": 1964,
+      "fb_stride": 12096,
+      "fb_format": "BGRA8888",
+      "panel_width_mm": 302,
+      "panel_height_mm": 196
+    },
+    "preboot": "m1n1 configured DCP, retained both DART roots, left the framebuffer scanning, and quiesced RTKit",
+    "regression_safety": "demand-start driver; if it does not start, BasicDisplay keeps the panel"
+  }
+}

@@ -1,0 +1,108 @@
+{
+  "aic": "AIC2",
+  "ans_mmio_gate": {
+    "ans_dxe_enabled": false
+  },
+  "appended_ramdisk": {
+    "allocation": "cacheable EFI_RESOURCE_SYSTEM_MEMORY plus EfiReservedMemoryType allocation HOB",
+    "dxe_location": "versioned GUID HOB published from relocated PEI PCD instance",
+    "dxe_source_sha256": "5c580ebc957610477aa9f08289f211b08ba162a86097c43d91077b0dee3b09c9",
+    "enabled": true,
+    "header_size": 4096,
+    "header_source_sha256": "cc7d97bb8f76b8e277f792384e5f271714936d73a67ef3e4299ab6f316277c26",
+    "maximum_image_size": "0x40000000",
+    "placement": "PEI-published versioned location HOB",
+    "registration_type": "gEfiVirtualDiskGuid",
+    "virtual_memory_descriptors": {
+      "capacity": 44,
+      "spare": 2,
+      "used": 42
+    }
+  },
+  "csrt_fixture_sha256": "cdee0da81d9c54c17d2964510271de453ae2ff0428fe0ff13e69efa9406521a5",
+  "csrt_source_sha256": "c26831a8641070fdd2a1141ea54831a3694064e27f1f3b6de676c9dbaf7879ce",
+  "display": {
+    "enabled": true,
+    "geometry_cross_check": {
+      "fb_format": "BGRA8888",
+      "fb_height": 1964,
+      "fb_stride": 12096,
+      "fb_width": 3024,
+      "panel_height_mm": 196,
+      "panel_width_mm": 302
+    },
+    "hardware_id": "ACPI\\NTAS0070",
+    "platform": "J414s/T6020",
+    "preboot": "m1n1 configured DCP, retained both DART roots, left the framebuffer scanning, and quiesced RTKit",
+    "regression_safety": "demand-start driver; if it does not start, BasicDisplay keeps the panel",
+    "resources": {
+      "interrupts": [],
+      "memory": [
+        {
+          "length": 6406144,
+          "role": "reg0",
+          "start": 15166603264
+        },
+        {
+          "length": 16384,
+          "role": "dcp-dart",
+          "start": 15186575360
+        },
+        {
+          "length": 16384,
+          "role": "disp0-dart",
+          "start": 15186542592
+        },
+        {
+          "length": 16384,
+          "role": "reg1",
+          "start": 15186657280
+        },
+        {
+          "length": 16384,
+          "role": "reg2",
+          "start": 15186804736
+        },
+        {
+          "length": 8388608,
+          "role": "reg3",
+          "start": 15191769088
+        }
+      ],
+      "note": "six fixed DCP/DART MMIO ranges; the framebuffer still comes from DxgkCbAcquirePostDisplayOwnership, never _CRS; no unproven GSIVs are published"
+    },
+    "source_sha256": "10807f3eaa0940f340d22477520f21b76478e110985ecf0a0abed153719e4d11"
+  },
+  "driver_commit": "c3f38a2132dd3dc6e01f2a0f62c74fa436ea1474",
+  "fadt_oem_id": {
+    "ascii": "Apple",
+    "hex": "4170706c6500",
+    "temporary_windows_carrier_spoof": false
+  },
+  "linux_arm64_build_compatibility": {
+    "disabled_stuart_scopes": [
+      "cibuild",
+      "edk2-build"
+    ],
+    "removed_stale_arm_gic_arch_lib_override": true,
+    "system_tools": [
+      "iasl",
+      "nasm"
+    ]
+  },
+  "mtp_input": {
+    "enabled": false
+  },
+  "mtp_trackpad": {
+    "enabled": false
+  },
+  "mu_base_commit": "0c214f8ff5c73a061cd41f29f3af29bafaef510b",
+  "pcie": {
+    "enabled": false
+  },
+  "platform": "MacBookProEarly2023Pkg",
+  "schema_version": 1,
+  "soc": "T6020",
+  "source_mode": "pinned-submodules",
+  "stuart_submodule_fetch_bypassed_in_disposable_output": false
+}
