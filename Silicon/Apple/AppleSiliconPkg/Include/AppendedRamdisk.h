@@ -250,9 +250,9 @@ NtasiValidateGptFatDisk (
   IN UINT64       DiskSize
   )
 {
-  STATIC CONST UINT8  EspTypeGuid[16] = {
-    0x28, 0x73, 0x2A, 0xC1, 0x1F, 0xF8, 0xD2, 0x11,
-    0xBA, 0x4B, 0x00, 0xA0, 0xC9, 0x3E, 0xC9, 0x3B
+  STATIC CONST UINT8  BasicDataTypeGuid[16] = {
+    0xA2, 0xA0, 0xD0, 0xEB, 0xE5, 0xB9, 0x33, 0x44,
+    0x87, 0xC0, 0x68, 0xB6, 0xB7, 0x26, 0x99, 0xC7
   };
   CONST UINT8  *Header;
   CONST UINT8  *Entries;
@@ -273,8 +273,8 @@ NtasiValidateGptFatDisk (
   UINT32       Index;
   UINT32       ByteIndex;
   UINT32       ProtectiveCount;
-  UINT32       EspCount;
-  BOOLEAN      IsEsp;
+  UINT32       DataPartitionCount;
+  BOOLEAN      IsBasicData;
 
   if ((DiskSize < (34ULL * 512ULL)) || ((DiskSize & 511ULL) != 0) ||
       (Disk[510] != 0x55) || (Disk[511] != 0xAA))
@@ -344,19 +344,19 @@ NtasiValidateGptFatDisk (
     return FALSE;
   }
 
-  EspCount        = 0;
+  DataPartitionCount = 0;
   PartitionOffset = 0;
   PartitionSize   = 0;
   for (Index = 0; Index < EntryCount; Index++) {
     Entry = Entries + ((UINTN)Index * EntrySize);
-    IsEsp = TRUE;
-    for (ByteIndex = 0; ByteIndex < ARRAY_SIZE (EspTypeGuid); ByteIndex++) {
-      if (Entry[ByteIndex] != EspTypeGuid[ByteIndex]) {
-        IsEsp = FALSE;
+    IsBasicData = TRUE;
+    for (ByteIndex = 0; ByteIndex < ARRAY_SIZE (BasicDataTypeGuid); ByteIndex++) {
+      if (Entry[ByteIndex] != BasicDataTypeGuid[ByteIndex]) {
+        IsBasicData = FALSE;
         break;
       }
     }
-    if (!IsEsp) {
+    if (!IsBasicData) {
       continue;
     }
 
@@ -375,10 +375,10 @@ NtasiValidateGptFatDisk (
     {
       return FALSE;
     }
-    EspCount++;
+    DataPartitionCount++;
   }
 
-  return (EspCount == 1) &&
+  return (DataPartitionCount == 1) &&
          NtasiValidateFatVolume (
            Disk + (UINTN)PartitionOffset,
            PartitionSize

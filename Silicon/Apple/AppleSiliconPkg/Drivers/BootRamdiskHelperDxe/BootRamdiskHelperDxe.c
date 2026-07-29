@@ -19,14 +19,14 @@
 
 STATIC CONST EFI_GUID  mNtasiAppendedRamdiskLocationHobGuid =
   NTASI_APPENDED_RAMDISK_LOCATION_HOB_GUID;
-STATIC CONST EFI_GUID  mNtasiEvidenceEspGuid =
+STATIC CONST EFI_GUID  mNtasiEvidencePartitionGuid =
   { 0x4e544153, 0x492d, 0x4742, { 0x94, 0x14, 0x00, 0x00, 0x00, 0x00, 0x00, 0x02 } };
 
 STATIC
 EFI_STATUS
-FindRamdiskEspDevicePath (
+FindRamdiskPartitionDevicePath (
   IN  EFI_DEVICE_PATH_PROTOCOL  *RamdiskDevicePath,
-  OUT EFI_DEVICE_PATH_PROTOCOL  **EspDevicePath
+  OUT EFI_DEVICE_PATH_PROTOCOL  **PartitionDevicePath
   )
 {
   EFI_DEVICE_PATH_PROTOCOL  *Candidate;
@@ -40,10 +40,10 @@ FindRamdiskEspDevicePath (
   UINTN                     ParentPrefixSize;
   UINTN                     CandidateSize;
 
-  if ((RamdiskDevicePath == NULL) || (EspDevicePath == NULL)) {
+  if ((RamdiskDevicePath == NULL) || (PartitionDevicePath == NULL)) {
     return EFI_INVALID_PARAMETER;
   }
-  *EspDevicePath = NULL;
+  *PartitionDevicePath = NULL;
 
   Remaining = RamdiskDevicePath;
   Status = gBS->LocateDevicePath (
@@ -98,31 +98,31 @@ FindRamdiskEspDevicePath (
         (HardDrive->PartitionNumber != 1) ||
         (HardDrive->MBRType != MBR_TYPE_EFI_PARTITION_TABLE_HEADER) ||
         (HardDrive->SignatureType != SIGNATURE_TYPE_GUID) ||
-        (CompareMem (HardDrive->Signature, &mNtasiEvidenceEspGuid,
-                     sizeof (mNtasiEvidenceEspGuid)) != 0) ||
+        (CompareMem (HardDrive->Signature, &mNtasiEvidencePartitionGuid,
+                     sizeof (mNtasiEvidencePartitionGuid)) != 0) ||
         !IsDevicePathEnd (NextDevicePathNode (&HardDrive->Header)))
     {
       continue;
     }
-    if (*EspDevicePath != NULL) {
-      FreePool (*EspDevicePath);
-      *EspDevicePath = NULL;
+    if (*PartitionDevicePath != NULL) {
+      FreePool (*PartitionDevicePath);
+      *PartitionDevicePath = NULL;
       FreePool (Handles);
-      DEBUG ((DEBUG_ERROR, "BootRamdiskHelperDxe: multiple matching GPT ESP children\n"));
+      DEBUG ((DEBUG_ERROR, "BootRamdiskHelperDxe: multiple matching GPT partition children\n"));
       return EFI_COMPROMISED_DATA;
     }
-    *EspDevicePath = DuplicateDevicePath (Candidate);
-    if (*EspDevicePath == NULL) {
+    *PartitionDevicePath = DuplicateDevicePath (Candidate);
+    if (*PartitionDevicePath == NULL) {
       FreePool (Handles);
       return EFI_OUT_OF_RESOURCES;
     }
   }
   FreePool (Handles);
-  if (*EspDevicePath == NULL) {
-    DEBUG ((DEBUG_ERROR, "BootRamdiskHelperDxe: exact GPT ESP child was not produced\n"));
+  if (*PartitionDevicePath == NULL) {
+    DEBUG ((DEBUG_ERROR, "BootRamdiskHelperDxe: exact GPT data-partition child was not produced\n"));
     return EFI_NOT_FOUND;
   }
-  DEBUG ((DEBUG_INFO, "BootRamdiskHelperDxe: selected exact VirtualDisk/HD(1,GPT) ESP child\n"));
+  DEBUG ((DEBUG_INFO, "BootRamdiskHelperDxe: selected exact VirtualDisk/HD(1,GPT) data child\n"));
   return EFI_SUCCESS;
 }
 
@@ -202,11 +202,11 @@ EFI_STATUS
 RegisterRamdisk (
   IN UINTN   Address,
   IN UINT64  Size,
-  IN BOOLEAN RequireGptEsp
+  IN BOOLEAN RequireGptPartition
   )
 {
   EFI_DEVICE_PATH_PROTOCOL  *DevicePath;
-  EFI_DEVICE_PATH_PROTOCOL  *EspDevicePath;
+  EFI_DEVICE_PATH_PROTOCOL  *PartitionDevicePath;
   EFI_RAM_DISK_PROTOCOL     *RamdiskProtocol;
   EFI_STATUS                Status;
 
@@ -232,15 +232,15 @@ RegisterRamdisk (
     return Status;
   }
 
-  if (!RequireGptEsp) {
+  if (!RequireGptPartition) {
     return PrioritizeRamdiskBoot (DevicePath);
   }
-  Status = FindRamdiskEspDevicePath (DevicePath, &EspDevicePath);
+  Status = FindRamdiskPartitionDevicePath (DevicePath, &PartitionDevicePath);
   if (EFI_ERROR (Status)) {
     return Status;
   }
-  Status = PrioritizeRamdiskBoot (EspDevicePath);
-  FreePool (EspDevicePath);
+  Status = PrioritizeRamdiskBoot (PartitionDevicePath);
+  FreePool (PartitionDevicePath);
   return Status;
 }
 
