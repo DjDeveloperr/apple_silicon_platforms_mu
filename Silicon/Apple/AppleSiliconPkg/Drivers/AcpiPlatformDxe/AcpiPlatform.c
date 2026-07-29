@@ -1143,14 +1143,8 @@ AcpiPlatformEntryPoint (
 
   // Status = AcpiPlatformInstallMadtTable();
 
-  // Publish ANS after the static namespace has been installed.  Failure is
-  // fatal when the ADT contains ANS: silently omitting the boot controller
-  // would make the Windows storage driver impossible to bind.
-  Status = AcpiPlatformInstallAppleAnsTable (AcpiTable);
-  if (EFI_ERROR (Status) && (Status != EFI_NOT_FOUND)) {
-    DEBUG ((DEBUG_ERROR, "AppleANS ACPI: SSDT installation failed: %r\n", Status));
-    return EFI_ABORTED;
-  }
+  // This bounded display/WinPE profile deliberately omits ANS. The external
+  // USB storage path is the only storage device exposed to Windows here.
 
 
   //

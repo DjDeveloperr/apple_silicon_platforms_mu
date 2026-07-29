@@ -73,7 +73,7 @@
     },
     "source_sha256": "10807f3eaa0940f340d22477520f21b76478e110985ecf0a0abed153719e4d11"
   },
-  "driver_commit": "c3f38a2132dd3dc6e01f2a0f62c74fa436ea1474",
+  "driver_commit": "45672e3",
   "fadt_oem_id": {
     "ascii": "Apple",
     "hex": "4170706c6500",
@@ -96,7 +96,7 @@
   "mtp_trackpad": {
     "enabled": false
   },
-  "mu_base_commit": "0c214f8ff5c73a061cd41f29f3af29bafaef510b",
+  "mu_base_commit": "74964aed5dce7a30139469ef69150232a3cd128b",
   "pcie": {
     "enabled": false
   },

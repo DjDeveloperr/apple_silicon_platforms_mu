@@ -439,33 +439,6 @@
         //     }
         // }
 
-        // T8110 DART aperture for the BCM4388 PCIe functions. This describes
-        // the IOMMU device only; PCI0 deliberately has no _DEP until m1n1 can
-        // preinstall and lock the SID1 handoff before any endpoint reaches BME.
-        Device(DRT0) {
-            Name (_HID, "NTAS0011")
-            Name (_UID, Zero)
-            Name (_CCA, One)
-            Name (_CRS, ResourceTemplate () {
-                QWordMemory(
-                    ResourceConsumer,
-                    PosDecode,
-                    MinFixed,
-                    MaxFixed,
-                    NonCacheable,
-                    ReadWrite,
-                    0x0000000000000000,
-                    0x0000000594000000,
-                    0x0000000594003fff,
-                    0x0000000000000000,
-                    0x0000000000004000
-                )
-            })
-            Method (_STA) {
-                Return (0xF)
-            }
-        }
-
         // Windows sees the xHCI BAR through m1n1's 0x60000000 stage-2 alias.
         // GSIV 37 is translated to physical AIC line 1274 by the AIC2 CSRT.
         Device(XHC1) {
@@ -495,93 +468,32 @@
             }
         }
 
-        //
-        // PCIe root complex (because just implementing it in the host bridge library is not enough apparently...)
-        // Code adapted from QemuSbsaPkg DSDT in mu_tiano_platforms
-        //
-        Device(PCI0) {
-            Name (_HID, EISAID ("PNP0A08")) // PCI Express Root Bridge
-            Name (_CID, EISAID ("PNP0A03")) // Compatible PCI Root Bridge
-            Name (_SEG, Zero) // PCI Segment Group number
-            Name (_BBN, Zero) // PCI Base Bus Number
-            Name (_UID, "PCI0")
-            Name (_CCA, One) // per FDT, Apple PCIe is DMA coherent
-
+        // J414s right-side USB-C uses usb-drd2. Windows sees the controller
+        // through m1n1's 0x61000000 alias; GSIV 39 maps to physical line 1292.
+        Device(XHC2) {
+            Name (_HID, "PNP0D15")
+            Name (_UID, 0x02)
+            Name (_CCA, One)
+            Name (_CRS, ResourceTemplate () {
+                QWordMemory(
+                    ResourceConsumer,
+                    PosDecode,
+                    MinFixed,
+                    MaxFixed,
+                    NonCacheable,
+                    ReadWrite,
+                    0x0000000000000000,
+                    0x0000000061000000,
+                    0x000000006100feff,
+                    0x0000000000000000,
+                    0x000000000000ff00
+                )
+                Interrupt(ResourceConsumer, Level, ActiveHigh, Exclusive) {
+                    39
+                }
+            })
             Method (_STA) {
                 Return (0xF)
-            }
-            Method (_CBA, 0, NotSerialized) {
-                Return (FixedPcdGet64 (PcdPciExpressBaseAddress))
-            }
-
-            // MSI is used for the internal PCIe devices, so no _PRT is required.
-
-            Name (RBUF, ResourceTemplate() {
-                    WordBusNumber(
-                        ResourceProducer,
-                        MinFixed,
-                        MaxFixed,
-                        PosDecode,
-                        0,
-                        0x0000,
-                        0x0004,
-                        0,
-                        0x0005
-                    )
-
-                    // The device-visible 32-bit window is translated above 4 GiB,
-                    // so it requires a QWord descriptor even though its BARs are
-                    // 32-bit.
-                    QWordMemory(
-                        ResourceProducer,
-                        PosDecode,
-                        MinFixed,
-                        MaxFixed,
-                        NonCacheable,
-                        ReadWrite,
-                        0x0000000000000000,
-                        0x00000000c0000000,
-                        0x00000000ffffffff,
-                        0x0000000500000000,
-                        0x0000000040000000
-                    )
-
-                    QWordMemory(
-                        ResourceProducer,
-                        PosDecode,
-                        MinFixed,
-                        MaxFixed,
-                        Prefetchable,
-                        ReadWrite,
-                        0x0000000000000000,
-                        0x00000005a0000000,
-                        0x00000005bfffffff,
-                        0x0000000000000000,
-                        0x0000000020000000
-                    )
-            })
-
-            Method (_CRS, 0, Serialized) {
-                Return (RBUF)
-            }
-
-            Device (RES0)
-            {
-                Name (_HID, "PNP0C02") // PNP Motherboard Resources
-                Name (_CRS, ResourceTemplate ()
-                {
-                    QWordMemory (ResourceConsumer, PosDecode, MinFixed, MaxFixed,
-                        NonCacheable, ReadWrite,
-                        0x0000000000000000,
-                        0x0000000580000000,
-                        0x0000000580ffffff,
-                        0x0000000000000000,
-                        0x0000000001000000,
-                        ,, , AddressRangeMemory, TypeStatic)
-                })
-                Method (_STA) {
-                    Return (0xF)
-                }
             }
         }
     }
