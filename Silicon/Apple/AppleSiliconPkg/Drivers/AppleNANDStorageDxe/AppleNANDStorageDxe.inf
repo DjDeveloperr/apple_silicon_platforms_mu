@@ -47,6 +47,7 @@
   AppleSiliconPkg/AppleSiliconPkg.dec
 
 [LibraryClasses]
+  PcdLib
   AppleDTLib
   ArmLib
   BaseLib
