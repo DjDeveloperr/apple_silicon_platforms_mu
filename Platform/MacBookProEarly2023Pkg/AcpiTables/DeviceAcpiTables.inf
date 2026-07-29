@@ -23,6 +23,7 @@
   FADT.aslc
   #MCFG.aslc
   DSDT.asl
+  DISP.asl
   KBL.asl
   MTP.asl
   SMCG.asl

@@ -1,35 +1,109 @@
-/**
- * @file BootRamdiskHelperDxe.c
- * @author amarioguy (Arminder Singh)
- * 
- * Sets up an embedded RAMDisk in the FV. For right now this is primarily used to bring up WinPE.
- * 
- * @version 1.0
- * @date 2022-12-25
- * 
- * @copyright Copyright (c) amarioguy (Arminder Singh), 2022.
- * 
- */
+/** @file
+  Register an in-place appended FAT ramdisk, retaining the legacy FV fallback.
+
+  SPDX-License-Identifier: MIT
+**/
 
 #include <PiDxe.h>
 
 #include "BootRamdiskHelperDxe.h"
+#define NTASI_APPENDED_RAMDISK_INCLUDE_FAT_VALIDATOR  1
+#include <AppendedRamdisk.h>
 
-/**
- * @brief Main function for RAMDisk initialization.
- * 
- * Note that we only allocate a RAMDisk with a boot image here if we are told to do so and actually have the file embedded in the FV.
- * 
- * @param ImageHandle 
- * @param SystemTable 
- * @return
- * 
- * EFI_SUCCESS - we initialized the RAMDisk as a bootable device.
- * EFI_UNSUPPORTED - we are configured not to set up the RAMDisk.
- * EFI_NOT_FOUND - no FV embedded candidate image is present.
- * EFI_OUT_OF_RESOURCES - for some reason, we are out of memory and cannot create the ramdisk.
- * EFI_ABORTED - an unexpected error occurred.
- */
+STATIC
+EFI_STATUS
+RegisterRamdisk (
+  IN UINTN   Address,
+  IN UINT64  Size
+  )
+{
+  EFI_DEVICE_PATH_PROTOCOL  *DevicePath;
+  EFI_RAM_DISK_PROTOCOL     *RamdiskProtocol;
+  EFI_STATUS                Status;
+
+  Status = gBS->LocateProtocol (
+                  &gEfiRamDiskProtocolGuid,
+                  NULL,
+                  (VOID **)&RamdiskProtocol
+                  );
+  if (EFI_ERROR (Status)) {
+    DEBUG ((DEBUG_ERROR, "BootRamdiskHelperDxe: RAM disk protocol unavailable: %r\n", Status));
+    return Status;
+  }
+
+  Status = RamdiskProtocol->Register (
+                              Address,
+                              Size,
+                              &gEfiVirtualDiskGuid,
+                              NULL,
+                              &DevicePath
+                              );
+  if (EFI_ERROR (Status)) {
+    DEBUG ((DEBUG_ERROR, "BootRamdiskHelperDxe: cannot register RAM disk: %r\n", Status));
+  }
+
+  return Status;
+}
+
+STATIC
+EFI_STATUS
+RegisterAppendedRamdisk (
+  VOID
+  )
+{
+  EFI_PHYSICAL_ADDRESS                  FdTop;
+  CONST NTASI_APPENDED_RAMDISK_HEADER   *Header;
+  CONST VOID                            *Image;
+  UINT64                                ImageSize;
+
+  FdTop = PcdGet64 (PcdFdBaseAddress) + PcdGet32 (PcdFdSize);
+  if (FdTop < PcdGet64 (PcdFdBaseAddress)) {
+    return EFI_NOT_FOUND;
+  }
+
+  DEBUG ((DEBUG_INFO, "BootRamdiskHelperDxe: probing appended header at 0x%lx\n", FdTop));
+  Header = (CONST NTASI_APPENDED_RAMDISK_HEADER *)(UINTN)FdTop;
+  if (Header->Signature != NTASI_APPENDED_RAMDISK_SIGNATURE) {
+    return EFI_NOT_FOUND;
+  }
+  DEBUG ((DEBUG_INFO, "BootRamdiskHelperDxe: appended header signature found\n"));
+
+  if (!NtasiValidateAppendedRamdisk (
+         Header,
+         NTASI_APPENDED_RAMDISK_MAX_MAPPED_SPAN,
+         FALSE,
+         &Image,
+         &ImageSize,
+         NULL
+         ) ||
+      (ImageSize > MAX_UINTN) ||
+      !NtasiValidateFatBootSector (Image, ImageSize))
+  {
+    DEBUG ((DEBUG_ERROR, "BootRamdiskHelperDxe: appended ramdisk failed header or FAT validation\n"));
+    return EFI_COMPROMISED_DATA;
+  }
+
+  // The launcher validates the sealed raw FAT SHA-256 immediately before
+  // transfer, while the header CRC covers ImageSize/ImageCrc32 and the BPB is
+  // checked above. A single gBS->CalculateCrc32 call over the 822 MiB image
+  // synchronously faulted in ArmCpuDxe on J414s even after GCD preserved the
+  // range as cacheable SystemMemory. Defer whole-payload integrity to the
+  // measured launcher instead of making firmware reread the entire disk.
+  DEBUG ((
+    DEBUG_INFO,
+    "BootRamdiskHelperDxe: header/FAT valid; sealed payload CRC is 0x%x\n",
+    Header->ImageCrc32
+    ));
+
+  DEBUG ((
+    DEBUG_INFO,
+    "BootRamdiskHelperDxe: registering appended FAT image at 0x%lx (0x%lx bytes)\n",
+    (UINT64)(UINTN)Image,
+    ImageSize
+    ));
+  return RegisterRamdisk ((UINTN)Image, ImageSize);
+}
+
 EFI_STATUS
 EFIAPI
 BootRamdiskHelperDxeInitialize (
@@ -37,46 +111,43 @@ BootRamdiskHelperDxeInitialize (
   IN EFI_SYSTEM_TABLE  *SystemTable
   )
 {
-    EFI_STATUS Status;
-    BOOLEAN RamdiskBootConfigured;
-    VOID *OriginalRamDiskPtr;
-    VOID *DestinationRamdiskPtr;
-    UINTN RamDiskSize;
-    EFI_GUID *RamDiskRegisterType = &gEfiVirtualDiskGuid; //hardcode to IMG image for now
-    EFI_RAM_DISK_PROTOCOL *RamdiskProtocol;
-    EFI_DEVICE_PATH_PROTOCOL *DevicePath;
+  VOID        *DestinationRamdiskPtr;
+  VOID        *OriginalRamDiskPtr;
+  UINTN       RamDiskSize;
+  EFI_STATUS  Status;
 
-    DEBUG((DEBUG_INFO, "BootRamdiskHelperDxe started\n"));
-    // Before proceeding to RAMDisk creation, check that we're configured to do so
-    // and that we have a candidate image with which to create said RAMDisk.
-    RamdiskBootConfigured = PcdGetBool(PcdInitializeRamdisk);
-    if(!RamdiskBootConfigured) {
-        DEBUG((DEBUG_ERROR, "BootRamdiskHelperDxe - FV not configured for ramdisk boot, exiting\n"));
-        return EFI_UNSUPPORTED;
-    }
-    Status = GetSectionFromAnyFv(&gAppleSiliconPkgEmbeddedRamdiskGuid, EFI_SECTION_RAW, 0, &OriginalRamDiskPtr, &RamDiskSize);
-    if(EFI_ERROR(Status)) {
-        DEBUG((DEBUG_ERROR, "BootRamdiskHelperDxe - no FV embedded ramdisk, exiting\n"));
-        return EFI_NOT_FOUND;
-    }
+  DEBUG ((DEBUG_INFO, "BootRamdiskHelperDxe started\n"));
 
-    ASSERT (OriginalRamDiskPtr != NULL);
-    ASSERT (RamDiskSize != 0);
-    //copy the RAMDisk to a new scratch location
-    DestinationRamdiskPtr = AllocateCopyPool(RamDiskSize, OriginalRamDiskPtr);
-
-    ASSERT (DestinationRamdiskPtr != NULL);
-
-    Status = gBS->LocateProtocol(&gEfiRamDiskProtocolGuid, NULL, (VOID **)&RamdiskProtocol);
-    if (EFI_ERROR (Status)) {
-        DEBUG ((DEBUG_ERROR, "BootRamdiskHelperDxe: Couldn't find the RAMDisk protocol - %r\n", Status));
-        return Status;
-    }
-    Status = RamdiskProtocol->Register((UINTN)DestinationRamdiskPtr, (UINT64)RamDiskSize, RamDiskRegisterType, NULL, &DevicePath);
-    if (EFI_ERROR (Status)) {
-        DEBUG ((DEBUG_ERROR, "BootRamdiskHelperDxe: Cannot register RAM Disk - %r\n", Status));
-    }
-
+  Status = RegisterAppendedRamdisk ();
+  if (Status != EFI_NOT_FOUND) {
     return Status;
+  }
 
+  if (!PcdGetBool (PcdInitializeRamdisk)) {
+    DEBUG ((DEBUG_INFO, "BootRamdiskHelperDxe: no appended image and FV ramdisk is disabled\n"));
+    return EFI_UNSUPPORTED;
+  }
+
+  Status = GetSectionFromAnyFv (
+             &gAppleSiliconPkgEmbeddedRamdiskGuid,
+             EFI_SECTION_RAW,
+             0,
+             &OriginalRamDiskPtr,
+             &RamDiskSize
+             );
+  if (EFI_ERROR (Status)) {
+    DEBUG ((DEBUG_ERROR, "BootRamdiskHelperDxe: no FV embedded ramdisk\n"));
+    return EFI_NOT_FOUND;
+  }
+
+  if ((OriginalRamDiskPtr == NULL) || (RamDiskSize == 0)) {
+    return EFI_COMPROMISED_DATA;
+  }
+
+  DestinationRamdiskPtr = AllocateCopyPool (RamDiskSize, OriginalRamDiskPtr);
+  if (DestinationRamdiskPtr == NULL) {
+    return EFI_OUT_OF_RESOURCES;
+  }
+
+  return RegisterRamdisk ((UINTN)DestinationRamdiskPtr, RamDiskSize);
 }

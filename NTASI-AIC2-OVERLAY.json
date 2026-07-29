@@ -3,6 +3,21 @@
   "ans_mmio_gate": {
     "ans_dxe_enabled": false
   },
+  "appended_ramdisk": {
+    "allocation": "cacheable EFI_RESOURCE_SYSTEM_MEMORY plus EfiReservedMemoryType allocation HOB",
+    "dxe_source_sha256": "74ffee575b5b5528548c76c47288c9a2a178f7f55b54ace00f1b24158cd31f92",
+    "enabled": true,
+    "header_size": 32,
+    "header_source_sha256": "2baff0ac962373956072af0b47d7129bfc829751a551f54927394577a0467344",
+    "maximum_image_size": "0x40000000",
+    "placement": "PcdFdBaseAddress + PcdFdSize",
+    "registration_type": "gEfiVirtualDiskGuid",
+    "virtual_memory_descriptors": {
+      "capacity": 44,
+      "spare": 2,
+      "used": 42
+    }
+  },
   "csrt_fixture_sha256": "cdee0da81d9c54c17d2964510271de453ae2ff0428fe0ff13e69efa9406521a5",
   "csrt_source_sha256": "c26831a8641070fdd2a1141ea54831a3694064e27f1f3b6de676c9dbaf7879ce",
   "driver_commit": "fbf36ed5a639ef2cbcaccfd2a89e4451bd36fe39",
@@ -10,6 +25,20 @@
     "ascii": "Apple",
     "hex": "4170706c6500",
     "temporary_windows_carrier_spoof": false
+  },
+  "display": {
+    "enabled": true,
+    "hardware_id": "ACPI\\NTAS0070",
+    "interrupts": [],
+    "mmio": [
+      ["0x388000000", "0x61c000"],
+      ["0x38930c000", "0x4000"],
+      ["0x389304000", "0x4000"],
+      ["0x389320000", "0x4000"],
+      ["0x389344000", "0x4000"],
+      ["0x389800000", "0x800000"]
+    ],
+    "source_sha256": "10807f3eaa0940f340d22477520f21b76478e110985ecf0a0abed153719e4d11"
   },
   "linux_arm64_build_compatibility": {
     "disabled_stuart_scopes": [
