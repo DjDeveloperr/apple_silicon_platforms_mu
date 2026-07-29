@@ -81,7 +81,15 @@
 
   #variable size
   gEfiMdeModulePkgTokenSpaceGuid.PcdMaxVariableSize|0x2000
-  gEfiMdePkgTokenSpaceGuid.PcdPlatformBootTimeOut|3
+  # Zero, not 3.  A non-zero timeout makes BDS wait for a keypress, and that
+  # wait is what connects ConIn -- "Connect ConIn in first ReadKeyStoke in
+  # Lazy ConIn mode".  On J414s that connect reaches an AbsPtr handle and
+  # hangs inside ConSplitterDxe+0x3fb8, measured 2026-07-29 on the
+  # ANS-enabled image, which stalls before Windows ever starts.  The
+  # non-ANS image boots fast enough never to reach the wait, which is why
+  # only ANS images showed it.  Nothing can answer the prompt anyway: Mu
+  # does not drive the internal MTP keyboard.
+  gEfiMdePkgTokenSpaceGuid.PcdPlatformBootTimeOut|0
   gEfiMdePkgTokenSpaceGuid.PcdUartDefaultBaudRate|115200
   #
   # Make VariableRuntimeDxe work at emulated non-volatile variable mode.
