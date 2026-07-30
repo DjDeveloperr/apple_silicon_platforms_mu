@@ -199,22 +199,8 @@
                 }
             })
 
-            //
-            // XHC2 DISABLED FOR AN INTERRUPT-ISOLATION EXPERIMENT.
-            //
-            // The xHCI interrupt-affinity bridge in tools/m1n1-windows-debug.py
-            // widens the GROUP_AFFINITY Windows connects for GSIVs (37, 39)
-            // from 0xf to the full active mask.  It fired on 2026-07-28
-            // ("gsi=37 vector=0xb00 requested=0xf effective=0xf->0x3ff") but
-            // fires ZERO times in every boot on 2026-07-30, while Windows
-            // bugchecks BUGCODE_USB3_DRIVER (0x144).  An xHCI whose interrupt
-            // is connected on a CPU the AIC does not deliver to looks exactly
-            // like that.  Returning 0 here stops Windows starting the
-            // right-side controller at all, isolating XHC2 (GSIV 39) from the
-            // failure.  Restore 0xF once interrupt delivery is trustworthy.
-            //
             Method (_STA) {
-                Return (0x0)
+                Return (0xF)
             }
         }
 
