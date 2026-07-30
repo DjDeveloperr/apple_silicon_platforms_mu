@@ -104,11 +104,6 @@
   #FDT pointer
   gAppleSiliconPkgTokenSpaceGuid.PcdAdtPointer|0|UINT64|0x00003901
   gAppleSiliconPkgTokenSpaceGuid.PcdBootArgsPointer|0|UINT64|0x00003905
-  # Optional persistent m1n1-owned DART page-table reservation.  Both values
-  # must be zero or both nonzero and 16-KiB aligned.
-  gAppleSiliconPkgTokenSpaceGuid.PcdAppleWirelessDartPageTableBase|0|UINT64|0x00003910
-  gAppleSiliconPkgTokenSpaceGuid.PcdAppleWirelessDartPageTableSize|0|UINT32|0x00003911
-  gAppleSiliconPkgTokenSpaceGuid.PcdAppleWirelessDartPageTableLimit|0|UINT64|0x00003912
 
 
 [PcdsDynamic.common]
@@ -117,6 +112,21 @@
   #Framebuffer (this will be filled in by iBoot)
   gAppleSiliconPkgTokenSpaceGuid.PcdFrameBufferAddress|0x0|UINT64|0x00004400
   gAppleSiliconPkgTokenSpaceGuid.PcdFrameBufferSize|0x0|UINT64|0x00004410
+  # m1n1-owned wireless DART SID-1 page-table reservation. CORRECTED
+  # 2026-07-30: this used to be a FixedAtBuild PCD populated from a
+  # hand-picked, pre-sealed manifest file at build time -- baking a chosen
+  # base into a profile is exactly the mistake that produced the GPU PEI
+  # crash earlier tonight (a hardcoded carveout address that went stale
+  # and landed on Mu's own live stack). PatchableInModule instead, like
+  # PcdFrameBufferAddress above: MemoryInitPeiLib.c derives both values at
+  # boot from boot-args (mem_size_actual) and PcdSystemMemoryBase/Size,
+  # the same live inputs SystemMemoryTop already comes from, and
+  # AcpiPlatformDxe reads the result back to publish DRT0. Zero/zero means
+  # "not derived this boot" (NTASI_ENABLE_WIRELESS_DART_HANDOFF built out,
+  # or the boot-args inputs did not clear m1n1's own reservation
+  # validator) -- never a signal to fall back to a guessed address.
+  gAppleSiliconPkgTokenSpaceGuid.PcdAppleWirelessDartPageTableBase|0x0|UINT64|0x00003910
+  gAppleSiliconPkgTokenSpaceGuid.PcdAppleWirelessDartPageTableSize|0x0|UINT32|0x00003911
 
 [PcdsPatchableInModule.common, PcdsFixedAtBuild.common]
   #

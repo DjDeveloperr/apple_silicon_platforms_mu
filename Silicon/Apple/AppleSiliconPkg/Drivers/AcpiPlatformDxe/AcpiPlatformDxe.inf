@@ -62,6 +62,8 @@
   gAppleSiliconPkgTokenSpaceGuid.PcdAppleAnsPmgrApcieSt1SysBase ## CONSUMES
   gArmTokenSpaceGuid.PcdSystemMemoryBase                        ## CONSUMES
   gArmTokenSpaceGuid.PcdSystemMemorySize                        ## CONSUMES
+  gAppleSiliconPkgTokenSpaceGuid.PcdAppleWirelessDartPageTableBase ## CONSUMES
+  gAppleSiliconPkgTokenSpaceGuid.PcdAppleWirelessDartPageTableSize ## CONSUMES
 
 [Depex]
   gEfiAcpiTableProtocolGuid

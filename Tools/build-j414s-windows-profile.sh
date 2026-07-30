@@ -3,31 +3,28 @@
 set -eu
 
 usage() {
-    echo "usage: $0 baseline|ans|gpu|ans-gpu|wireless [wireless-handoff-manifest.json]" >&2
+    echo "usage: $0 baseline|ans|gpu|ans-gpu|wireless|ans-gpu-wireless" >&2
     exit 2
 }
 
-test "$#" -ge 1 && test "$#" -le 2 || usage
+test "$#" -eq 1 || usage
 profile=$1
 case "$profile" in
-    baseline)
-        ;;
-    ans)
-        ;;
-    gpu)
-        ;;
-    ans-gpu)
-        ;;
-    wireless)
-        test "$#" -eq 2 || usage
-        wireless_manifest=$(CDPATH= cd -- "$(dirname -- "$2")" && pwd)/$(basename -- "$2")
-        test -f "$wireless_manifest" || { echo "error: missing wireless handoff manifest" >&2; exit 1; }
-        ;;
+    baseline) ;;
+    ans) ;;
+    gpu) ;;
+    ans-gpu) ;;
+    # CORRECTED 2026-07-30: wireless used to require a second argument -- a
+    # same-instance, hardware-captured handoff manifest sealing one specific
+    # coordinator-chosen reservation address into this build. That is exactly
+    # the hardcoding the end user objected to. MemoryInitPeiLib.c now derives
+    # the reservation at PEI runtime from that boot's own boot_args, so
+    # wireless takes no manifest and needs no more evidence at build time
+    # than ans or gpu do.
+    wireless) ;;
+    ans-gpu-wireless) ;;
     *) usage ;;
 esac
-if test "$profile" != wireless && test "$#" -ne 1; then
-    usage
-fi
 
 source_root=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
 source_parent=$(dirname -- "$source_root")
@@ -64,19 +61,6 @@ if ! mkdir "$lock_dir" 2>/dev/null; then
 fi
 trap 'rmdir "$lock_dir" 2>/dev/null || true' EXIT HUP INT TERM
 mkdir -p "$build_dir" "$conf_dir" "$artifact_dir"
-if test "$profile" = wireless; then
-    m1n1_root=${NTASI_M1N1_ROOT:-/Users/dj/Developer/m1n1}
-    m1n1_verifier=$m1n1_root/tools/j414s-wireless-handoff-manifest.py
-    test -f "$m1n1_verifier" || {
-        echo "error: authoritative m1n1 wireless manifest verifier is missing" >&2
-        exit 1
-    }
-    python3 "$m1n1_verifier" verify --manifest "$wireless_manifest"
-    cp "$wireless_manifest" "$output_dir/wireless-handoff.json"
-    wireless_manifest=$output_dir/wireless-handoff.json
-else
-    wireless_manifest=/dev/null
-fi
 
 docker image inspect "$image" >/dev/null
 image_id=$(docker image inspect --format '{{.Id}}' "$image")
@@ -92,13 +76,11 @@ docker run --rm --platform linux/arm64 \
     -e GIT_CONFIG_KEY_1=diff.ignoreSubmodules \
     -e GIT_CONFIG_VALUE_1=all \
     -e NTASI_MU_PROFILE="$profile" \
-    -e NTASI_WIRELESS_HANDOFF_MANIFEST=/wireless-handoff.json \
     -e NTASI_M2_PRO_MU_REFRESH=never \
     -e NTASI_M2_PRO_MU_RECIPE_IMAGE="$image" \
     -v "$source_root:/work:ro" \
     -v "$build_dir:/work/Build:rw" \
     -v "$conf_dir:/work/Conf:rw" \
-    -v "$wireless_manifest:/wireless-handoff.json:ro" \
     "$image"
 
 fd=$build_dir/MacBookProEarly2023-AARCH64/DEBUG_CLANGPDB/FV/MACBOOKPROEARLY2023_EFI.fd

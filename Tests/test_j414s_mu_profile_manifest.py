@@ -37,12 +37,6 @@ def valid_shape(profile: str = "baseline") -> dict[str, object]:
             "container_ffs_guid": M.ACPI_CONTAINERS["GPU.aml"],
             "occurrences_in_ffs": 1,
         }
-    if M.PROFILES[profile]["wireless"]:
-        tables["WDRT.aml"] = {
-            **record("Build/WDRT.aml"),
-            "container_ffs_guid": M.ACPI_CONTAINERS["WDRT.aml"],
-            "occurrences_in_ffs": 1,
-        }
     return {
         "schema": M.SCHEMA,
         "artifact_status": "READY_FOR_SUPERVISED_HARDWARE_TEST",
@@ -85,7 +79,6 @@ def valid_shape(profile: str = "baseline") -> dict[str, object]:
             "optional_guids": M.OPTIONAL_FFS,
         },
         "acpi": {"tables": tables, "assertions": {}, "mcfg": {}},
-        "wireless_handoff": None,
     }
 
 
@@ -98,7 +91,7 @@ class ContractShapeTests(unittest.TestCase):
             M.validate_policy(manifest)
             M.validate_builder(manifest["builder"])
             abis.add(manifest["profile"]["profile_abi"])
-            enabled = profile == "wireless"
+            enabled = M.PROFILES[profile]["wireless"]
             self.assertEqual(
                 manifest["profile"]["experimental_features"]["wireless_dart_handoff"],
                 enabled,
@@ -222,10 +215,20 @@ class FileAndTreeTests(unittest.TestCase):
 
 
 class EvidenceParserTests(unittest.TestCase):
-    def test_wireless_builder_invokes_authoritative_m1n1_verifier(self):
+    def test_wireless_builder_no_longer_needs_a_sealed_manifest(self):
+        # CORRECTED 2026-07-30: the wireless profile used to require a
+        # same-instance, hardware-captured handoff manifest sealing one
+        # specific reservation address (the coordinator's own hand-picked
+        # 0x103e0000000 test value) into the build -- exactly the hardcoding
+        # the end user rejected ("wouldn't that be hard coding it?").
+        # MemoryInitPeiLib.c now derives the reservation at PEI runtime from
+        # that boot's own boot_args, so the builder takes no manifest and
+        # invokes no m1n1-side verifier for any profile, wireless included.
         wrapper = (REPO / "Tools/build-j414s-windows-profile.sh").read_text()
-        self.assertIn("j414s-wireless-handoff-manifest.py", wrapper)
-        self.assertIn("verify --manifest \"$wireless_manifest\"", wrapper)
+        self.assertNotIn("j414s-wireless-handoff-manifest.py", wrapper)
+        self.assertNotIn("wireless-handoff.json", wrapper)
+        self.assertNotIn("wireless_manifest", wrapper)
+        self.assertIn("ans-gpu-wireless", wrapper)
 
     def test_build_evidence_parsers_fail_closed(self):
         log = "Edk2 build parameters are -D NTASI_ENABLE_ANS=FALSE -D NTASI_ENABLE_WIRELESS_DART_HANDOFF=0\n"
@@ -239,7 +242,6 @@ class EvidenceParserTests(unittest.TestCase):
                 ("PcdAppleAnsPublishBlockIo", "0"),
                 ("PcdAppleWirelessDartPageTableBase", "0x0"),
                 ("PcdAppleWirelessDartPageTableSize", "0x0"),
-                ("PcdAppleWirelessDartPageTableLimit", "0x0"),
             )
         )
         self.assertEqual(set(M.parse_pcd_values(report)), {
@@ -247,7 +249,6 @@ class EvidenceParserTests(unittest.TestCase):
             "PcdAppleAnsPublishBlockIo",
             "PcdAppleWirelessDartPageTableBase",
             "PcdAppleWirelessDartPageTableSize",
-            "PcdAppleWirelessDartPageTableLimit",
         })
         with self.assertRaises(M.ManifestError):
             M.parse_pcd_values(report.replace("PcdAppleAnsPublishBlockIo", "missing"))

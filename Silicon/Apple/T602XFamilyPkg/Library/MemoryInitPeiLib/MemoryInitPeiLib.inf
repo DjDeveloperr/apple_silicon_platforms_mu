@@ -46,6 +46,7 @@
   gArmTokenSpaceGuid.PcdFdSize
 
   gAppleSiliconPkgTokenSpaceGuid.PcdSystemMemoryUefiRegionSize
+  gAppleSiliconPkgTokenSpaceGuid.PcdBootArgsPointer
 
   gEmbeddedTokenSpaceGuid.PcdMemoryTypeEfiACPIReclaimMemory
   gEmbeddedTokenSpaceGuid.PcdMemoryTypeEfiACPIMemoryNVS
@@ -64,6 +65,8 @@
   gAppleSiliconPkgTokenSpaceGuid.PcdFrameBufferAddress
   gAppleSiliconPkgTokenSpaceGuid.PcdFrameBufferSize
   gAppleSiliconPkgTokenSpaceGuid.PcdCoreCount
+
+[PatchPcd]
   gAppleSiliconPkgTokenSpaceGuid.PcdAppleWirelessDartPageTableBase
   gAppleSiliconPkgTokenSpaceGuid.PcdAppleWirelessDartPageTableSize
 

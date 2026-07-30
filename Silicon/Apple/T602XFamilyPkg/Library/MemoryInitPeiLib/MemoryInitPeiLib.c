@@ -121,6 +121,141 @@ NtasiValidateWirelessHandoffV2 (
             NTASI_WIRELESS_HANDOFF_V2_PAGE_SIZE
             ) == Descriptor->MsiL2Crc32);
 }
+
+//
+// Derive the wireless SID-1 reservation live at boot, the way SystemMemoryTop
+// itself is already derived -- never from a hand-picked constant. Baking a
+// chosen carveout address into a profile is exactly the mistake that
+// produced the GPU PEI crash earlier tonight (a hardcoded reservation that
+// went stale and landed on Mu's own live stack).
+//
+// m1n1's wlan_validate_reservation() (src/wireless_handoff.c, not editable
+// from here) requires: size exactly NTASI_WIRELESS_HANDOFF_V2_RESERVATION_SIZE,
+// base 0x4000-aligned, base >= guest_top + 16KiB where guest_top =
+// boot_args.phys_base + boot_args.mem_size (== PcdSystemMemoryBase +
+// PcdSystemMemorySize == SystemMemoryTop, already computed by the caller),
+// and base + size <= ALIGN_DOWN(boot_args.phys_base, 4GiB) + mem_size_actual.
+// mem_size_actual is not exposed via PcdSystemMemorySize (that is boot_args'
+// deliberately-smaller mem_size) but the full boot_args struct is already
+// copied to PcdBootArgsPointer during SEC/PrePi's EarlySetup(), so it is
+// read directly here -- the same revision-dispatch SmbiosInfoDxe.c's
+// GetInstalledMemoryBytes() already uses successfully in DXE, reused
+// verbatim rather than reinvented.
+//
+// The reservation is placed at the top of the mem_size_actual-derived
+// window (PhysTop - size, 0x4000-aligned) rather than counted up from
+// guest_top+16KiB: mem_size_actual describes the same "headroom above
+// boot_args mem_size" pool m1n1's own top_of_memory_alloc() already carves
+// iBoot/GPU/wireless carveouts from, so anchoring on it -- instead of on
+// raw physical DRAM capacity, which runs into iBoot's own even-higher
+// GUAT/CARV firmware carveouts -- is what keeps this derivation inside the
+// pool m1n1 actually set aside for this purpose.
+//
+// UNVERIFIED CAVEAT, stated plainly: Mu has no ADT- or boot_args-visible
+// way to learn the exact bounds of the TZ0/TZ1 TrustZone carveouts that
+// also live inside [guest_top, PhysTop) on this hardware (m1n1 reads them
+// from privileged MCC hardware registers -- see m1n1/src/mcc.c
+// mcc_unmap_carveouts() -- which are not exposed to a guest at any
+// privilege level Mu runs at). This derivation can only satisfy m1n1's
+// own numeric validator; it cannot independently prove the chosen address
+// avoids a TZ carveout the way the ANS/GPU fixes earlier tonight could
+// prove their addresses were correct against a live ADT read. Both m1n1
+// and Mu computing the *same* formula from the *same* boot_args inputs is
+// what makes this safe in practice, not anything Mu can verify alone.
+//
+STATIC
+BOOLEAN
+NtasiDeriveWirelessReservation (
+  IN  EFI_PHYSICAL_ADDRESS  SystemMemoryBase,
+  IN  EFI_PHYSICAL_ADDRESS  SystemMemoryTop,
+  OUT EFI_PHYSICAL_ADDRESS  *ReservationBase,
+  OUT UINT32                *ReservationSize
+  )
+{
+  CONST struct boot_args  *BootArgs;
+  UINT64                   MemSizeActual;
+  UINT64                   PhysTop;
+  UINT64                   GuestTopWithMargin;
+  UINT64                   CandidateBase;
+
+  *ReservationBase = 0;
+  *ReservationSize = 0;
+
+  BootArgs = (CONST struct boot_args *)(UINTN)FixedPcdGet64 (PcdBootArgsPointer);
+  if (BootArgs == NULL) {
+    DEBUG ((DEBUG_ERROR, "MemoryInitPeiLib: wireless: no boot_args at PcdBootArgsPointer; wireless withheld\n"));
+    return FALSE;
+  }
+
+  // Matches SmbiosInfoDxe.c's GetInstalledMemoryBytes() union-variant
+  // dispatch exactly.
+  MemSizeActual = 0;
+  switch (BootArgs->revision) {
+    case 1:
+      MemSizeActual = BootArgs->rv1.mem_size_actual;
+      break;
+    case 2:
+      MemSizeActual = BootArgs->rv2.mem_size_actual;
+      break;
+    case 3:
+      MemSizeActual = BootArgs->rv3.mem_size_actual;
+      break;
+    default:
+      DEBUG ((DEBUG_ERROR, "MemoryInitPeiLib: wireless: unknown boot_args revision %u; wireless withheld\n", BootArgs->revision));
+      return FALSE;
+  }
+
+  if ((MemSizeActual == 0) || (MemSizeActual > (1ULL << 40))) {
+    DEBUG ((DEBUG_ERROR, "MemoryInitPeiLib: wireless: boot_args mem_size_actual unusable (0x%lx); wireless withheld\n", MemSizeActual));
+    return FALSE;
+  }
+
+  PhysTop = (SystemMemoryBase & ~(SIZE_4GB - 1)) + MemSizeActual;
+
+  if (PhysTop <= NTASI_WIRELESS_HANDOFF_V2_RESERVATION_SIZE) {
+    DEBUG ((DEBUG_ERROR, "MemoryInitPeiLib: wireless: computed PhysTop 0x%lx too small; wireless withheld\n", PhysTop));
+    return FALSE;
+  }
+
+  CandidateBase = (PhysTop - NTASI_WIRELESS_HANDOFF_V2_RESERVATION_SIZE) &
+                  ~(NTASI_WIRELESS_HANDOFF_V2_PAGE_SIZE - 1);
+
+  GuestTopWithMargin = SystemMemoryTop + SIZE_16KB;
+
+  if (CandidateBase < GuestTopWithMargin) {
+    DEBUG ((
+      DEBUG_ERROR,
+      "MemoryInitPeiLib: wireless: derived base 0x%lx is below guest_top+16KiB 0x%lx; wireless withheld\n",
+      CandidateBase,
+      GuestTopWithMargin
+      ));
+    return FALSE;
+  }
+
+  if ((CandidateBase & (NTASI_WIRELESS_HANDOFF_V2_PAGE_SIZE - 1)) != 0) {
+    DEBUG ((DEBUG_ERROR, "MemoryInitPeiLib: wireless: derived base 0x%lx is not 16KiB-aligned; wireless withheld\n", CandidateBase));
+    return FALSE;
+  }
+
+  if (CandidateBase + NTASI_WIRELESS_HANDOFF_V2_RESERVATION_SIZE > PhysTop) {
+    DEBUG ((DEBUG_ERROR, "MemoryInitPeiLib: wireless: derived reservation 0x%lx/+0x%lx exceeds PhysTop 0x%lx; wireless withheld\n", CandidateBase, NTASI_WIRELESS_HANDOFF_V2_RESERVATION_SIZE, PhysTop));
+    return FALSE;
+  }
+
+  *ReservationBase = CandidateBase;
+  *ReservationSize = (UINT32)NTASI_WIRELESS_HANDOFF_V2_RESERVATION_SIZE;
+
+  DEBUG ((
+    DEBUG_INFO,
+    "MemoryInitPeiLib: wireless: derived reservation 0x%lx/+0x%x (guest_top=0x%lx, mem_size_actual=0x%lx, PhysTop=0x%lx)\n",
+    *ReservationBase,
+    *ReservationSize,
+    SystemMemoryTop,
+    MemSizeActual,
+    PhysTop
+    ));
+  return TRUE;
+}
 #endif // NTASI_ENABLE_WIRELESS_DART_HANDOFF
 
 STATIC CONST EFI_GUID  mNtasiAppendedRamdiskLocationHobGuid =
@@ -271,6 +406,38 @@ EFI_STATUS EFIAPI MemoryPeim(IN EFI_PHYSICAL_ADDRESS UefiMemoryBase, IN UINT64 U
   EFI_PHYSICAL_ADDRESS          SystemMemoryTop;
   EFI_PHYSICAL_ADDRESS          ResourceTop;
   BOOLEAN                       Found;
+
+#if NTASI_ENABLE_WIRELESS_DART_HANDOFF
+  //
+  // Derive (never hardcode -- see NtasiDeriveWirelessReservation()'s own
+  // comment) and publish the wireless reservation PCDs *before*
+  // BuildVirtualMemoryMap() runs: that function's own out-of-window
+  // identity-map logic for this same reservation reads these PCDs, and it
+  // is called (below) before the rest of this function would otherwise
+  // compute SystemMemoryTop. PatchPcdSet64/32 leave the PCDs at 0 (their
+  // default) on any failure, which both BuildVirtualMemoryMap() and the
+  // validate-and-reserve stage further down already treat as "wireless
+  // withheld this boot" -- never a fatal PEI status.
+  //
+  {
+    EFI_PHYSICAL_ADDRESS  EarlySystemMemoryTop;
+    EFI_PHYSICAL_ADDRESS  EarlyWirelessDartBase;
+    UINT32                EarlyWirelessDartSize;
+
+    EarlySystemMemoryTop = (EFI_PHYSICAL_ADDRESS)PcdGet64 (PcdSystemMemoryBase) +
+                           (EFI_PHYSICAL_ADDRESS)PcdGet64 (PcdSystemMemorySize);
+    if (NtasiDeriveWirelessReservation (
+          PcdGet64 (PcdSystemMemoryBase),
+          EarlySystemMemoryTop,
+          &EarlyWirelessDartBase,
+          &EarlyWirelessDartSize
+          ))
+    {
+      PatchPcdSet64 (PcdAppleWirelessDartPageTableBase, EarlyWirelessDartBase);
+      PatchPcdSet32 (PcdAppleWirelessDartPageTableSize, EarlyWirelessDartSize);
+    }
+  }
+#endif // NTASI_ENABLE_WIRELESS_DART_HANDOFF
 
   DEBUG((DEBUG_INFO, "%a: Building VirtualMemoryMap\n", __FUNCTION__));
   // build up virtual memory map
@@ -456,43 +623,65 @@ EFI_STATUS EFIAPI MemoryPeim(IN EFI_PHYSICAL_ADDRESS UefiMemoryBase, IN UINT64 U
   // Preserve the SID-1 DART tables installed by m1n1's J414s wireless
   // handoff.  Keep the range cacheable and CPU-readable so AppleDart can
   // validate it, while the allocation HOB prevents DXE/OS reuse.
+  //
+  // Every failure path below logs loudly and leaves wireless withheld
+  // (PcdAppleWirelessDartPageTableBase/Size stay 0, which
+  // AcpiPlatformDxe's NtasiInstallWirelessDartTable() reads as "do not
+  // publish DRT0") instead of returning a fatal PEI status: a validation
+  // mismatch here used to return EFI_COMPROMISED_DATA/EFI_INVALID_PARAMETER,
+  // which PrePi.c's caller treats as fatal (CpuDeadLoop()) -- exactly the
+  // "no console, no recovery" hang class every other fix tonight has been
+  // eliminating. A wireless adapter that never enumerates is infinitely
+  // better than a machine that will not boot.
 #if NTASI_ENABLE_WIRELESS_DART_HANDOFF
   {
     EFI_PHYSICAL_ADDRESS  WirelessDartBase;
     UINT32                WirelessDartSize;
 
+    // Derivation already ran above, before BuildVirtualMemoryMap() (that
+    // function's own out-of-window identity-map logic needs the PCDs set
+    // before it runs). Read back what it published rather than deriving a
+    // second time; zero means derivation declined this boot (already
+    // logged) and there is nothing further to do here.
     WirelessDartBase = PcdGet64 (PcdAppleWirelessDartPageTableBase);
     WirelessDartSize = PcdGet32 (PcdAppleWirelessDartPageTableSize);
-    if ((WirelessDartBase == 0) != (WirelessDartSize == 0)) {
-      DEBUG ((DEBUG_ERROR, "MemoryInitPeiLib: incomplete wireless DART reservation 0x%lx/+0x%x\n", WirelessDartBase, WirelessDartSize));
-      return EFI_INVALID_PARAMETER;
-    }
     if (WirelessDartBase != 0) {
+      DEBUG ((DEBUG_INFO, "MemoryInitPeiLib: wireless: stage \"validate-descriptor\"\n"));
       if (!NtasiValidateWirelessHandoffV2 (
              WirelessDartBase,
              WirelessDartSize,
              SystemMemoryTop
              ))
       {
-        DEBUG ((DEBUG_ERROR, "MemoryInitPeiLib: invalid wireless DART ABI v2 descriptor 0x%lx/+0x%x\n", WirelessDartBase, WirelessDartSize));
-        return EFI_COMPROMISED_DATA;
+        DEBUG ((
+          DEBUG_ERROR,
+          "MemoryInitPeiLib: wireless: invalid ABI v2 descriptor at derived 0x%lx/+0x%x; "
+          "either m1n1 did not honor this exact address or the handoff was not installed "
+          "this boot; wireless withheld\n",
+          WirelessDartBase,
+          WirelessDartSize
+          ));
+        // Do not leave a stale, unauthenticated base/size published for
+        // DXE to trust.
+        PatchPcdSet64 (PcdAppleWirelessDartPageTableBase, 0);
+        PatchPcdSet32 (PcdAppleWirelessDartPageTableSize, 0);
+      } else {
+        // top_of_memory_alloc() removes this reservation from boot_args before
+        // Mu. Publish it as cacheable RAM, then reserve its allocation so DXE
+        // and Windows can validate it but can never reuse it.
+        BuildResourceDescriptorHob (
+          EFI_RESOURCE_SYSTEM_MEMORY,
+          ResourceAttributes,
+          WirelessDartBase,
+          WirelessDartSize
+          );
+        BuildMemoryAllocationHob (
+          WirelessDartBase,
+          WirelessDartSize,
+          EfiReservedMemoryType
+          );
+        DEBUG ((DEBUG_INFO, "MemoryInitPeiLib: wireless: authenticated and reserved ABI v2 at 0x%lx (0x%x bytes)\n", WirelessDartBase, WirelessDartSize));
       }
-
-      // top_of_memory_alloc() removes this reservation from boot_args before
-      // Mu. Publish it as cacheable RAM, then reserve its allocation so DXE
-      // and Windows can validate it but can never reuse it.
-      BuildResourceDescriptorHob (
-        EFI_RESOURCE_SYSTEM_MEMORY,
-        ResourceAttributes,
-        WirelessDartBase,
-        WirelessDartSize
-        );
-      BuildMemoryAllocationHob (
-        WirelessDartBase,
-        WirelessDartSize,
-        EfiReservedMemoryType
-        );
-      DEBUG ((DEBUG_INFO, "MemoryInitPeiLib: authenticated and reserved wireless DART ABI v2 at 0x%lx (0x%x bytes)\n", WirelessDartBase, WirelessDartSize));
     }
   }
 #endif // NTASI_ENABLE_WIRELESS_DART_HANDOFF

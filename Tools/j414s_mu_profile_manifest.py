@@ -13,7 +13,6 @@ import struct
 import subprocess
 import sys
 import tempfile
-import zlib
 from pathlib import Path
 from typing import Any
 
@@ -22,14 +21,6 @@ SCHEMA = "ntasi.j414s.mu-profile.v2"
 BRANCH = "feature/j414s-windows-unified"
 PLATFORM_BUILD = "MacBookProEarly2023-AARCH64/DEBUG_CLANGPDB"
 FD_NAME = "MACBOOKPROEARLY2023_EFI.fd"
-WIRELESS_DESCRIPTOR_FORMAT = "<IHHIHHQQQQQQQQIIII"
-WIRELESS_DESCRIPTOR_FIELDS = (
-    "signature", "version", "structure_size", "flags", "sid",
-    "page_shift", "reservation_base", "reservation_size",
-    "guest_memory_top", "physical_memory_top", "dart_base", "l1_physical",
-    "msi_l2_physical", "descriptor_physical", "l1_crc32", "msi_l2_crc32",
-    "descriptor_crc32", "reserved",
-)
 PROFILES = {
     "baseline": {
         "profile_abi": "ntasi.j414s.windows.baseline.v1",
@@ -55,12 +46,32 @@ PROFILES = {
         "gpu": True,
         "expected_ffs_count": 89,
     },
+    # CORRECTED 2026-07-30: wireless used to be its own optional FFS
+    # (WirelessDartAcpiTables.inf, compiling a static WDRT.asl that baked a
+    # same-instance hardware-captured reservation address at build time --
+    # exactly the hardcoding the end user rejected). DRT0 is now generated
+    # dynamically at DXE runtime by NtasiInstallWirelessDartTable() inside
+    # AcpiPlatformDxe (the same module and the same technique
+    # AcpiPlatformInstallAppleAnsTable() already uses for ANS's SSDT), and
+    # the reservation base/size are derived by PEI from that boot's own
+    # boot_args -- never baked into this static build artifact. Selecting
+    # "wireless" therefore changes exactly one thing a static build can
+    # prove: the NTASI_ENABLE_WIRELESS_DART_HANDOFF compiler define. It adds
+    # no new FFS module (unlike ans/gpu, which each add their own driver or
+    # ACPI-table FFS), so its expected_ffs_count equals baseline's.
     "wireless": {
-        "profile_abi": "ntasi.j414s.windows.wireless-handoff-v2.v1",
+        "profile_abi": "ntasi.j414s.windows.wireless-handoff-v2-runtime-derived.v1",
         "ans": False,
         "gpu": False,
         "wireless": True,
-        "expected_ffs_count": 88,
+        "expected_ffs_count": 87,
+    },
+    "ans-gpu-wireless": {
+        "profile_abi": "ntasi.j414s.windows.ans-gpu-wireless-combined.v1",
+        "ans": True,
+        "gpu": True,
+        "wireless": True,
+        "expected_ffs_count": 89,
     },
 }
 for _profile in PROFILES.values():
@@ -88,7 +99,6 @@ REQUIRED_FFS = {
 OPTIONAL_FFS = {
     "ans": "ACDA0196-4589-4E4F-B71D-E9F9C2B2EA3D",
     "gpu": "2CC5C83E-BCA6-49D9-B435-D14DC31E62AE",
-    "wireless": "58ED2876-3BD4-470A-A18F-CE5347BE9C13",
     "arm_gic": "DE371F7C-DEC4-4D21-ADF1-593ABCC15882",
 }
 ACPI_CONTAINERS = {
@@ -100,7 +110,6 @@ ACPI_CONTAINERS = {
     "SMCG.aml": "3FF4732C-9411-4E10-A10C-8B39DF282E83",
     "CSRT.acpi": "D1430D86-24A4-4C2F-8F22-D24376E2E888",
     "GPU.aml": OPTIONAL_FFS["gpu"],
-    "WDRT.aml": OPTIONAL_FFS["wireless"],
 }
 BASE_ACPI = ("DSDT.aml", "MCFG.acpi", "DISP.aml", "KBL.aml", "MTP.aml", "SMCG.aml", "CSRT.acpi")
 NESTED_LOCK = Path("Tools/J414S_NESTED_GITLINK_LOCK.json")
@@ -328,11 +337,8 @@ def acpi_inventory(
         tables[name] = record
 
     gpu_matches = list(build_root.rglob("GPU.aml"))
-    wdrt_matches = list(build_root.rglob("WDRT.aml"))
     if bool(gpu_matches) != PROFILES[profile]["gpu"] or len(gpu_matches) > 1:
         raise ManifestError("GPU ACPI output does not match profile")
-    if bool(wdrt_matches) != PROFILES[profile]["wireless"] or len(wdrt_matches) > 1:
-        raise ManifestError("wireless DART ACPI output does not match profile")
     if gpu_matches:
         record = file_record(gpu_matches[0], output_root)
         container_guid = ACPI_CONTAINERS["GPU.aml"]
@@ -341,14 +347,20 @@ def acpi_inventory(
             raise ManifestError("GPU.aml does not occur exactly once in its final-FV FFS")
         record.update({"container_ffs_guid": container_guid, "occurrences_in_ffs": occurrences})
         tables["GPU.aml"] = record
-    if wdrt_matches:
-        record = file_record(wdrt_matches[0], output_root)
-        container_guid = ACPI_CONTAINERS["WDRT.aml"]
-        occurrences = ffs_by_guid[container_guid].read_bytes().count(wdrt_matches[0].read_bytes())
-        if occurrences != 1:
-            raise ManifestError("WDRT.aml does not occur exactly once in its final-FV FFS")
-        record.update({"container_ffs_guid": container_guid, "occurrences_in_ffs": occurrences})
-        tables["WDRT.aml"] = record
+
+    # DRT0 (wireless) is no longer a static compiled table this static
+    # inventory can see: NtasiInstallWirelessDartTable() builds and installs
+    # its SSDT with AmlLib entirely at DXE runtime, from PEI-derived values
+    # that do not exist until a real boot processes that boot's boot_args.
+    # This mirrors ANS0's own SSDT, which this same function has never been
+    # able to inspect either -- only AppleNANDStorageDxe's driver FFS
+    # (OPTIONAL_FFS["ans"]) stands in as proof the ans capability compiled
+    # in. Wireless has no analogous dedicated FFS (its code lives inside the
+    # always-built AcpiPlatformDxe module), so the only static, build-time
+    # proof of the "wireless" profile is the NTASI_ENABLE_WIRELESS_DART_HANDOFF
+    # compiler define asserted below in expected_defines, plus PCD base/size
+    # staying at their PatchableInModule default of 0 in this non-hardware
+    # build (see parse_pcd_values()/expected_pcds).
 
     dsdt = decompile_aml(find_unique(build_root, "DSDT.aml"))
     disp = decompile_aml(find_unique(build_root, "DISP.aml"))
@@ -363,15 +375,6 @@ def acpi_inventory(
     }
     if gpu_matches:
         assertions["gpu_ntas0023"] = "NTAS0023" in decompile_aml(gpu_matches[0])
-    if wdrt_matches:
-        wdrt = decompile_aml(wdrt_matches[0])
-        assertions.update({
-            "wdrt_ntas0011": "NTAS0011" in wdrt,
-            "wdrt_dynamic_abi_v2": (
-                "ntasi,wireless-handoff-abi" in wdrt and
-                "ntasi,wireless-handoff-descriptor-offset" in wdrt
-            ),
-        })
 
     mcfg = find_unique(build_root, "MCFG.acpi").read_bytes()
     if len(mcfg) != 60 or mcfg[:4] != b"MCFG":
@@ -434,7 +437,6 @@ def parse_pcd_values(build_report: str) -> dict[str, int]:
         "PcdAppleAnsPublishBlockIo",
         "PcdAppleWirelessDartPageTableBase",
         "PcdAppleWirelessDartPageTableSize",
-        "PcdAppleWirelessDartPageTableLimit",
     )
     result: dict[str, int] = {}
     for name in names:
@@ -443,99 +445,6 @@ def parse_pcd_values(build_report: str) -> dict[str, int]:
             raise ManifestError(f"build report omits {name}")
         result[name] = int(match.group(1), 0)
     return result
-
-
-def wireless_handoff_record(output_root: Path, profile: str) -> dict[str, Any] | None:
-    path = output_root / "wireless-handoff.json"
-    if not PROFILES[profile]["wireless"]:
-        if path.exists():
-            raise ManifestError("non-wireless profile contains a handoff manifest")
-        return None
-    if not path.is_file():
-        raise ManifestError("wireless profile omits the same-instance handoff manifest")
-    evidence = json.loads(path.read_text(encoding="utf-8"))
-    contract = evidence.get("contract", {})
-    reservation = evidence.get("reservation", {})
-    descriptor = evidence.get("descriptor", {})
-    m1n1 = evidence.get("m1n1", {})
-    if (evidence.get("schema") != "ntasi.j414s.wireless-handoff.v2" or
-            evidence.get("artifact_status") != "READY_FOR_SAME_INSTANCE_MU_BUILD" or
-            evidence.get("hardware_touched") is not True or
-            contract != {
-                "name": "dynamic_reserved_wireless_handoff_v2",
-                "descriptor_version": 2,
-                "descriptor_size": 96,
-                "descriptor_offset": 0xc000,
-            }):
-        raise ManifestError("wireless handoff evidence ABI/state mismatch")
-    base = reservation.get("base")
-    size = reservation.get("size")
-    if (not isinstance(base, int) or not isinstance(size, int) or
-            size != 0x10000 or base & 0x3fff or
-            descriptor.get("reservation_base") != base or
-            descriptor.get("reservation_size") != size or
-            descriptor.get("descriptor_physical") != base + 0xc000 or
-            descriptor.get("descriptor_crc32", 0) == 0 or
-            not re.fullmatch(r"[0-9a-f]{40}", m1n1.get("source_commit", "")) or
-            not re.fullmatch(r"[0-9a-f]{64}", m1n1.get("manifest_sha256", ""))):
-        raise ManifestError("wireless handoff evidence layout/provenance mismatch")
-    m1n1_path = Path(m1n1.get("manifest_path", ""))
-    capture_path = Path(reservation.get("capture_path", ""))
-    if (not m1n1_path.is_absolute() or not m1n1_path.is_file() or
-            not capture_path.is_absolute() or not capture_path.is_file() or
-            sha256(m1n1_path) != m1n1["manifest_sha256"] or
-            capture_path.stat().st_size != size or
-            reservation.get("capture_size") != size or
-            sha256(capture_path) != reservation.get("capture_sha256")):
-        raise ManifestError("wireless handoff source evidence is missing or changed")
-    m1n1_manifest = json.loads(m1n1_path.read_text(encoding="utf-8"))
-    m1n1_profile = m1n1_manifest.get("profile", {})
-    if (m1n1_manifest.get("schema") != "ntasi.j414s.m1n1-unified.v1" or
-            m1n1_profile.get("authoritative_wireless_contract") !=
-                "dynamic_reserved_wireless_handoff_v2" or
-            m1n1_profile.get("bcm4388_descriptor_transaction") !=
-                "legacy_reference_fixed_layout_no_current_abi_no_call_site" or
-            m1n1_manifest.get("source", {}).get("commit") !=
-                m1n1.get("source_commit") or
-            m1n1_manifest.get("files", {}).get("m1n1.macho", {}).get("sha256") !=
-                m1n1.get("macho_sha256")):
-        raise ManifestError("wireless handoff m1n1 provenance/policy mismatch")
-    capture = capture_path.read_bytes()
-    descriptor_size = struct.calcsize(WIRELESS_DESCRIPTOR_FORMAT)
-    unpacked = struct.unpack_from(WIRELESS_DESCRIPTOR_FORMAT, capture, 0xc000)
-    captured_descriptor = dict(zip(WIRELESS_DESCRIPTOR_FIELDS, unpacked, strict=True))
-    expected_identity = {
-        "signature": 0x3248574e, "version": 2,
-        "structure_size": descriptor_size, "flags": 1, "sid": 1,
-        "page_shift": 14, "reservation_base": base,
-        "reservation_size": size, "dart_base": 0x594000000,
-        "l1_physical": base, "msi_l2_physical": base + 0x4000,
-        "descriptor_physical": base + 0xc000, "reserved": 0,
-    }
-    raw_descriptor = bytearray(capture[0xc000:0xc000 + descriptor_size])
-    struct.pack_into("<I", raw_descriptor, descriptor_size - 8, 0)
-    expected_crcs = {
-        "l1_crc32": zlib.crc32(capture[:0x4000]) & 0xffffffff,
-        "msi_l2_crc32": zlib.crc32(capture[0x4000:0x8000]) & 0xffffffff,
-        "descriptor_crc32": zlib.crc32(raw_descriptor) & 0xffffffff,
-    }
-    if (any(captured_descriptor.get(name) != value
-            for name, value in {**expected_identity, **expected_crcs}.items()) or
-            captured_descriptor != descriptor or
-            captured_descriptor["guest_memory_top"] + 0x4000 > base or
-            captured_descriptor["physical_memory_top"] < base + size or
-            any(expected_crcs[name] == 0 for name in expected_crcs)):
-        raise ManifestError("wireless handoff capture descriptor/CRC mismatch")
-    return {
-        "manifest": file_record(path, output_root),
-        "schema": evidence["schema"],
-        "contract": contract,
-        "base": base,
-        "size": size,
-        "descriptor_crc32": descriptor["descriptor_crc32"],
-        "m1n1_commit": m1n1["source_commit"],
-        "m1n1_manifest_sha256": m1n1["manifest_sha256"],
-    }
 
 
 def validate_policy(manifest: dict[str, Any]) -> None:
@@ -563,7 +472,7 @@ def validate_builder(builder: dict[str, Any]) -> None:
 def validate_shape(manifest: dict[str, Any]) -> None:
     require_keys(
         manifest,
-        {"schema", "artifact_status", "hardware_touched", "profile", "source", "builder", "build", "firmware", "firmware_volume", "acpi", "wireless_handoff"},
+        {"schema", "artifact_status", "hardware_touched", "profile", "source", "builder", "build", "firmware", "firmware_volume", "acpi"},
         "manifest",
     )
     require_keys(
@@ -669,7 +578,6 @@ def generate_manifest(args: argparse.Namespace) -> dict[str, Any]:
     expected_optional = {
         OPTIONAL_FFS["ans"]: PROFILES[profile]["ans"],
         OPTIONAL_FFS["gpu"]: PROFILES[profile]["gpu"],
-        OPTIONAL_FFS["wireless"]: PROFILES[profile]["wireless"],
         OPTIONAL_FFS["arm_gic"]: False,
     }
     for guid, expected in expected_optional.items():
@@ -683,16 +591,16 @@ def generate_manifest(args: argparse.Namespace) -> dict[str, Any]:
     reject_legacy_paths(options_text, "build options")
     reject_legacy_paths(fv_map.read_text(encoding="utf-8", errors="replace"), "FV map")
     pcd_values = parse_pcd_values(report_text)
-    wireless_handoff = wireless_handoff_record(output_root, profile)
+    # PcdAppleWirelessDartPageTableBase/Size are PatchableInModule with an
+    # AppleSiliconPkg.dec default of 0; only a live boot's PEI phase (never
+    # this Docker build) ever patches them, regardless of profile. Expecting
+    # anything else here would mean this static build artifact claims to
+    # know a value only a real boot's boot_args can produce.
     expected_pcds = {
         "PcdAppleAnsPublishAcpiDevice": 1 if PROFILES[profile]["ans"] else 0,
         "PcdAppleAnsPublishBlockIo": 0,
-        "PcdAppleWirelessDartPageTableBase": wireless_handoff["base"] if wireless_handoff else 0,
-        "PcdAppleWirelessDartPageTableSize": wireless_handoff["size"] if wireless_handoff else 0,
-        "PcdAppleWirelessDartPageTableLimit": (
-            wireless_handoff["base"] + wireless_handoff["size"] - 1
-            if wireless_handoff else 0
-        ),
+        "PcdAppleWirelessDartPageTableBase": 0,
+        "PcdAppleWirelessDartPageTableSize": 0,
     }
     if pcd_values != expected_pcds:
         raise ManifestError("PCD values violate the selected profile policy")
@@ -739,7 +647,6 @@ def generate_manifest(args: argparse.Namespace) -> dict[str, Any]:
             "optional_guids": OPTIONAL_FFS,
         },
         "acpi": acpi_inventory(build_root, output_root, profile, ffs_by_guid),
-        "wireless_handoff": wireless_handoff,
     }
     reject_legacy_paths(json.dumps(manifest, sort_keys=True), "manifest")
     validate_shape(manifest)
@@ -810,18 +717,11 @@ def verify_manifest(manifest_path: Path, source_root: Path | None = None) -> dic
     reject_legacy_paths(report_text, "build report")
     reject_legacy_paths(build_options.read_text(encoding="utf-8", errors="replace"), "build options")
     pcds = parse_pcd_values(report_text)
-    wireless_handoff = wireless_handoff_record(output_root, profile)
-    if manifest.get("wireless_handoff") != wireless_handoff:
-        raise ManifestError("recorded wireless handoff evidence mismatch")
     expected_pcds = {
         "PcdAppleAnsPublishAcpiDevice": 1 if PROFILES[profile]["ans"] else 0,
         "PcdAppleAnsPublishBlockIo": 0,
-        "PcdAppleWirelessDartPageTableBase": wireless_handoff["base"] if wireless_handoff else 0,
-        "PcdAppleWirelessDartPageTableSize": wireless_handoff["size"] if wireless_handoff else 0,
-        "PcdAppleWirelessDartPageTableLimit": (
-            wireless_handoff["base"] + wireless_handoff["size"] - 1
-            if wireless_handoff else 0
-        ),
+        "PcdAppleWirelessDartPageTableBase": 0,
+        "PcdAppleWirelessDartPageTableSize": 0,
     }
     if manifest["build"].get("pcds") != pcds or pcds != expected_pcds:
         raise ManifestError("recorded PCD evidence violates profile policy")
@@ -843,7 +743,6 @@ def verify_manifest(manifest_path: Path, source_root: Path | None = None) -> dic
     optional_expect = {
         OPTIONAL_FFS["ans"]: PROFILES[profile]["ans"],
         OPTIONAL_FFS["gpu"]: PROFILES[profile]["gpu"],
-        OPTIONAL_FFS["wireless"]: PROFILES[profile]["wireless"],
         OPTIONAL_FFS["arm_gic"]: False,
     }
     if any((guid in guids) != expected for guid, expected in optional_expect.items()):
@@ -852,7 +751,7 @@ def verify_manifest(manifest_path: Path, source_root: Path | None = None) -> dic
         raise ManifestError("profile FFS count mismatch")
 
     acpi = manifest["acpi"]
-    expected_tables = set(BASE_ACPI) | ({"GPU.aml"} if PROFILES[profile]["gpu"] else set()) | ({"WDRT.aml"} if PROFILES[profile]["wireless"] else set())
+    expected_tables = set(BASE_ACPI) | ({"GPU.aml"} if PROFILES[profile]["gpu"] else set())
     if set(acpi.get("tables", {})) != expected_tables:
         raise ManifestError("ACPI table inventory does not match profile")
     for name, record in acpi["tables"].items():
@@ -876,11 +775,6 @@ def verify_manifest(manifest_path: Path, source_root: Path | None = None) -> dic
         "disp_ntas0070": True,
         "gpu_ntas0023": PROFILES[profile]["gpu"],
     }
-    if PROFILES[profile]["wireless"]:
-        expected_assertions.update({
-            "wdrt_ntas0011": True,
-            "wdrt_dynamic_abi_v2": True,
-        })
     if acpi["assertions"] != expected_assertions:
         raise ManifestError("ACPI semantic assertions mismatch")
 

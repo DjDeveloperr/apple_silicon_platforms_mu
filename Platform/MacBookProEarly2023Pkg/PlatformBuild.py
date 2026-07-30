@@ -6,12 +6,10 @@
 # SPDX-License-Identifier: BSD-2-Clause-Patent
 ##
 import datetime
-import json
 import logging
 import os
 import uuid
 from io import StringIO
-from pathlib import Path
 
 from edk2toolext.environment import shell_environment
 from edk2toolext.environment.uefi_build import UefiBuilder
@@ -182,15 +180,17 @@ class PlatformBuilder( UefiBuilder, BuildSettingsManager):
         logging.debug("PlatformBuilder SetPlatformEnv")
         profile = os.environ.get("NTASI_MU_PROFILE", "baseline").strip().lower()
         profile_values = {
-            "baseline": {"ans": "FALSE", "gpu": "0"},
-            "ans": {"ans": "TRUE", "gpu": "0"},
-            "gpu": {"ans": "FALSE", "gpu": "1"},
-            "ans-gpu": {"ans": "TRUE", "gpu": "1"},
-            "wireless": {"ans": "FALSE", "gpu": "0"},
+            "baseline": {"ans": "FALSE", "gpu": "0", "wireless": "0"},
+            "ans": {"ans": "TRUE", "gpu": "0", "wireless": "0"},
+            "gpu": {"ans": "FALSE", "gpu": "1", "wireless": "0"},
+            "ans-gpu": {"ans": "TRUE", "gpu": "1", "wireless": "0"},
+            "wireless": {"ans": "FALSE", "gpu": "0", "wireless": "1"},
+            "ans-gpu-wireless": {"ans": "TRUE", "gpu": "1", "wireless": "1"},
         }
         if profile not in profile_values:
             raise ValueError(
-                "NTASI_MU_PROFILE must be one of: baseline, ans, gpu, ans-gpu, wireless"
+                "NTASI_MU_PROFILE must be one of: "
+                "baseline, ans, gpu, ans-gpu, wireless, ans-gpu-wireless"
             )
         logging.info("Building the J414s Windows Mu profile: %s", profile)
 
@@ -226,51 +226,25 @@ class PlatformBuilder( UefiBuilder, BuildSettingsManager):
             profile_values[profile]["gpu"],
             "Selected by NTASI_MU_PROFILE",
         )
-        wireless_base = 0
-        wireless_size = 0
-        wireless_limit = 0
-        if profile == "wireless":
-            manifest_path = os.environ.get("NTASI_WIRELESS_HANDOFF_MANIFEST", "")
-            if manifest_path != "/wireless-handoff.json":
-                raise ValueError("wireless profile requires the mounted handoff manifest")
-            manifest = json.loads(Path(manifest_path).read_text(encoding="utf-8"))
-            if (manifest.get("schema") != "ntasi.j414s.wireless-handoff.v2" or
-                    manifest.get("artifact_status") !=
-                    "READY_FOR_SAME_INSTANCE_MU_BUILD" or
-                    manifest.get("contract", {}).get("name") !=
-                    "dynamic_reserved_wireless_handoff_v2" or
-                    manifest.get("contract", {}).get("descriptor_version") != 2 or
-                    manifest.get("contract", {}).get("descriptor_size") != 96 or
-                    manifest.get("contract", {}).get("descriptor_offset") != 0xc000):
-                raise ValueError("wireless handoff manifest ABI/state mismatch")
-            wireless_base = int(manifest["reservation"]["base"])
-            wireless_size = int(manifest["reservation"]["size"])
-            if (wireless_size != 0x10000 or wireless_base & 0x3fff or
-                    int(manifest["descriptor"]["reservation_base"]) != wireless_base or
-                    int(manifest["descriptor"]["reservation_size"]) != wireless_size):
-                raise ValueError("wireless handoff manifest reservation mismatch")
-            wireless_limit = wireless_base + wireless_size - 1
-            if wireless_limit < wireless_base or wireless_limit > 0xffffffffffffffff:
-                raise ValueError("wireless handoff reservation overflows UINT64")
+        # CORRECTED 2026-07-30: wireless used to require a same-instance,
+        # hardware-captured handoff manifest so this build could bake an
+        # exact reservation base/size/limit into PatchPcd overrides -- the
+        # coordinator's own hand-picked 0x103e0000000 test address, sealed
+        # after the fact. The end user asked "wouldn't that be hard coding
+        # it?" and was right: MemoryInitPeiLib.c now derives the reservation
+        # at PEI runtime from that boot's own boot_args (mirroring how
+        # SystemMemoryTop is already computed), so there is nothing left for
+        # a build-time manifest to bake. PcdAppleWirelessDartPageTableBase/
+        # Size are PatchableInModule and simply keep their AppleSiliconPkg.dec
+        # default of 0 in every build produced by this script; only a live
+        # boot's PEI phase ever writes a nonzero value. Enabling the
+        # NTASI_ENABLE_WIRELESS_DART_HANDOFF code paths is now a pure
+        # source-flag decision, exactly like NTASI_ENABLE_ANS and
+        # NTASI_J414S_GPU_RESOURCE_PROFILE above.
         self.env.SetValue(
             "BLD_*_NTASI_ENABLE_WIRELESS_DART_HANDOFF",
-            "1" if profile == "wireless" else "0",
-            "Selected only by a same-instance wireless handoff manifest",
-        )
-        self.env.SetValue(
-            "BLD_*_NTASI_WIRELESS_DART_BASE",
-            f"0x{wireless_base:x}",
-            "Exact same-instance m1n1 reservation base",
-        )
-        self.env.SetValue(
-            "BLD_*_NTASI_WIRELESS_DART_SIZE",
-            f"0x{wireless_size:x}",
-            "Exact same-instance m1n1 reservation size",
-        )
-        self.env.SetValue(
-            "BLD_*_NTASI_WIRELESS_DART_LIMIT",
-            f"0x{wireless_limit:x}",
-            "Exact same-instance m1n1 reservation inclusive limit",
+            profile_values[profile]["wireless"],
+            "Selected by NTASI_MU_PROFILE",
         )
 
         return 0

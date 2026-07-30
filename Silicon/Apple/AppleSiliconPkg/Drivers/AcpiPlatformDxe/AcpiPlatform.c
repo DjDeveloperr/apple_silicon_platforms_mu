@@ -470,6 +470,159 @@ NtasiResolveAndReserveGpuCarveouts (
 }
 #endif // NTASI_J414S_GPU_RESOURCE_PROFILE
 
+#if NTASI_ENABLE_WIRELESS_DART_HANDOFF
+#define NTASI_WIRELESS_DART_APERTURE_BASE  0x594000000ULL
+#define NTASI_WIRELESS_DART_APERTURE_SIZE  0x4000ULL
+
+/**
+  Publish DRT0 (the wireless SID-1 DART page-table handoff) to Windows.
+
+  Generated dynamically instead of the static WDRT.asl this table used to
+  be: the reservation base/size are derived by MemoryInitPeiLib.c's
+  NtasiDeriveWirelessReservation() at boot from live boot_args, not known
+  at build time, so a compiled-in QWordMemory resource baking a build-time
+  constant is no longer possible (nor desirable -- see that function's own
+  comment on why a hardcoded reservation address is exactly what produced
+  the GPU PEI crash earlier tonight).
+
+  PcdAppleWirelessDartPageTableBase/Size read back whatever PEI derived
+  and authenticated against m1n1's own ABI v2 descriptor. Zero means
+  wireless was withheld this boot (PEI already logged why -- derivation
+  failed, or the descriptor at the derived address did not validate) and
+  DRT0 is not published at all: AppleDart/AppleBcmWifi then simply find no
+  SID-1 handoff to adopt, the same as a build with
+  NTASI_ENABLE_WIRELESS_DART_HANDOFF off. This mirrors
+  AcpiPlatformInstallAppleAnsTable()'s own "no ADT node -> EFI_NOT_FOUND,
+  not fatal" contract.
+
+  Stage-tagged breadcrumbs match the same pattern the ANS/GPU fixes
+  established tonight; DXE has a console and (via CpuDxe, apriori-
+  dispatched before this driver runs) working exception vectors, so a bug
+  here is diagnosable rather than a silent hang.
+**/
+STATIC
+EFI_STATUS
+NtasiInstallWirelessDartTable (
+  IN EFI_ACPI_TABLE_PROTOCOL  *AcpiTable
+  )
+{
+  EFI_STATUS                   Status;
+  EFI_STATUS                   DeleteStatus;
+  AML_ROOT_NODE_HANDLE         RootNode;
+  AML_OBJECT_NODE_HANDLE       ScopeNode;
+  AML_OBJECT_NODE_HANDLE       DeviceNode;
+  AML_OBJECT_NODE_HANDLE       CrsNode;
+  EFI_ACPI_DESCRIPTION_HEADER  *Table;
+  UINTN                        TableHandle;
+  UINT64                       ReservationBase;
+  UINT32                       ReservationSize;
+
+  RootNode = NULL;
+  Table    = NULL;
+
+  DEBUG ((DEBUG_INFO, "WirelessDART ACPI: stage \"read-reservation-pcds\"\n"));
+  ReservationBase = PcdGet64 (PcdAppleWirelessDartPageTableBase);
+  ReservationSize = PcdGet32 (PcdAppleWirelessDartPageTableSize);
+  if ((ReservationBase == 0) || (ReservationSize == 0)) {
+    DEBUG ((DEBUG_INFO, "WirelessDART ACPI: no reservation published by PEI this boot; DRT0 withheld\n"));
+    return EFI_NOT_FOUND;
+  }
+
+  DEBUG ((DEBUG_INFO, "WirelessDART ACPI: stage \"build-ssdt\" reservation=0x%lx/+0x%x\n", ReservationBase, ReservationSize));
+
+  Status = AmlCodeGenDefinitionBlock ("SSDT", "NTASP ", "J414WDRT", 1, &RootNode);
+  if (EFI_ERROR (Status)) {
+    goto Exit;
+  }
+
+  Status = AmlCodeGenScope ("\\_SB_", RootNode, &ScopeNode);
+  if (EFI_ERROR (Status)) {
+    goto Exit;
+  }
+
+  Status = AmlCodeGenDevice ("DRT0", ScopeNode, &DeviceNode);
+  if (EFI_ERROR (Status)) {
+    goto Exit;
+  }
+
+  Status = AmlCodeGenNameString ("_HID", "NTAS0011", DeviceNode, NULL);
+  if (EFI_ERROR (Status)) {
+    goto Exit;
+  }
+
+  Status = AmlCodeGenNameInteger ("_UID", 0, DeviceNode, NULL);
+  if (EFI_ERROR (Status)) {
+    goto Exit;
+  }
+
+  Status = AmlCodeGenNameInteger ("_CCA", 1, DeviceNode, NULL);
+  if (EFI_ERROR (Status)) {
+    goto Exit;
+  }
+
+  Status = AmlCodeGenNameResourceTemplate ("_CRS", DeviceNode, &CrsNode);
+  if (EFI_ERROR (Status)) {
+    goto Exit;
+  }
+
+  // 0: DART aperture (fixed hardware MMIO, not part of the derived
+  // reservation).
+  Status = AppleAnsAddMemoryResource (CrsNode, NTASI_WIRELESS_DART_APERTURE_BASE, NTASI_WIRELESS_DART_APERTURE_SIZE);
+  if (EFI_ERROR (Status)) {
+    goto Exit;
+  }
+
+  // 1: the derived SID-1 page-table/descriptor reservation.
+  Status = AppleAnsAddMemoryResource (CrsNode, ReservationBase, ReservationSize);
+  if (EFI_ERROR (Status)) {
+    goto Exit;
+  }
+
+  Status = AmlCodeGenNameInteger ("_STA", 0x0F, DeviceNode, NULL);
+  if (EFI_ERROR (Status)) {
+    goto Exit;
+  }
+
+  DEBUG ((DEBUG_INFO, "WirelessDART ACPI: stage \"serialize-and-install\"\n"));
+  Status = AmlSerializeDefinitionBlock (RootNode, &Table);
+  if (EFI_ERROR (Status)) {
+    goto Exit;
+  }
+
+  TableHandle = 0;
+  Status      = AcpiTable->InstallAcpiTable (
+                              AcpiTable,
+                              Table,
+                              Table->Length,
+                              &TableHandle
+                              );
+  if (!EFI_ERROR (Status)) {
+    DEBUG ((
+      DEBUG_INFO,
+      "WirelessDART ACPI: DRT0 published, dart-aperture=0x%lx/+0x%lx reservation=0x%lx/+0x%x\n",
+      NTASI_WIRELESS_DART_APERTURE_BASE,
+      NTASI_WIRELESS_DART_APERTURE_SIZE,
+      ReservationBase,
+      ReservationSize
+      ));
+  }
+
+Exit:
+  if (Table != NULL) {
+    FreePool (Table);
+  }
+
+  if (RootNode != NULL) {
+    DeleteStatus = AmlDeleteTree (RootNode);
+    if (!EFI_ERROR (Status) && EFI_ERROR (DeleteStatus)) {
+      Status = DeleteStatus;
+    }
+  }
+
+  return Status;
+}
+#endif // NTASI_ENABLE_WIRELESS_DART_HANDOFF
+
 /**
   Publish the native Apple ANS controller to Windows.  Addresses and the
   hardware profile are derived from the live Apple Device Tree so one firmware
@@ -1714,6 +1867,23 @@ AcpiPlatformEntryPoint (
   // logs a breadcrumb before every step and never returns a fatal status.
   //
   NtasiResolveAndReserveGpuCarveouts ();
+#endif
+
+#if NTASI_ENABLE_WIRELESS_DART_HANDOFF
+  //
+  // Publish DRT0 so AppleDart/AppleBcmWifi can adopt the SID-1 page-table
+  // reservation m1n1 built and PEI authenticated. EFI_NOT_FOUND (no
+  // reservation published this boot -- PEI withheld it) is expected and not
+  // fatal: wireless then simply behaves as if the build had this feature
+  // off. Any other failure is logged but still non-fatal -- consistent
+  // with "never let a firmware bug here take down a boot that would
+  // otherwise reach Windows" for everything after the mandatory ANS table.
+  //
+  Status = NtasiInstallWirelessDartTable (AcpiTable);
+  if (EFI_ERROR (Status) && (Status != EFI_NOT_FOUND)) {
+    DEBUG ((DEBUG_ERROR, "WirelessDART ACPI: SSDT installation failed: %r\n", Status));
+  }
+
 #endif
 
   //

@@ -24,6 +24,9 @@
   gArmTokenSpaceGuid.PcdFvBaseAddress|0x0
   gAppleSiliconPkgTokenSpaceGuid.PcdFrameBufferAddress|0x0
   gAppleSiliconPkgTokenSpaceGuid.PcdFrameBufferSize|0x0
+  # Derived at boot by MemoryInitPeiLib.c; see AppleSiliconPkg.dec.
+  gAppleSiliconPkgTokenSpaceGuid.PcdAppleWirelessDartPageTableBase|0x0
+  gAppleSiliconPkgTokenSpaceGuid.PcdAppleWirelessDartPageTableSize|0x0
 
 [PcdsFixedAtBuild.common]
   #ARM architectural fixed build-time settings
