@@ -39,6 +39,7 @@
 STATIC BOOLEAN  mAppendedRamdiskCorrupt;
 STATIC UINT64   mAppendedRamdiskReservationSize;
 
+#if NTASI_ENABLE_WIRELESS_DART_HANDOFF
 STATIC
 UINT32
 NtasiWirelessCrc32 (
@@ -116,6 +117,7 @@ NtasiValidateWirelessHandoffV2 (
             NTASI_WIRELESS_HANDOFF_V2_PAGE_SIZE
             ) == Descriptor->MsiL2Crc32);
 }
+#endif // NTASI_ENABLE_WIRELESS_DART_HANDOFF
 
 STATIC CONST EFI_GUID  mNtasiAppendedRamdiskLocationHobGuid =
   NTASI_APPENDED_RAMDISK_LOCATION_HOB_GUID;
