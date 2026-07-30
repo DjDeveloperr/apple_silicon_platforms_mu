@@ -33,8 +33,8 @@ RESOLVE_HEADER = (
     / "Silicon"
     / "Apple"
     / "AppleSiliconPkg"
+    / "Include"
     / "Drivers"
-    / "AcpiPlatformDxe"
     / "NtasiAnsPmgrResolve.h"
 )
 

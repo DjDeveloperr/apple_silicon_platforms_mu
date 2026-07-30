@@ -1,7 +1,7 @@
 /*
  * Host-side, hardware-free regression test for the ANS PMGR domain
  * resolution arithmetic in
- * Silicon/Apple/AppleSiliconPkg/Drivers/AcpiPlatformDxe/NtasiAnsPmgrResolve.h.
+ * Silicon/Apple/AppleSiliconPkg/Include/Drivers/NtasiAnsPmgrResolve.h.
  *
  * This file #includes that header directly (the exact same text compiled
  * into AcpiPlatform.c under the EDK2/Clang toolchain) and compiles
@@ -30,7 +30,7 @@
 #include <stdio.h>
 #include <string.h>
 
-#include "../Silicon/Apple/AppleSiliconPkg/Drivers/AcpiPlatformDxe/NtasiAnsPmgrResolve.h"
+#include "../Silicon/Apple/AppleSiliconPkg/Include/Drivers/NtasiAnsPmgrResolve.h"
 
 static int gFailures = 0;
 

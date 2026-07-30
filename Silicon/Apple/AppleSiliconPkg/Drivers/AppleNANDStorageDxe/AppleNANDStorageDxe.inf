@@ -56,6 +56,7 @@
   DevicePathLib
   IoLib
   MemoryAllocationLib
+  PrintLib
   TimerLib
   UefiBootServicesTableLib
   UefiDriverEntryPoint
@@ -69,6 +70,13 @@
 
 [Pcd]
   gAppleSiliconPkgTokenSpaceGuid.PcdAppleAnsPublishBlockIo    ## CONSUMES
+  # Hardware-confirmed expectations for the four pmgr_east power-state words.
+  # Consumed ONLY as a corroboration check against the live-ADT resolution in
+  # AppleAnsPmgrReportDomain(); never used as an address to read on their own.
+  gAppleSiliconPkgTokenSpaceGuid.PcdAppleAnsPmgrResetBase        ## CONSUMES
+  gAppleSiliconPkgTokenSpaceGuid.PcdAppleAnsPmgrApcieStBase      ## CONSUMES
+  gAppleSiliconPkgTokenSpaceGuid.PcdAppleAnsPmgrApcieStSysBase   ## CONSUMES
+  gAppleSiliconPkgTokenSpaceGuid.PcdAppleAnsPmgrApcieSt1SysBase  ## CONSUMES
 
 [Depex]
   TRUE

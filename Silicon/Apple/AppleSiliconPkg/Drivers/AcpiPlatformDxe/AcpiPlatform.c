@@ -33,11 +33,19 @@
 
 #include <IndustryStandard/Acpi.h>
 #include <Drivers/AppleAnsHardware.h>
-#include "NtasiAnsPmgrResolve.h"
+//
+// Moved out of this directory on 2026-07-30 so AppleNANDStorageDxe can share
+// the one copy instead of a second module growing its own PMGR resolution.
+// AppleAnsPmgrDomain.h is the EDK2-side wrapper; it includes the
+// dependency-free arithmetic header the host test compiles verbatim.
+//
+#include <Drivers/AppleAnsPmgrDomain.h>
 
 #define APPLE_ANS_ACPI_OEM_ID        "NTASP "
 #define APPLE_ANS_ACPI_OEM_TABLE_ID  "APPLEANS"
 #define APPLE_ANS_PMGR_RESET_SIZE     sizeof (UINT32)
+
+STATIC CONST CHAR8  mAppleAnsAcpiTag[] = "AppleANS ACPI";
 
 STATIC
 BOOLEAN
@@ -127,105 +135,6 @@ AppleAnsAddMemoryResource (
            );
 }
 
-#define NTASI_PMGR_MAX_REG_TUPLES  16u
-
-/**
-  Resolve one "/arm-io/pmgr" PMGR power-state register address live from
-  the ADT, by exact device name -- mirrors m1n1's pmgr_find_device() +
-  pmgr_device_get_addr() (src/pmgr.c). See NtasiAnsPmgrResolve.h for the
-  portable arithmetic this wraps (shared verbatim with the host test
-  Tests/test_ans_pmgr_resolve.c) and for why this exists.
-
-  NEVER falls back to a hardcoded address. On 2026-07-30 the DSC's
-  hardcoded PcdAppleAnsPmgr*Base values pointed at DCS_09/DCS_10 -- DRAM
-  controller power domains -- instead of ANS2/APCIE_ST/APCIE_ST_SYS/
-  APCIE_ST1_SYS, because they were computed against the wrong "/arm-io/
-  pmgr" register block ("pmgr" instead of "pmgr_east") and happened to
-  still pass every alignment/distinctness sanity check below. Resolving
-  strictly by name against the live ADT device table makes that class of
-  address confusion impossible by construction: this function can only
-  ever return an address it found attached to the exact name it was asked
-  to look for, read fresh from this boot's ADT, never a computed guess.
-**/
-STATIC
-EFI_STATUS
-NtasiResolveAnsPmgrDomain (
-  IN  CONST CHAR8  *DomainName,
-  OUT UINT64       *Address
-  )
-{
-  dt_node_t       *PmgrNode;
-  CONST UINT8     *Devices;
-  UINTN            DevicesLength;
-  CONST UINT32    *PsRegs;
-  UINTN            PsRegsLength;
-  UINT64           RegTupleBases[NTASI_PMGR_MAX_REG_TUPLES];
-  UINT32           RegTupleCount;
-  UINT32           TupleIndex;
-
-  PmgrNode = dt_get ("/arm-io/pmgr");
-  if (PmgrNode == NULL) {
-    DEBUG ((DEBUG_ERROR, "AppleANS ACPI: \"/arm-io/pmgr\" ADT node not found; cannot resolve %a\n", DomainName));
-    return EFI_NOT_FOUND;
-  }
-
-  Devices = dt_node_prop (PmgrNode, "devices", &DevicesLength);
-  if ((Devices == NULL) || (DevicesLength < NTASI_PMGR_DEVICE_SIZE)) {
-    DEBUG ((DEBUG_ERROR, "AppleANS ACPI: \"/arm-io/pmgr\" has no usable \"devices\" property\n"));
-    return EFI_NOT_FOUND;
-  }
-
-  PsRegs = (CONST UINT32 *)dt_node_prop (PmgrNode, "ps-regs", &PsRegsLength);
-  if ((PsRegs == NULL) || (PsRegsLength < (NTASI_PMGR_PSREG_STRIDE * sizeof (UINT32)))) {
-    DEBUG ((DEBUG_ERROR, "AppleANS ACPI: \"/arm-io/pmgr\" has no usable \"ps-regs\" property\n"));
-    return EFI_NOT_FOUND;
-  }
-
-  //
-  // Resolve every "reg" tuple on the pmgr node itself up front -- small
-  // and bounded, and every psreg_idx we might see indexes into this
-  // array. This is the multi-block piece the old hardcoded constants
-  // skipped by pointing at one block's base address directly.
-  //
-  RegTupleCount = 0;
-  for (TupleIndex = 0; TupleIndex < NTASI_PMGR_MAX_REG_TUPLES; TupleIndex++) {
-    UINT64  TupleBase;
-    UINT64  TupleSize;
-
-    if (dt_node_reg (PmgrNode, TupleIndex, &TupleBase, &TupleSize) != 0) {
-      break;
-    }
-
-    RegTupleBases[TupleIndex] = TupleBase;
-    RegTupleCount++;
-  }
-
-  if (RegTupleCount == 0) {
-    DEBUG ((DEBUG_ERROR, "AppleANS ACPI: \"/arm-io/pmgr\" has no readable \"reg\" tuples\n"));
-    return EFI_NOT_FOUND;
-  }
-
-  if (NtasiPmgrFindDomainAddress (
-        Devices,
-        (UINT32)(DevicesLength / NTASI_PMGR_DEVICE_SIZE),
-        RegTupleBases,
-        RegTupleCount,
-        PsRegs,
-        (UINT32)(PsRegsLength / sizeof (UINT32)),
-        DomainName,
-        Address
-        ) != NTASI_PMGR_TRUE)
-  {
-    DEBUG ((
-      DEBUG_ERROR,
-      "AppleANS ACPI: could not uniquely resolve PMGR domain \"%a\" from the live ADT\n",
-      DomainName
-      ));
-    return EFI_NOT_FOUND;
-  }
-
-  return EFI_SUCCESS;
-}
 
 #if NTASI_J414S_GPU_RESOURCE_PROFILE
 #include "NtasiGpuReservationGuard.h"
@@ -255,12 +164,152 @@ NtasiCurrentStackPointer (
 }
 
 //
-// Refuse Base/Size if it contains the live stack pointer, or if it
+// Both memory windows the GPU carveout guard needs, derived live from this
+// boot's own boot_args.
+//
+// WHY NOT PcdSystemMemoryBase/PcdSystemMemorySize -- a hardware-confirmed
+// trap, 2026-07-30: those two are declared in [PcdsPatchableInModule]
+// (T602XFamilyPkg.dsc.inc), so PatchPcdSet64() in PrePi writes PrePi's OWN
+// copy. A DXE driver that calls PcdGet64() on them reads its own,
+// never-patched copy, i.e. the DSC defaults 0x10000000000/0x400000000 -- the
+// whole 16 GiB physical span, not the ~15.4 GiB window m1n1 actually handed
+// this firmware. The captured hardware log proves it: every GPU boot printed
+//
+//   AppleAgxGpu: uat_ttbs: 0x103FFFB8000/+0x4000 unexpectedly overlaps Mu's
+//   system-memory window [0x10000000000, 0x10400000000); refusing to reserve
+//
+// while the real window ends at 0x103DB29C000 (phys_base 0x10001E40000 +
+// mem_size 0x3D945C000, printed by PEI as "Top of system RAM"). All three
+// carveouts sit safely ABOVE the real top and were rejected purely because
+// the comparison window was the unpatched default. The guard was not too
+// aggressive -- it was being fed the wrong numbers.
+//
+// boot_args is the one source that is correct in DXE: PrePi's EarlySetup()
+// (AdtParser.c) copies the whole struct to the FIXED address
+// PcdBootArgsPointer, and computes SystemMemoryBase/Size from exactly the
+// two fields read below. SmbiosInfoDxe.c already reads it this way from DXE.
+//
+//   Mu window   = [phys_base, phys_base + mem_size)          (what PEI meant)
+//   DRAM window = [ALIGN_DOWN(phys_base, 4GiB),
+//                  ALIGN_DOWN(phys_base, 4GiB) + mem_size_actual)
+//
+// The DRAM formula is byte for byte m1n1's own top_of_memory_alloc(), and the
+// same one NtasiDeriveWirelessReservation() in MemoryInitPeiLib.c uses. Only
+// mem_size_actual exposes the real installed capacity; mem_size is
+// deliberately smaller because it excludes m1n1's reservations and Apple's
+// preboot carveouts -- which is precisely where the GPU's UAT regions live.
+//
+// Returns FALSE if boot_args is absent or its fields are unusable. Callers
+// treat that as "cannot prove any candidate is backed by DRAM, and cannot
+// prove it avoids Mu's own memory" and reserve nothing -- degraded GPU, never
+// a boot risk.
+//
+STATIC
+BOOLEAN
+NtasiDeriveBootArgsWindows (
+  OUT UINT64  *MuWindowBase,
+  OUT UINT64  *MuWindowTop,
+  OUT UINT64  *DramWindowBase,
+  OUT UINT64  *DramWindowTop
+  )
+{
+  CONST struct boot_args  *BootArgs;
+  UINT64                  MemSizeActual;
+  UINT64                  PhysBase;
+  UINT64                  MemSize;
+
+  *MuWindowBase   = 0;
+  *MuWindowTop    = 0;
+  *DramWindowBase = 0;
+  *DramWindowTop  = 0;
+
+  BootArgs = (CONST struct boot_args *)(UINTN)FixedPcdGet64 (PcdBootArgsPointer);
+  if (BootArgs == NULL) {
+    DEBUG ((DEBUG_ERROR, "AppleAgxGpu: no boot_args at PcdBootArgsPointer; cannot bound carveouts, GPU degraded\n"));
+    return FALSE;
+  }
+
+  MemSizeActual = 0;
+  switch (BootArgs->revision) {
+    case 1:
+      MemSizeActual = BootArgs->rv1.mem_size_actual;
+      break;
+    case 2:
+      MemSizeActual = BootArgs->rv2.mem_size_actual;
+      break;
+    case 3:
+      MemSizeActual = BootArgs->rv3.mem_size_actual;
+      break;
+    default:
+      DEBUG ((DEBUG_ERROR, "AppleAgxGpu: unknown boot_args revision %u; cannot bound carveouts, GPU degraded\n", BootArgs->revision));
+      return FALSE;
+  }
+
+  PhysBase = BootArgs->phys_base;
+  MemSize  = BootArgs->mem_size;
+
+  if ((PhysBase == 0) || (MemSize == 0) || (MemSize > (1ULL << 40)) ||
+      (PhysBase > MAX_UINT64 - MemSize))
+  {
+    DEBUG ((
+      DEBUG_ERROR,
+      "AppleAgxGpu: boot_args phys_base/mem_size unusable (0x%lx/0x%lx); cannot bound carveouts, GPU degraded\n",
+      PhysBase,
+      MemSize
+      ));
+    return FALSE;
+  }
+
+  if ((MemSizeActual == 0) || (MemSizeActual > (1ULL << 40)) ||
+      (MemSizeActual < MemSize))
+  {
+    DEBUG ((
+      DEBUG_ERROR,
+      "AppleAgxGpu: boot_args mem_size_actual unusable (0x%lx vs mem_size 0x%lx); cannot bound carveouts, GPU degraded\n",
+      MemSizeActual,
+      MemSize
+      ));
+    return FALSE;
+  }
+
+  *MuWindowBase   = PhysBase;
+  *MuWindowTop    = PhysBase + MemSize;
+  *DramWindowBase = PhysBase & ~(SIZE_4GB - 1);
+  if (*DramWindowBase > MAX_UINT64 - MemSizeActual) {
+    DEBUG ((DEBUG_ERROR, "AppleAgxGpu: DRAM window 0x%lx + 0x%lx overflows; GPU degraded\n", *DramWindowBase, MemSizeActual));
+    *MuWindowBase   = 0;
+    *MuWindowTop    = 0;
+    *DramWindowBase = 0;
+    return FALSE;
+  }
+
+  *DramWindowTop = *DramWindowBase + MemSizeActual;
+  if (*DramWindowTop < *MuWindowTop) {
+    DEBUG ((
+      DEBUG_ERROR,
+      "AppleAgxGpu: derived DRAM top 0x%lx is below Mu's own top 0x%lx; refusing to trust either, GPU degraded\n",
+      *DramWindowTop,
+      *MuWindowTop
+      ));
+    *MuWindowBase   = 0;
+    *MuWindowTop    = 0;
+    *DramWindowBase = 0;
+    *DramWindowTop  = 0;
+    return FALSE;
+  }
+
+  return TRUE;
+}
+
+//
+// Refuse Base/Size if it does not lie entirely inside the machine's real
+// installed-DRAM window, if it contains the live stack pointer, or if it
 // unexpectedly overlaps Mu's own [SystemMemoryBase, SystemMemoryTop)
 // window -- every carveout this function reserves is asserted to live
 // entirely outside that window (iBoot's own reservation, above the
-// boot_args memory ceiling), so any overlap means the address is wrong,
-// not that the carveout is unusually placed.
+// boot_args memory ceiling) but still inside real DRAM, so an overlap or an
+// out-of-DRAM address both mean the address is wrong, not that the carveout
+// is unusually placed.
 //
 STATIC
 BOOLEAN
@@ -270,9 +319,25 @@ NtasiGpuCarveoutIsSafe (
   IN UINT64                Size,
   IN EFI_PHYSICAL_ADDRESS  SystemMemoryBase,
   IN EFI_PHYSICAL_ADDRESS  SystemMemoryTop,
+  IN UINT64                DramWindowBase,
+  IN UINT64                DramWindowTop,
   IN UINT64                CurrentStackPointer
   )
 {
+  if (!NtasiRangeWithinWindow (Base, Size, DramWindowBase, DramWindowTop)) {
+    DEBUG ((
+      DEBUG_ERROR,
+      "AppleAgxGpu: %a: 0x%lx/+0x%lx is not inside this machine's real DRAM window [0x%lx, 0x%lx) "
+      "derived from boot_args mem_size_actual; refusing to reserve, GPU degraded\n",
+      Label,
+      Base,
+      Size,
+      DramWindowBase,
+      DramWindowTop
+      ));
+    return FALSE;
+  }
+
   if (NtasiRangeContainsPoint (Base, Size, CurrentStackPointer)) {
     DEBUG ((
       DEBUG_ERROR,
@@ -356,6 +421,8 @@ NtasiReserveGpuAdtCarveout (
   IN CONST CHAR8           *Label,
   IN EFI_PHYSICAL_ADDRESS  SystemMemoryBase,
   IN EFI_PHYSICAL_ADDRESS  SystemMemoryTop,
+  IN UINT64                DramWindowBase,
+  IN UINT64                DramWindowTop,
   IN UINT64                CurrentStackPointer
   )
 {
@@ -386,7 +453,17 @@ NtasiReserveGpuAdtCarveout (
   }
 
   DEBUG ((DEBUG_INFO, "AppleAgxGpu: stage \"safety-check-%a\"\n", Label));
-  if (!NtasiGpuCarveoutIsSafe (Label, Base, Size, SystemMemoryBase, SystemMemoryTop, CurrentStackPointer)) {
+  if (!NtasiGpuCarveoutIsSafe (
+         Label,
+         Base,
+         Size,
+         SystemMemoryBase,
+         SystemMemoryTop,
+         DramWindowBase,
+         DramWindowTop,
+         CurrentStackPointer
+         ))
+  {
     return;
   }
 
@@ -448,21 +525,65 @@ NtasiResolveAndReserveGpuCarveouts (
   UINT64     CurrentSp;
   UINT64     SystemMemoryBase;
   UINT64     SystemMemoryTop;
+  UINT64     DramWindowBase;
+  UINT64     DramWindowTop;
 
   DEBUG ((DEBUG_INFO, "AppleAgxGpu: bring-up starting\n"));
 
-  CurrentSp        = NtasiCurrentStackPointer ();
-  SystemMemoryBase = PcdGet64 (PcdSystemMemoryBase);
-  SystemMemoryTop  = SystemMemoryBase + PcdGet64 (PcdSystemMemorySize);
+  CurrentSp = NtasiCurrentStackPointer ();
+
+  DEBUG ((DEBUG_INFO, "AppleAgxGpu: stage \"derive-memory-windows\"\n"));
+  if (!NtasiDeriveBootArgsWindows (
+         &SystemMemoryBase,
+         &SystemMemoryTop,
+         &DramWindowBase,
+         &DramWindowTop
+         ))
+  {
+    // Already logged in detail. Without provable windows there is no way to
+    // tell a real carveout from a stale constant, so reserve nothing.
+    NtasiLogGpuHandoffDataGap ();
+    DEBUG ((DEBUG_INFO, "AppleAgxGpu: bring-up finished\n"));
+    return;
+  }
+
+  DEBUG ((
+    DEBUG_INFO,
+    "AppleAgxGpu: real DRAM window [0x%lx, 0x%lx); Mu window [0x%lx, 0x%lx); sp=0x%lx\n",
+    DramWindowBase,
+    DramWindowTop,
+    SystemMemoryBase,
+    SystemMemoryTop,
+    CurrentSp
+    ));
+
+  //
+  // Make the PatchableInModule trap visible instead of silently misleading.
+  // If these ever agree, PrePi's patch has become visible to DXE and the
+  // boot_args derivation above can be revisited; until then a disagreement
+  // is expected and is exactly why this code does not use them.
+  //
+  if ((PcdGet64 (PcdSystemMemoryBase) != SystemMemoryBase) ||
+      ((PcdGet64 (PcdSystemMemoryBase) + PcdGet64 (PcdSystemMemorySize)) != SystemMemoryTop))
+  {
+    DEBUG ((
+      DEBUG_WARN,
+      "AppleAgxGpu: PcdSystemMemoryBase/Size read [0x%lx, 0x%lx) in this module -- "
+      "PatchableInModule copies are per-module and PrePi's patch is not visible here; "
+      "using the boot_args-derived window above instead\n",
+      PcdGet64 (PcdSystemMemoryBase),
+      PcdGet64 (PcdSystemMemoryBase) + PcdGet64 (PcdSystemMemorySize)
+      ));
+  }
 
   DEBUG ((DEBUG_INFO, "AppleAgxGpu: stage \"find-sgx-node\"\n"));
   SgxNode = dt_get ("/arm-io/sgx");
   if (SgxNode == NULL) {
     DEBUG ((DEBUG_ERROR, "AppleAgxGpu: \"/arm-io/sgx\" ADT node not found; all GPU preboot reservations skipped, GPU degraded\n"));
   } else {
-    NtasiReserveGpuAdtCarveout (SgxNode, "gpu-region", "uat_ttbs", SystemMemoryBase, SystemMemoryTop, CurrentSp);
-    NtasiReserveGpuAdtCarveout (SgxNode, "gfx-shared-region", "uat_pagetables", SystemMemoryBase, SystemMemoryTop, CurrentSp);
-    NtasiReserveGpuAdtCarveout (SgxNode, "gfx-handoff", "uat_handoff", SystemMemoryBase, SystemMemoryTop, CurrentSp);
+    NtasiReserveGpuAdtCarveout (SgxNode, "gpu-region", "uat_ttbs", SystemMemoryBase, SystemMemoryTop, DramWindowBase, DramWindowTop, CurrentSp);
+    NtasiReserveGpuAdtCarveout (SgxNode, "gfx-shared-region", "uat_pagetables", SystemMemoryBase, SystemMemoryTop, DramWindowBase, DramWindowTop, CurrentSp);
+    NtasiReserveGpuAdtCarveout (SgxNode, "gfx-handoff", "uat_handoff", SystemMemoryBase, SystemMemoryTop, DramWindowBase, DramWindowTop, CurrentSp);
   }
 
   NtasiLogGpuHandoffDataGap ();
@@ -524,7 +645,38 @@ NtasiInstallWirelessDartTable (
   ReservationBase = PcdGet64 (PcdAppleWirelessDartPageTableBase);
   ReservationSize = PcdGet32 (PcdAppleWirelessDartPageTableSize);
   if ((ReservationBase == 0) || (ReservationSize == 0)) {
-    DEBUG ((DEBUG_INFO, "WirelessDART ACPI: no reservation published by PEI this boot; DRT0 withheld\n"));
+    //
+    // KNOWN GAP, identified 2026-07-30 and NOT yet fixed -- do not read this
+    // "withheld" line as proof that PEI's derivation failed.
+    //
+    // PcdAppleWirelessDartPageTableBase/Size are declared in
+    // [PcdsPatchableInModule] (AppleSiliconPkg.dec). A PatchableInModule PCD
+    // is a PER-MODULE copy: MemoryInitPeiLib's PatchPcdSet64/32 writes the
+    // copy linked into PrePi, and this driver's PcdGet64/32 reads its own
+    // never-patched copy, which is always the DEC default of zero. So this
+    // path is taken on EVERY boot regardless of what PEI derived, and DRT0 is
+    // never published.
+    //
+    // The same trap was confirmed on hardware for PcdSystemMemoryBase/Size,
+    // which read the DSC defaults here (see NtasiDeriveBootArgsWindows()
+    // above, which is why the GPU carveout guard no longer uses them). The
+    // correct fix is a GUID HOB from PEI -- MemoryInitPeiLib.c already
+    // publishes one for the appended ramdisk
+    // (NTASI_APPENDED_RAMDISK_LOCATION_HOB_GUID), so the plumbing exists --
+    // or an independent boot_args-derived recomputation here. Deliberately
+    // left alone tonight rather than changed untested alongside the ANS and
+    // GPU fixes: this failure mode is fail-safe (no DRT0, wireless simply
+    // does not adopt the handoff), so it costs a feature, not a boot.
+    //
+    DEBUG ((
+      DEBUG_ERROR,
+      "WirelessDART ACPI: reservation PCDs read 0x%lx/+0x%x in this module; DRT0 withheld. "
+      "NOTE: these are PatchableInModule, so PEI's PatchPcdSet never reaches this driver -- "
+      "this is a known firmware gap, not evidence that PEI's derivation failed. "
+      "See the comment at this DEBUG in AcpiPlatform.c.\n",
+      ReservationBase,
+      ReservationSize
+      ));
     return EFI_NOT_FOUND;
   }
 
@@ -817,17 +969,18 @@ AcpiPlatformInstallAppleAnsTable (
     //
     // Resolve all four PMGR domains live from the ADT, by exact uppercase
     // name -- never from a hardcoded constant. See
-    // NtasiResolveAnsPmgrDomain() above for why: a hardcoded constant is
+    // AppleAnsPmgrResolveDomain() (Include/Drivers/AppleAnsPmgrDomain.h)
+    // for why: a hardcoded constant is
     // exactly what pointed these four words at DCS_09/DCS_10 (DRAM
     // controller power domains) on 2026-07-30. Any single domain failing
     // to resolve uniquely withholds NTAS2003 entirely (EFI_NOT_FOUND,
     // handled by the caller as "no ANS device today") rather than
     // publishing three good addresses and one wrong or missing one.
     //
-    if (EFI_ERROR (NtasiResolveAnsPmgrDomain ("ANS2", &PmgrResetBase)) ||
-        EFI_ERROR (NtasiResolveAnsPmgrDomain ("APCIE_ST", &PmgrApcieStBase)) ||
-        EFI_ERROR (NtasiResolveAnsPmgrDomain ("APCIE_ST_SYS", &PmgrApcieStSysBase)) ||
-        EFI_ERROR (NtasiResolveAnsPmgrDomain ("APCIE_ST1_SYS", &PmgrApcieSt1SysBase)))
+    if (EFI_ERROR (AppleAnsPmgrResolveDomain (mAppleAnsAcpiTag, "ANS2", &PmgrResetBase)) ||
+        EFI_ERROR (AppleAnsPmgrResolveDomain (mAppleAnsAcpiTag, "APCIE_ST", &PmgrApcieStBase)) ||
+        EFI_ERROR (AppleAnsPmgrResolveDomain (mAppleAnsAcpiTag, "APCIE_ST_SYS", &PmgrApcieStSysBase)) ||
+        EFI_ERROR (AppleAnsPmgrResolveDomain (mAppleAnsAcpiTag, "APCIE_ST1_SYS", &PmgrApcieSt1SysBase)))
     {
       DEBUG ((
         DEBUG_ERROR,

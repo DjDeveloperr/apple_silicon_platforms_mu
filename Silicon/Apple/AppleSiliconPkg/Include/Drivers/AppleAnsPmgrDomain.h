@@ -1,0 +1,260 @@
+/** @file
+  Live-ADT resolution and read-only inspection of the Apple PMGR
+  power-state words the ANS/NVMe coprocessor depends on.
+
+  ONE COPY, TWO CONSUMERS. AcpiPlatformDxe publishes these four words to
+  Windows in NTAS2003's _CRS; AppleNANDStorageDxe reads them before it
+  touches any ANS MMIO. Both used to be impossible to share because the
+  resolution wrapper lived inside AcpiPlatform.c as a STATIC function. It is
+  a static inline here instead, so there is still exactly one copy of the
+  logic and no second chance to get a PMGR address wrong in a second place.
+
+  The portable arithmetic stays in <Drivers/NtasiAnsPmgrResolve.h>, which has
+  zero dependencies on purpose (see its own header comment) and is compiled
+  verbatim by the host test Tests/test_ans_pmgr_resolve.c. This file adds
+  only the EDK2-side ADT walk and the PMGR register field decode, both of
+  which need AppleDTLib/DebugLib and therefore cannot live there.
+
+  WHY READ-ONLY, AND WHY NO PMGR WRITES ANYWHERE IN THIS FIRMWARE:
+
+  m1n1 -- the authoritative reference for this silicon -- performs NO power
+  enable for ANS at all. Its nvme_init() (src/nvme.c) never calls
+  pmgr_adt_power_enable()/pmgr_power_enable(); the only PMGR calls in the
+  whole file are pmgr_reset(die, "ANS")/pmgr_reset(die, "ANS2") on teardown
+  and failure paths. It relies on iBoot leaving ANS2 and its AFNC fabric
+  parents enabled, which iBoot always does because it booted from this very
+  NVMe. On T602X it could not do otherwise even if it wanted to:
+  pmgr_adt_power_enable() reads the target node's "clock-gates" property, and
+  /arm-io/ans's "clock-gates" is zero-length on this SoC (its "clock-ids"
+  carries the domain id 0x8c instead).
+
+  This was also measured directly on J414s on 2026-07-30: ANS2, APCIE_ST,
+  APCIE_ST_SYS and APCIE_ST1_SYS were all already ACTUAL=0xf TARGET=0xf
+  before any software touched them, and a "touching ANS MMIO before a PMGR
+  sequence stalls the AMBA bus" theory was explicitly falsified (see
+  AppleSiliconPkg.dec). So there is nothing to enable -- and a PMGR write
+  from firmware is precisely the operation that, with a wrong base, lands on
+  DCS_09/DCS_10 (DRAM controller power domains). This file therefore reads,
+  reports, and refuses; it never writes.
+
+  SPDX-License-Identifier: MIT
+**/
+
+#ifndef APPLE_ANS_PMGR_DOMAIN_H_
+#define APPLE_ANS_PMGR_DOMAIN_H_
+
+#include <Library/AppleDTLib.h>
+#include <Library/DebugLib.h>
+#include <Library/IoLib.h>
+
+#include <Drivers/NtasiAnsPmgrResolve.h>
+
+//
+// PMGR power-state register fields, from m1n1's src/pmgr.h.
+//
+#define APPLE_PMGR_PS_ACTUAL_SHIFT  4u
+#define APPLE_PMGR_PS_ACTUAL_MASK   (0xFu << APPLE_PMGR_PS_ACTUAL_SHIFT)  // GENMASK(7,4)
+#define APPLE_PMGR_PS_TARGET_SHIFT  0u
+#define APPLE_PMGR_PS_TARGET_MASK   (0xFu << APPLE_PMGR_PS_TARGET_SHIFT)  // GENMASK(3,0)
+#define APPLE_PMGR_PS_ACTIVE        0xFu
+#define APPLE_PMGR_PS_CLKGATE       0x4u
+#define APPLE_PMGR_PS_PWRGATE       0x0u
+
+//
+// Upper bound on the number of "reg" tuples the "/arm-io/pmgr" node itself
+// may carry that this code will resolve. Every psreg_idx seen on T602X
+// indexes 0..2 (main pmgr, pmgr_west-ish, pmgr_east) plus one high index for
+// the NUB/AOP-side block; 16 is comfortable headroom and keeps the array on
+// the stack.
+//
+#define APPLE_ANS_PMGR_MAX_REG_TUPLES  16u
+
+/**
+  Resolve one "/arm-io/pmgr" PMGR power-state register address live from the
+  ADT, by exact device name -- mirrors m1n1's pmgr_find_device() +
+  pmgr_device_get_addr() (src/pmgr.c).
+
+  NEVER falls back to a hardcoded address. On 2026-07-30 the DSC's hardcoded
+  PcdAppleAnsPmgr*Base values pointed at DCS_09/DCS_10 -- DRAM controller
+  power domains -- instead of ANS2/APCIE_ST/APCIE_ST_SYS/APCIE_ST1_SYS,
+  because they were computed against the wrong "/arm-io/pmgr" register block
+  ("pmgr" instead of "pmgr_east") and happened to still pass every
+  alignment/distinctness sanity check. Resolving strictly by name against the
+  live ADT device table makes that class of address confusion impossible by
+  construction: this function can only ever return an address it found
+  attached to the exact name it was asked to look for, read fresh from this
+  boot's ADT, never a computed guess.
+
+  @param[in]  Tag         Short subsystem tag for log lines ("AppleANS ACPI",
+                          "AppleANS", ...).
+  @param[in]  DomainName  Exact uppercase PMGR device name, e.g. "ANS2".
+  @param[out] Address     Resolved power-state register address.
+
+  @retval EFI_SUCCESS    *Address holds the resolved register address.
+  @retval EFI_NOT_FOUND  The ADT lacks the node/properties, or the name did
+                         not resolve to exactly one device.
+**/
+STATIC
+inline
+EFI_STATUS
+AppleAnsPmgrResolveDomain (
+  IN  CONST CHAR8  *Tag,
+  IN  CONST CHAR8  *DomainName,
+  OUT UINT64       *Address
+  )
+{
+  dt_node_t     *PmgrNode;
+  CONST UINT8   *Devices;
+  UINTN         DevicesLength;
+  CONST UINT32  *PsRegs;
+  UINTN         PsRegsLength;
+  UINT64        RegTupleBases[APPLE_ANS_PMGR_MAX_REG_TUPLES];
+  UINT32        RegTupleCount;
+  UINT32        TupleIndex;
+
+  PmgrNode = dt_get ("/arm-io/pmgr");
+  if (PmgrNode == NULL) {
+    DEBUG ((DEBUG_ERROR, "%a: \"/arm-io/pmgr\" ADT node not found; cannot resolve %a\n", Tag, DomainName));
+    return EFI_NOT_FOUND;
+  }
+
+  Devices = dt_node_prop (PmgrNode, "devices", &DevicesLength);
+  if ((Devices == NULL) || (DevicesLength < NTASI_PMGR_DEVICE_SIZE)) {
+    DEBUG ((DEBUG_ERROR, "%a: \"/arm-io/pmgr\" has no usable \"devices\" property\n", Tag));
+    return EFI_NOT_FOUND;
+  }
+
+  PsRegs = (CONST UINT32 *)dt_node_prop (PmgrNode, "ps-regs", &PsRegsLength);
+  if ((PsRegs == NULL) || (PsRegsLength < (NTASI_PMGR_PSREG_STRIDE * sizeof (UINT32)))) {
+    DEBUG ((DEBUG_ERROR, "%a: \"/arm-io/pmgr\" has no usable \"ps-regs\" property\n", Tag));
+    return EFI_NOT_FOUND;
+  }
+
+  //
+  // Resolve every "reg" tuple on the pmgr node itself up front -- small and
+  // bounded, and every psreg_idx we might see indexes into this array. This
+  // is the multi-block piece the old hardcoded constants skipped by pointing
+  // at one block's base address directly.
+  //
+  RegTupleCount = 0;
+  for (TupleIndex = 0; TupleIndex < APPLE_ANS_PMGR_MAX_REG_TUPLES; TupleIndex++) {
+    UINT64  TupleBase;
+    UINT64  TupleSize;
+
+    if (dt_node_reg (PmgrNode, TupleIndex, &TupleBase, &TupleSize) != 0) {
+      break;
+    }
+
+    RegTupleBases[TupleIndex] = TupleBase;
+    RegTupleCount++;
+  }
+
+  if (RegTupleCount == 0) {
+    DEBUG ((DEBUG_ERROR, "%a: \"/arm-io/pmgr\" has no readable \"reg\" tuples\n", Tag));
+    return EFI_NOT_FOUND;
+  }
+
+  if (NtasiPmgrFindDomainAddress (
+        Devices,
+        (UINT32)(DevicesLength / NTASI_PMGR_DEVICE_SIZE),
+        RegTupleBases,
+        RegTupleCount,
+        PsRegs,
+        (UINT32)(PsRegsLength / sizeof (UINT32)),
+        DomainName,
+        Address
+        ) != NTASI_PMGR_TRUE)
+  {
+    DEBUG ((
+      DEBUG_ERROR,
+      "%a: could not uniquely resolve PMGR domain \"%a\" from the live ADT\n",
+      Tag,
+      DomainName
+      ));
+    return EFI_NOT_FOUND;
+  }
+
+  return EFI_SUCCESS;
+}
+
+/**
+  Read one ADT-resolved PMGR power-state word and report whether the domain
+  is fully powered (PS_ACTUAL == PS_ACTIVE).
+
+  Read-only by construction: no caller can turn this into a PMGR write. See
+  the file header for why this firmware never writes a PMGR word.
+
+  @param[in]  Tag          Short subsystem tag for log lines.
+  @param[in]  DomainName   Exact uppercase PMGR device name.
+  @param[in]  ExpectedAddress  A hardware-confirmed expectation for the
+                               resolved address, or 0 to skip the
+                               cross-check. A mismatch is reported and makes
+                               *Resolved FALSE -- an address this firmware
+                               cannot corroborate is not one to draw
+                               conclusions from.
+  @param[out] Resolved     TRUE when the address resolved (and matched
+                           ExpectedAddress, when supplied) and the register
+                           was read.
+  @param[out] Active       TRUE when PS_ACTUAL == PS_ACTIVE. Meaningless
+                           unless *Resolved is TRUE.
+**/
+STATIC
+inline
+VOID
+AppleAnsPmgrReportDomain (
+  IN  CONST CHAR8  *Tag,
+  IN  CONST CHAR8  *DomainName,
+  IN  UINT64       ExpectedAddress,
+  OUT BOOLEAN      *Resolved,
+  OUT BOOLEAN      *Active
+  )
+{
+  EFI_STATUS  Status;
+  UINT64      Address;
+  UINT32      Value;
+  UINT32      Actual;
+  UINT32      Target;
+
+  *Resolved = FALSE;
+  *Active   = FALSE;
+
+  Address = 0;
+  Status  = AppleAnsPmgrResolveDomain (Tag, DomainName, &Address);
+  if (EFI_ERROR (Status) || (Address == 0) || ((Address & (sizeof (UINT32) - 1)) != 0)) {
+    return;
+  }
+
+  if ((ExpectedAddress != 0) && (Address != ExpectedAddress)) {
+    DEBUG ((
+      DEBUG_ERROR,
+      "%a: PMGR domain \"%a\" resolved to 0x%Lx but 0x%Lx was expected; refusing to "
+      "read an address this firmware cannot corroborate\n",
+      Tag,
+      DomainName,
+      Address,
+      ExpectedAddress
+      ));
+    return;
+  }
+
+  Value  = MmioRead32 ((UINTN)Address);
+  Actual = (Value & APPLE_PMGR_PS_ACTUAL_MASK) >> APPLE_PMGR_PS_ACTUAL_SHIFT;
+  Target = (Value & APPLE_PMGR_PS_TARGET_MASK) >> APPLE_PMGR_PS_TARGET_SHIFT;
+
+  *Resolved = TRUE;
+  *Active   = (Actual == APPLE_PMGR_PS_ACTIVE);
+
+  DEBUG ((
+    *Active ? DEBUG_INFO : DEBUG_ERROR,
+    "%a: PMGR \"%a\" @0x%Lx = 0x%08x (actual=0x%x target=0x%x) %a\n",
+    Tag,
+    DomainName,
+    Address,
+    Value,
+    Actual,
+    Target,
+    *Active ? "ACTIVE" : "NOT ACTIVE"
+    ));
+}
+
+#endif // APPLE_ANS_PMGR_DOMAIN_H_

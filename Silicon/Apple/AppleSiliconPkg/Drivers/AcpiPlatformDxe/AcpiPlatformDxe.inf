@@ -23,7 +23,6 @@
 
 [Sources]
   AcpiPlatform.c
-  NtasiAnsPmgrResolve.h
   NtasiGpuReservationGuard.h
 
 [Packages]
@@ -43,6 +42,10 @@
   AmlLib
   MemoryAllocationLib
   DxeServicesTableLib
+  # AppleAnsPmgrDomain.h reads (never writes) the ADT-resolved PMGR
+  # power-state words for the ANS domains.
+  IoLib
+  PrintLib
 
 [Protocols]
   gEfiAcpiTableProtocolGuid                     ## CONSUMES
@@ -62,6 +65,11 @@
   gAppleSiliconPkgTokenSpaceGuid.PcdAppleAnsPmgrApcieSt1SysBase ## CONSUMES
   gArmTokenSpaceGuid.PcdSystemMemoryBase                        ## CONSUMES
   gArmTokenSpaceGuid.PcdSystemMemorySize                        ## CONSUMES
+  # Real installed-DRAM capacity (boot_args mem_size_actual) -- the only
+  # bound that can distinguish a live GPU UAT carveout above
+  # PcdSystemMemorySize's ceiling from a stale hardcoded constant. See
+  # NtasiDerivePhysicalDramWindow() in AcpiPlatform.c.
+  gAppleSiliconPkgTokenSpaceGuid.PcdBootArgsPointer              ## CONSUMES
   gAppleSiliconPkgTokenSpaceGuid.PcdAppleWirelessDartPageTableBase ## CONSUMES
   gAppleSiliconPkgTokenSpaceGuid.PcdAppleWirelessDartPageTableSize ## CONSUMES
 

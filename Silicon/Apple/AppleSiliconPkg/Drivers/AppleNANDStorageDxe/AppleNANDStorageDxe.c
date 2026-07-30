@@ -26,6 +26,9 @@
 #include <Protocol/BlockIo.h>
 #include <Protocol/DevicePath.h>
 #include <Drivers/AppleAnsHardware.h>
+#if !defined (APPLE_ANS_QEMU_TEST)
+#include <Drivers/AppleAnsPmgrDomain.h>
+#endif
 
 #include "Shared/AppleAscCore.h"
 #include "Shared/AppleNvmeBlockCore.h"
@@ -272,6 +275,36 @@ SartWrite32 (
   MmioWrite32 (Device->SartBase + Offset, Value);
 }
 
+//
+// RTKit shared-buffer allocator.
+//
+// Two deliberate departures from the original implementation, both taken
+// straight from m1n1:
+//
+//   * 16 KiB granularity, not 4 KiB. m1n1's rtkit_alloc_buffer()/rtkit_map()
+//     do memalign(SZ_16K, ...) and ALIGN_UP(sz, 16384) before calling
+//     sart_add_allowed_region(). SART accepts 4 KiB granularity, but 16 KiB
+//     is the CPU page size here, so a 4 KiB grant hands the coprocessor DMA
+//     rights over part of a CPU page the AP also owns.
+//
+//   * EfiReservedMemoryType, not EfiBootServicesData. m1n1's own
+//     rtkit_set_buffer_pool() comment states the requirement plainly: "the
+//     pool region must be reserved out of that OS's memory map ... whenever
+//     the IOP keeps running into the next OS". Boot-services memory is
+//     handed straight back to Windows at ExitBootServices, so an ANS that is
+//     still alive -- or that quiesces less than perfectly -- would be
+//     writing into memory Windows has already reallocated. Reserved memory
+//     survives the handoff, which is why the ExitBootServices path below can
+//     safely leave these buffers in place instead of freeing them.
+//
+// Buffer->size is set to the MAPPED size, not the requested size. It used to
+// carry the requested size while the SART grant covered the rounded-up size,
+// so ReleaseRtkitShared()'s ntasi_sart_runtime_remove() could look for a
+// (paddr, size) pair that was never programmed -- an exact-match lookup that
+// silently failed and stranded a SART entry. There are only 16 entries on
+// this silicon (minus whatever iBoot left armed), so leaking them is not
+// harmless.
+//
 STATIC int
 AllocateRtkitShared (
   IN VOID                              *Opaque,
@@ -286,11 +319,17 @@ AllocateRtkitShared (
   UINTN             MappedSize;
   int               Result;
 
-  (VOID)Endpoint;
-  Pages      = EFI_SIZE_TO_PAGES (Size);
+  MappedSize = ALIGN_VALUE (Size, NTASI_RTKIT_SHARED_ALIGN);
+  Pages      = EFI_SIZE_TO_PAGES (MappedSize);
   MappedSize = EFI_PAGES_TO_SIZE (Pages);
-  Address    = AllocateAlignedPages (Pages, NTASI_SART_PAGE_SIZE);
+  Address    = AllocateAlignedReservedPages (Pages, NTASI_RTKIT_SHARED_ALIGN);
   if (Address == NULL) {
+    ANS_DEBUG ((
+      DEBUG_ERROR,
+      "AppleANS: RTKit endpoint 0x%x: cannot allocate %Lu reserved bytes\n",
+      (UINT32)Endpoint,
+      (UINT64)MappedSize
+      ));
     return -1;
   }
 
@@ -302,13 +341,30 @@ AllocateRtkitShared (
              NULL
              );
   if (Result != 0) {
+    ANS_DEBUG ((
+      DEBUG_ERROR,
+      "AppleANS: RTKit endpoint 0x%x: SART grant for 0x%lx/+0x%Lx failed: %d "
+      "(only 16 SART entries exist; iBoot may hold some)\n",
+      (UINT32)Endpoint,
+      (UINTN)Address,
+      (UINT64)MappedSize,
+      Result
+      ));
     FreeAlignedPages (Address, Pages);
     return Result;
   }
 
-  Buffer->cpu_address   = Address;
+  Buffer->cpu_address    = Address;
   Buffer->device_address = (UINT64)(UINTN)Address;
-  Buffer->size          = Size;
+  Buffer->size           = MappedSize;
+  Buffer->iop_owned      = false;
+  ANS_DEBUG ((
+    DEBUG_INFO,
+    "AppleANS: RTKit endpoint 0x%x: granted 0x%lx/+0x%Lx (reserved, SART)\n",
+    (UINT32)Endpoint,
+    (UINTN)Address,
+    (UINT64)MappedSize
+    ));
   return 0;
 }
 
@@ -321,15 +377,17 @@ ReleaseRtkitShared (
 {
   APPLE_ANS_DEVICE  *Device = Opaque;
   UINTN             Pages;
-  UINTN             MappedSize;
 
   (VOID)Endpoint;
-  Pages      = EFI_SIZE_TO_PAGES (Buffer->size);
-  MappedSize = EFI_PAGES_TO_SIZE (Pages);
+  if (Buffer->iop_owned || (Buffer->cpu_address == NULL)) {
+    return;
+  }
+
+  Pages = EFI_SIZE_TO_PAGES (Buffer->size);
   ntasi_sart_runtime_remove (
     &Device->Sart,
     Buffer->device_address,
-    MappedSize
+    EFI_PAGES_TO_SIZE (Pages)
     );
   FreeAlignedPages (Buffer->cpu_address, Pages);
 }
@@ -661,6 +719,34 @@ FreeControllerMemory (
   }
 }
 
+//
+// Hand the ANS coprocessor to Windows.
+//
+// Order mirrors m1n1's nvme_shutdown() (src/nvme.c): delete the I/O queues,
+// CC.SHN=NORMAL until CSTS.SHST=DONE, CC.EN=0 until CSTS.RDY=0
+// (ntasi_ans_controller_stop does all of that), then the RTKit quiesce
+// (AP->QUIESCED, IOP->SLEEP) and finally clear the ASC run bit. m1n1 then
+// does pmgr_reset(ANS/ANS2); this driver deliberately does not -- the Windows
+// AppleNvme miniport owns that reset, and writing a PMGR word from here is
+// the failure mode that once pointed at DCS_09/DCS_10 (DRAM controllers).
+//
+// TWO CORRECTIONS, both from the 2026-07-30 hardware capture where this
+// callback logged "RTKit handoff failed: -25" immediately before Windows
+// started:
+//
+//  1. The failure is now reported with what it actually means, and the
+//     coprocessor's run bit is driven low regardless (see
+//     ntasi_rtkit_runtime_handoff()). Previously a failed quiesce returned
+//     early WITHOUT stopping the coprocessor.
+//
+//  2. The shared buffers are no longer freed, and SART grants are revoked
+//     only once the coprocessor is confirmed halted. Freeing reserved pages
+//     here would un-reserve them microseconds before Windows takes over,
+//     and revoking a SART grant a live coprocessor is still DMAing through
+//     turns a benign handoff hiccup into a DMA fault of unknown blast
+//     radius. Leaving EfiReservedMemoryType buffers in place costs a few
+//     16 KiB pages and is what m1n1 does for pool/IOP-owned buffers.
+//
 STATIC VOID EFIAPI
 AnsExitBootServices (
   IN EFI_EVENT Event,
@@ -669,6 +755,8 @@ AnsExitBootServices (
 {
   APPLE_ANS_DEVICE  *Device = Context;
   int               Result;
+  BOOLEAN           Stopped;
+  bool              CoprocessorStopped;
 
   (VOID)Event;
   Device->HandedOff = TRUE;
@@ -677,17 +765,145 @@ AnsExitBootServices (
     ANS_DEBUG ((DEBUG_ERROR, "AppleANS: controller handoff failed: %d\n", Result));
   }
 
+  Stopped            = FALSE;
+  CoprocessorStopped = false;
   if (Device->Rtkit.booted) {
-    Result = ntasi_rtkit_runtime_sleep (&Device->Rtkit);
+    Result = ntasi_rtkit_runtime_handoff (&Device->Rtkit, &CoprocessorStopped);
+    Stopped = CoprocessorStopped ? TRUE : FALSE;
     if (Result != 0) {
-      ANS_DEBUG ((DEBUG_ERROR, "AppleANS: RTKit handoff failed: %d\n", Result));
+      ANS_DEBUG ((
+        DEBUG_ERROR,
+        "AppleANS: RTKit quiesce failed: %d (%a); coprocessor run bit now %a\n",
+        Result,
+        (Result == NTASI_RTKIT_RUNTIME_ERR_BUFFER)      ? "shared-buffer grant" :
+        (Result == NTASI_RTKIT_RUNTIME_ERR_TIMEOUT)     ? "no power-state ack" :
+        (Result == NTASI_RTKIT_RUNTIME_ERR_TRANSPORT)   ? "mailbox transport" :
+        (Result == NTASI_RTKIT_RUNTIME_ERR_PROTOCOL)    ? "unexpected message" :
+        (Result == NTASI_RTKIT_RUNTIME_ERR_CRASHED)     ? "firmware crashed" :
+        "argument",
+        Stopped ? "clear" : "STILL SET"
+        ));
+    }
+  } else if (Device->Asc.hw != NULL) {
+    // Never booted (or already torn down): still make sure the run bit is
+    // low before Windows inherits the controller. Guarded on Asc.hw because
+    // an uninitialized transport has NULL ops.
+    ntasi_asc_cpu_stop (&Device->Asc);
+    Stopped = ntasi_asc_cpu_running (&Device->Asc) ? FALSE : TRUE;
+  } else {
+    // Transport was never initialized, so nothing was ever started.
+    Stopped = TRUE;
+  }
+
+  if (Stopped) {
+    ntasi_sart_runtime_clear_owned (&Device->Sart);
+    ANS_DEBUG ((
+      DEBUG_INFO,
+      "AppleANS: handoff complete; coprocessor halted, SART grants released, "
+      "shared buffers left reserved for the OS\n"
+      ));
+  } else {
+    ANS_DEBUG ((
+      DEBUG_ERROR,
+      "AppleANS: coprocessor did not halt; leaving SART grants and reserved "
+      "shared buffers intact so it cannot DMA into revoked or reallocated "
+      "memory\n"
+      ));
+  }
+
+  ArmDataSynchronizationBarrier ();
+}
+
+#if !defined (APPLE_ANS_QEMU_TEST)
+//
+// Read-only PMGR power-domain report, run BEFORE the first ANS MMIO access.
+//
+// m1n1 performs no power enable for ANS at all -- it inherits iBoot's state,
+// and on T602X it could not do otherwise because /arm-io/ans's "clock-gates"
+// property is zero-length (see Include/Drivers/AppleAnsPmgrDomain.h for the
+// full reasoning and the hardware measurements). This firmware therefore
+// does not enable, reset, or write anything either. What it does do is say,
+// on every ANS boot, what state the four domains were actually in -- so that
+// if a future boot does find ANS gated, the log names the domain instead of
+// leaving a bare MMIO stall with no explanation.
+//
+// Deliberately non-fatal in every direction:
+//   * A domain that cannot be resolved from the ADT is reported and ignored;
+//     that is exactly the situation the driver has always run in.
+//   * A domain positively decoded as NOT ACTIVE is reported at DEBUG_ERROR
+//     and bring-up continues anyway. Refusing here would be a regression
+//     risk with no upside: ANS bring-up is known to work on this hardware
+//     with all four domains ACTIVE, and this firmware has no sanctioned way
+//     to fix a gated domain (m1n1 has none either).
+//
+// The cross-check against the DSC PCDs is the reason a "NOT ACTIVE" verdict
+// can be trusted at all: AppleAnsPmgrReportDomain() refuses to read any
+// address that does not equal the hardware-confirmed expectation, so this
+// can never report on a DCS_xx DRAM-controller word by accident.
+//
+STATIC VOID
+ReportAnsPmgrDomains (
+  VOID
+  )
+{
+  STATIC CONST CHAR8  Tag[] = "AppleANS";
+  CONST struct {
+    CONST CHAR8  *Name;
+    UINT64       Expected;
+  } Domains[] = {
+    { "ANS2",          FixedPcdGet64 (PcdAppleAnsPmgrResetBase)        },
+    { "APCIE_ST",      FixedPcdGet64 (PcdAppleAnsPmgrApcieStBase)      },
+    { "APCIE_ST_SYS",  FixedPcdGet64 (PcdAppleAnsPmgrApcieStSysBase)   },
+    { "APCIE_ST1_SYS", FixedPcdGet64 (PcdAppleAnsPmgrApcieSt1SysBase)  },
+  };
+  UINTN    Index;
+  UINTN    ResolvedCount;
+  UINTN    GatedCount;
+  BOOLEAN  Resolved;
+  BOOLEAN  Active;
+
+  ResolvedCount = 0;
+  GatedCount    = 0;
+  for (Index = 0; Index < ARRAY_SIZE (Domains); Index++) {
+    AppleAnsPmgrReportDomain (
+      Tag,
+      Domains[Index].Name,
+      Domains[Index].Expected,
+      &Resolved,
+      &Active
+      );
+    if (Resolved) {
+      ResolvedCount++;
+      if (!Active) {
+        GatedCount++;
+      }
     }
   }
 
-  ntasi_rtkit_runtime_release_buffers (&Device->Rtkit);
-  ntasi_sart_runtime_clear_owned (&Device->Sart);
-  ArmDataSynchronizationBarrier ();
+  if (GatedCount != 0) {
+    ANS_DEBUG ((
+      DEBUG_ERROR,
+      "AppleANS: %Lu of %Lu resolvable PMGR domains are NOT ACTIVE; continuing "
+      "anyway (no firmware here enables PMGR domains -- neither does m1n1), but "
+      "any MMIO stall or mailbox timeout below is most likely this\n",
+      (UINT64)GatedCount,
+      (UINT64)ResolvedCount
+      ));
+  } else if (ResolvedCount == ARRAY_SIZE (Domains)) {
+    ANS_DEBUG ((
+      DEBUG_INFO,
+      "AppleANS: all four ANS PMGR domains resolved from the live ADT and are ACTIVE\n"
+      ));
+  } else {
+    ANS_DEBUG ((
+      DEBUG_WARN,
+      "AppleANS: only %Lu of 4 ANS PMGR domains could be resolved and corroborated; "
+      "power state unverified, continuing\n",
+      (UINT64)ResolvedCount
+      ));
+  }
 }
+#endif // !APPLE_ANS_QEMU_TEST
 
 STATIC EFI_STATUS
 DiscoverHardware (
@@ -897,6 +1113,12 @@ AppleNANDStorageDxeInitialize (
   }
 #endif
 
+#if !defined (APPLE_ANS_QEMU_TEST)
+  Stage = "pmgr-domain-report";
+  ANS_DEBUG ((DEBUG_INFO, "AppleANS: stage \"%a\" (read-only; never writes a PMGR word)\n", Stage));
+  ReportAnsPmgrDomains ();
+#endif
+
   Stage = "sart-init";
   ANS_DEBUG ((DEBUG_INFO, "AppleANS: stage \"%a\"\n", Stage));
   Result = ntasi_sart_runtime_init (&Device->Sart, SartParams, &SartOps, Device);
@@ -1102,11 +1324,41 @@ Fail:
   if (Device->Controller.enabled) {
     ntasi_ans_controller_stop (&Device->Controller);
   }
-  if (Device->Rtkit.booted) {
-    ntasi_rtkit_runtime_sleep (&Device->Rtkit);
+
+  //
+  // Unwind in the same order as the ExitBootServices handoff, and for the same
+  // reason: nothing that the coprocessor might still be DMAing through may be
+  // revoked or freed until its run bit is confirmed low. Unlike the handoff
+  // path this one DOES free the shared buffers -- DXE continues after this and
+  // the reserved pages would otherwise leak for the rest of the boot -- but
+  // only once the coprocessor is halted.
+  //
+  {
+    bool  CoprocessorStopped = false;
+
+    if (Device->Rtkit.booted) {
+      ntasi_rtkit_runtime_handoff (&Device->Rtkit, &CoprocessorStopped);
+    } else if (Device->Asc.hw != NULL) {
+      ntasi_asc_cpu_stop (&Device->Asc);
+      CoprocessorStopped = !ntasi_asc_cpu_running (&Device->Asc);
+    } else {
+      // ASC transport was never initialized, so nothing was ever started.
+      CoprocessorStopped = true;
+    }
+
+    if (CoprocessorStopped) {
+      ntasi_rtkit_runtime_release_buffers (&Device->Rtkit);
+      ntasi_sart_runtime_clear_owned (&Device->Sart);
+    } else {
+      ANS_DEBUG ((
+        DEBUG_ERROR,
+        "AppleANS: coprocessor did not halt during unwind; leaking its shared "
+        "buffers and SART grants on purpose rather than revoking memory it may "
+        "still be writing\n"
+        ));
+    }
   }
-  ntasi_rtkit_runtime_release_buffers (&Device->Rtkit);
-  ntasi_sart_runtime_clear_owned (&Device->Sart);
+
   FreeControllerMemory (Device);
   FreePool (Device);
   mAns = NULL;

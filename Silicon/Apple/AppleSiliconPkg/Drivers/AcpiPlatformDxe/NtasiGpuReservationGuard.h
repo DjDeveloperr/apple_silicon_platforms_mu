@@ -102,4 +102,54 @@ NtasiRangesOverlap (
   return ((Base1 <= Top2) && (Base2 <= Top1)) ? NTASI_GUARD_TRUE : NTASI_GUARD_FALSE;
 }
 
+/**
+  TRUE if [Base, Base + Size) lies entirely inside [WindowBase, WindowTop).
+
+  This is the "real memory map" bound the 2026-07-30 GPU incident was
+  missing. The two predicates above only answer "does this candidate collide
+  with something Mu is using"; neither can tell a plausible-looking address
+  that is simply not backed by DRAM on THIS machine from one that is. The
+  original six hardcoded AGX carveouts included three (0x103fffb8000,
+  0x103fff78000, 0x103fff70000) that sit above boot_args' mem_size ceiling,
+  and the PEI code of the day tried to reserve them through
+  ReserveMemoryRegion()/ReserveAllocatedSystemMemoryRegion(), which can only
+  punch holes in an existing SystemMemory HOB -- so the reservation failed
+  and MemoryInitPeiLib returned a fatal status before a console existed.
+
+  The correct window is NOT boot_args' mem_size top (SystemMemoryTop): the
+  UAT/GUAT carveouts legitimately live ABOVE it, in the pool iBoot and m1n1
+  reserve for themselves. It is the machine's real installed-DRAM top,
+  ALIGN_DOWN(phys_base, 4GiB) + mem_size_actual -- the same formula m1n1's
+  own top_of_memory_alloc() uses, and the same one
+  NtasiDeriveWirelessReservation() in MemoryInitPeiLib.c already derives the
+  wireless reservation from. A candidate outside that window is not a
+  carveout at all and must never be reserved, mapped, or published.
+
+  Zero size, an empty/inverted window, or either range overflowing the
+  64-bit address space all return FALSE (fail closed: "not provably inside"
+  is treated as "outside").
+**/
+static inline NTASI_GUARD_BOOL
+NtasiRangeWithinWindow (
+  NTASI_GUARD_U64  Base,
+  NTASI_GUARD_U64  Size,
+  NTASI_GUARD_U64  WindowBase,
+  NTASI_GUARD_U64  WindowTop
+  )
+{
+  NTASI_GUARD_U64  Top;
+
+  if ((Size == 0) || (WindowTop <= WindowBase)) {
+    return NTASI_GUARD_FALSE;
+  }
+
+  Top = Base + (Size - 1);
+  if (Top < Base) {
+    return NTASI_GUARD_FALSE;
+  }
+
+  return ((Base >= WindowBase) && (Top <= (WindowTop - 1))) ? NTASI_GUARD_TRUE
+                                                            : NTASI_GUARD_FALSE;
+}
+
 #endif // NTASI_GPU_RESERVATION_GUARD_H_
