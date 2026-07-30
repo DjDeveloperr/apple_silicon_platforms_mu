@@ -49,6 +49,12 @@ PROFILES = {
         "gpu": True,
         "expected_ffs_count": 88,
     },
+    "ans-gpu": {
+        "profile_abi": "ntasi.j414s.windows.ans-gpu-combined.v1",
+        "ans": True,
+        "gpu": True,
+        "expected_ffs_count": 89,
+    },
     "wireless": {
         "profile_abi": "ntasi.j414s.windows.wireless-handoff-v2.v1",
         "ans": False,

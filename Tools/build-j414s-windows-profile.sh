@@ -3,7 +3,7 @@
 set -eu
 
 usage() {
-    echo "usage: $0 baseline|ans|gpu|wireless [wireless-handoff-manifest.json]" >&2
+    echo "usage: $0 baseline|ans|gpu|ans-gpu|wireless [wireless-handoff-manifest.json]" >&2
     exit 2
 }
 
@@ -15,6 +15,8 @@ case "$profile" in
     ans)
         ;;
     gpu)
+        ;;
+    ans-gpu)
         ;;
     wireless)
         test "$#" -eq 2 || usage

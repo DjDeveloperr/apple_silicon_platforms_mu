@@ -21,6 +21,7 @@ Use the profile builder from the root of the unified checkout:
 Tools/build-j414s-windows-profile.sh baseline
 Tools/build-j414s-windows-profile.sh ans
 Tools/build-j414s-windows-profile.sh gpu
+Tools/build-j414s-windows-profile.sh ans-gpu
 Tools/build-j414s-windows-profile.sh wireless /absolute/path/wireless-handoff.json
 ```
 
@@ -50,9 +51,16 @@ Tools/verify-j414s-windows-profile.py verify \
   --source-root .
 ```
 
-`NTASI_MU_PROFILE` accepts only `baseline`, `ans`, `gpu`, or `wireless`. ANS,
-GPU, and wireless publication are enabled one at a time. The wireless profile
-has no fixed reservation and cannot be built from source flags alone. Its
+`NTASI_MU_PROFILE` accepts `baseline`, `ans`, `gpu`, `ans-gpu`, or `wireless`.
+ANS and GPU publication can each be enabled independently, or together via the
+combined `ans-gpu` profile, which sets both `PcdAppleAnsPublishAcpiDevice` and
+`NTASI_J414S_GPU_RESOURCE_PROFILE` and therefore publishes `NTAS1000`/
+`NTAS2002`/`NTAS2003` (whichever the live ADT selects) alongside `NTAS0023`
+GPU resources in the same FD. It carries its own `profile_abi`
+(`ntasi.j414s.windows.ans-gpu-combined.v1`) and FFS count (baseline + the
+`AppleNANDStorageDxe` driver + the `GpuAcpiTables` SSDT). Wireless publication
+remains mutually exclusive with the others: the wireless profile has no fixed
+reservation and cannot be built from source flags alone. Its
 second argument must be a same-instance `ntasi.j414s.wireless-handoff.v2`
 manifest sealed by m1n1's authoritative verifier. The builder re-runs that
 verifier, authenticates its referenced m1n1 manifest and full 64-KiB capture,
