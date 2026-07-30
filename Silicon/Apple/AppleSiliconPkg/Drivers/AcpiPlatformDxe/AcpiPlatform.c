@@ -891,29 +891,50 @@ NtasiInstallWirelessDartTable (
   }
 
   //
-  // NO _CRS -- deliberate, and the whole point of the 2026-07-30 change.
+  // NO _CRS -- deliberate.
   //
-  // DRT0 used to publish two QWordMemory consumer resources (the DART
-  // aperture at 0x594000000 and the derived top-of-DRAM reservation, e.g.
-  // 0x103FFFF0000 on the measured boot).  Both sat in address classes this
-  // Windows build's root memory arbiter has never granted on this machine:
+  // DRT0 used to publish two QWordMemory consumer resources: the DART
+  // aperture at 0x594000000 and the derived top-of-DRAM reservation (e.g.
+  // 0x103FFFF0000 on the measured boot).  The measured result was
+  // CM_PROB_NORMAL_CONFLICT (Code 12) on ACPI\NTAS0011 with no resources
+  // assigned, which also starves the three PCIe endpoints of their DART
+  // provider.
   //
-  //   * the reservation additionally overlaps the very range PEI publishes
-  //     as EfiReservedMemoryType (MemoryInitPeiLib builds a SYSTEM_MEMORY
-  //     resource HOB plus an EfiReservedMemoryType allocation HOB for it, and
-  //     the measured UEFI memory map shows
-  //     "[0x103FFFF0000, 0x10400000000) 16 pages Reserved"), so the arbiter
-  //     sees a device claiming loader-owned reserved memory;
-  //   * the only high consumer resource ever tested on this machine (native
-  //     XHC1 at 0xB02280000) was refused outright and had to be aliased low.
+  // THE RESERVATION IS THE ONE THAT CANNOT BE ARBITRATED, AND IT IS NOT A
+  // MATTER OF BEING "HIGH".  PEI publishes that exact range as an
+  // EFI_RESOURCE_SYSTEM_MEMORY resource HOB *and* an EfiReservedMemoryType
+  // allocation HOB (MemoryInitPeiLib; the measured UEFI memory map shows
+  // "[0x103FFFF0000, 0x10400000000) 16 pages Reserved").  Windows' root
+  // memory arbiter builds its assignable range list by subtracting the
+  // firmware-reported system-memory ranges, so a device asking for that range
+  // is asking to own loader-owned reserved DRAM and is refused.  A refused
+  // descriptor fails the whole devnode -- there is no partial grant, and no
+  // fallback -- so this can only ever be data, never a resource.
   //
-  // The measured result was CM_PROB_NORMAL_CONFLICT (Code 12) on
-  // ACPI\NTAS0011 with no resources assigned, which also starves the three
-  // PCIe endpoints of their DART provider.
+  // CORRECTION, 2026-07-30.  An earlier version of this comment also claimed
+  // that "the only high consumer resource ever tested on this machine (native
+  // XHC1 at 0xB02280000) was refused outright".  That claim is FALSE and is
+  // the same falsified premise commit 848b3b5 used for the PCIe producer
+  // windows, reverted in 1ea4a93: the only CM_PROB_NORMAL_CONFLICT ever
+  // measured on ACPI\PNP0D15\1 was cleared by removing its *Interrupt*
+  // descriptor (GSIV 1274, inside the 1024..4095 range the ARM64 interrupt
+  // arbiter refuses), with the memory descriptor left in place.  No memory
+  // descriptor has ever been refused on this machine, at any address.
   //
-  // The fix: publish NOTHING for the PnP arbiters to grant.  AppleDart.sys
-  // discovers both ranges by evaluating the four integer methods below
-  // (IOCTL_ACPI_EVAL_METHOD to its own PDO) and maps them with
+  // So the DART register aperture at 0x594000000 IS arbitrable in principle:
+  // it is genuine MMIO outside DRAM, it does not overlap PCI0's producer
+  // windows (0x5A0000000..0x5BFFFFFFF prefetchable and
+  // 0x5C0000000..0x5FFFFFFFF non-prefetchable), and nothing else in these
+  // tables claims it.  It is nevertheless left out of _CRS for now, for one
+  // reason only: AppleDart.sys must implement the method channel regardless
+  // (for the reservation), so publishing the aperture as a resource adds an
+  // arbiter dependency with no fallback and buys nothing.  Restoring an
+  // aperture-only _CRS later is a firmware-only change -- the driver already
+  // accepts one and cross-checks it against DRTB/DRTL rather than silently
+  // preferring either channel.
+  //
+  // AppleDart.sys therefore discovers both ranges by evaluating the integer
+  // methods below (IOCTL_ACPI_EVAL_METHOD to its own PDO) and maps them with
   // MmMapIoSpaceEx.  The addresses stay TRUE physical addresses, so every
   // physical-equality check of the wireless-handoff ABI v2 descriptor
   // (reservation_base, l1_physical, dart_base, TTBR adoption) is unchanged.
@@ -923,10 +944,33 @@ NtasiInstallWirelessDartTable (
   // coarse "where to look" channel, and a method serves that role as well as
   // a _CRS entry without exposing the range to resource arbitration.
   //
-  // DRTB/DRTL: the fixed T8110 DART aperture (silicon constant).
-  // RSVB/RSVS: this boot's derived, re-authenticated reservation.
+  //   DRTB / DRTH  the fixed T8110 DART aperture base (silicon constant), and
+  //                its bits 63:32.
+  //   DRTL         the aperture length.
+  //   RSVB / RSVH  this boot's derived, re-authenticated reservation base,
+  //                and its bits 63:32.
+  //   RSVS         the reservation size.
+  //
+  // WHY DRTH/RSVH EXIST.  Both bases are wider than 32 bits (0x5_94000000 and
+  // 0x103_FFFF0000), and acpi.sys' reply format is not obviously 64-bit
+  // clean: ACPI_METHOD_ARGUMENT's integer union member is `ULONG Argument` in
+  // both the V1 and the V2 layouts, and the only ULONG64 fields in
+  // acpiioct.h are *input* arguments of the _EX variants.  The reply does
+  // carry an explicit DataLength, so an 8-byte integer is representable, but
+  // whether this ACPI build ever emits one cannot be established without
+  // booting -- and guessing wrong costs a boot and produces a driver that
+  // maps a wrong physical address.  Each high half always fits in 32 bits and
+  // therefore survives any truncation; AppleDart.sys recombines the pair and
+  // logs whether the primary method was already intact or had to be repaired.
+  // This is belt-and-braces on purpose: if the ACPI build turns out to be
+  // 64-bit clean, DRTH/RSVH are simply redundant cross-checks.
   //
   Status = AmlCodeGenMethodRetInteger ("DRTB", NTASI_WIRELESS_DART_APERTURE_BASE, 0, FALSE, 0, DeviceNode, NULL);
+  if (EFI_ERROR (Status)) {
+    goto Exit;
+  }
+
+  Status = AmlCodeGenMethodRetInteger ("DRTH", NTASI_WIRELESS_DART_APERTURE_BASE >> 32, 0, FALSE, 0, DeviceNode, NULL);
   if (EFI_ERROR (Status)) {
     goto Exit;
   }
@@ -937,6 +981,11 @@ NtasiInstallWirelessDartTable (
   }
 
   Status = AmlCodeGenMethodRetInteger ("RSVB", ReservationBase, 0, FALSE, 0, DeviceNode, NULL);
+  if (EFI_ERROR (Status)) {
+    goto Exit;
+  }
+
+  Status = AmlCodeGenMethodRetInteger ("RSVH", ReservationBase >> 32, 0, FALSE, 0, DeviceNode, NULL);
   if (EFI_ERROR (Status)) {
     goto Exit;
   }
@@ -967,11 +1016,14 @@ NtasiInstallWirelessDartTable (
   if (!EFI_ERROR (Status)) {
     DEBUG ((
       DEBUG_INFO,
-      "WirelessDART ACPI: DRT0 published, dart-aperture=0x%lx/+0x%lx reservation=0x%lx/+0x%x\n",
+      "WirelessDART ACPI: DRT0 published, dart-aperture=0x%lx/+0x%lx reservation=0x%lx/+0x%x "
+      "(methods DRTB/DRTH=0x%x DRTL RSVB/RSVH=0x%x RSVS, no _CRS)\n",
       NTASI_WIRELESS_DART_APERTURE_BASE,
       NTASI_WIRELESS_DART_APERTURE_SIZE,
       ReservationBase,
-      ReservationSize
+      ReservationSize,
+      (UINT32)(NTASI_WIRELESS_DART_APERTURE_BASE >> 32),
+      (UINT32)(ReservationBase >> 32)
       ));
   }
 
