@@ -59,10 +59,21 @@
   # ANS publication is the only storage-firmware experiment.  The unified
   # baseline leaves this FALSE; the ans build profile overrides it to TRUE.
   gAppleSiliconPkgTokenSpaceGuid.PcdAppleAnsPublishAcpiDevice|$(NTASI_ENABLE_ANS)
-  gAppleSiliconPkgTokenSpaceGuid.PcdAppleAnsPmgrResetBase|0x28E0801A8
-  gAppleSiliconPkgTokenSpaceGuid.PcdAppleAnsPmgrApcieStBase|0x28E0801A0
-  gAppleSiliconPkgTokenSpaceGuid.PcdAppleAnsPmgrApcieStSysBase|0x28E080408
-  gAppleSiliconPkgTokenSpaceGuid.PcdAppleAnsPmgrApcieSt1SysBase|0x28E080410
+  # CORRECTED 2026-07-30 (hardware-confirmed): these four were resolved
+  # against the wrong PMGR register block. /arm-io/pmgr's "ps-regs" table
+  # has multiple blocks (reg tuples); ANS2/APCIE_ST/APCIE_ST_SYS/
+  # APCIE_ST1_SYS live in the "pmgr_east" block (base 0x290280000), not the
+  # main "pmgr" block (base 0x28E080000) these values used to point into.
+  # The old 0x28E080-prefixed addresses land on DCS_09/DCS_10 -- DRAM
+  # controller power domains -- at the exact same low offsets, which is why
+  # they passed every alignment/spacing sanity check while being
+  # catastrophically wrong. Live ADT walk of /arm-io/pmgr "devices",
+  # matching by name, confirms these four; TODO(Delivery 2): resolve them
+  # from the ADT at runtime instead of trusting this constant again.
+  gAppleSiliconPkgTokenSpaceGuid.PcdAppleAnsPmgrResetBase|0x2902801A8
+  gAppleSiliconPkgTokenSpaceGuid.PcdAppleAnsPmgrApcieStBase|0x2902801A0
+  gAppleSiliconPkgTokenSpaceGuid.PcdAppleAnsPmgrApcieStSysBase|0x290280408
+  gAppleSiliconPkgTokenSpaceGuid.PcdAppleAnsPmgrApcieSt1SysBase|0x290280410
   # Exact m1n1 wireless_handoff_init() carveout. Mu only reserves and
   # publishes it; it never creates or modifies the DART tables.
 !if $(NTASI_ENABLE_WIRELESS_DART_HANDOFF) == 1
