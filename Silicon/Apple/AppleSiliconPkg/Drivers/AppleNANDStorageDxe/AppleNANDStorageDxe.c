@@ -853,6 +853,33 @@ AppleNANDStorageDxeInitialize (
 
   (VOID)ImageHandle;
   (VOID)SystemTable;
+
+#if !defined (APPLE_ANS_QEMU_TEST)
+  //
+  // On real J414s hardware the ANS/SART/mailbox MMIO block is gated behind
+  // a four-domain PMGR power sequence (ps_apcie_st -> ps_ans2 ->
+  // ps_apcie_st_sys -> ps_apcie_st1_sys, see PcdAppleAnsPmgr*Base) that
+  // this driver does not perform. Touching those registers first does not
+  // time out: it stalls the AMBA bus transaction itself, an unbounded
+  // hardware wait no software poll-loop timeout can catch, hanging the
+  // whole machine before the serial console is even live. Confirmed on
+  // hardware 2026-07-29/30. Windows performs that PMGR sequence itself
+  // once it binds to the NTAS200x ACPI device that AcpiPlatformDxe already
+  // publishes independently of this driver (see drivers/AppleNvme in the
+  // asnt-ans-offline tree for the reference implementation), so the DXE
+  // bring-up below is neither required for Windows to boot nor safe to run
+  // by default. See PcdAppleAnsBringUpController in AppleSiliconPkg.dec.
+  //
+  if (!FixedPcdGetBool (PcdAppleAnsBringUpController)) {
+    ANS_DEBUG ((
+      DEBUG_INFO,
+      "AppleANS: DXE hardware bring-up withheld by PcdAppleAnsBringUpController; "
+      "Windows performs PMGR sequencing and RTKit boot itself via the NTAS200x ACPI node\n"
+      ));
+    return EFI_UNSUPPORTED;
+  }
+#endif
+
   Device = AllocateZeroPool (sizeof (*Device));
   if (Device == NULL) {
     return EFI_OUT_OF_RESOURCES;
