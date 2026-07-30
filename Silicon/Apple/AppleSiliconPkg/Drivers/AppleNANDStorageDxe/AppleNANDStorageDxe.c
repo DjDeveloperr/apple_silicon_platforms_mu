@@ -29,6 +29,7 @@
 #include <Drivers/AppleAnsHardware.h>
 #if !defined (APPLE_ANS_QEMU_TEST)
 #include <Drivers/AppleAnsPmgrDomain.h>
+#include <Drivers/NtasiMemoryMapDump.h>
 #endif
 
 #include "Shared/AppleAscCore.h"
@@ -489,6 +490,14 @@ AnsFreeAllPages (
 }
 
 STATIC APPLE_ANS_DEVICE  *mAns;
+
+#if !defined (APPLE_ANS_QEMU_TEST)
+STATIC VOID
+DumpSartState (
+  IN APPLE_ANS_DEVICE  *Device,
+  IN CONST CHAR8       *When
+  );
+#endif
 
 STATIC CONST EFI_GUID  mAppleAnsDevicePathGuid = {
   0x171cfd4c, 0x628f, 0x4d87,
@@ -1197,6 +1206,12 @@ AnsExitBootServices (
       ));
   }
 
+#if !defined (APPLE_ANS_QEMU_TEST)
+  // The exact SART state Windows inherits. Read-only, so it is safe here even
+  // though allocation is not.
+  DumpSartState (Device, "handed-to-os");
+#endif
+
   ArmDataSynchronizationBarrier ();
 }
 
@@ -1288,6 +1303,91 @@ ReportAnsPmgrDomains (
       (UINT64)ResolvedCount
       ));
   }
+}
+#endif // !APPLE_ANS_QEMU_TEST
+
+#if !defined (APPLE_ANS_QEMU_TEST)
+//
+// Dump the SART DMA filter's true hardware state, all 16 entries decoded.
+//
+// PURELY OBSERVATIONAL -- reads three registers per entry and writes nothing.
+//
+// Added 2026-07-30 because a BUGCODE_USB3_DRIVER 0x144 correlated with
+// ANS-carrying firmware profiles, with XHC1 halted on USBSTS.HSE (Host System
+// Error = the host bus rejected the controller's DMA). SART is the only
+// DMA-address-filtering hardware this firmware programs, so "what did Mu
+// actually leave in the filter?" had to become a question answerable from one
+// boot log rather than from this driver's own used_entries bitmap -- which is
+// exactly the bookkeeping that would be wrong if there were a bug.
+//
+// SCOPE NOTE, so this dump is not over-read: SART is not a global fabric
+// filter. m1n1 instantiates exactly one, sart_init("/arm-io/sart-ans")
+// (src/nvme.c:334 and :445), and its only consumer is the ANS/NVMe RTKit
+// instance (src/rtkit.c rtkit_map/rtkit_unmap). It sits in front of the ANS
+// coprocessor's DMA path and gates no other bus master. XHC1 does not go
+// through it.
+//
+// SART is also an ALLOW list, not a deny list: an entry left armed PERMITS
+// DMA to that range, it cannot cause a transaction to be rejected. A stale
+// entry is a confidentiality/integrity concern for the range it names, never
+// a route to another master's bus error.
+//
+STATIC VOID
+DumpSartState (
+  IN APPLE_ANS_DEVICE  *Device,
+  IN CONST CHAR8       *When
+  )
+{
+  UINTN    Index;
+  UINTN    Armed;
+  uint8_t  Flags;
+  uint64_t Paddr;
+  uint64_t Size;
+  int      Result;
+
+  Armed = 0;
+  ANS_DEBUG ((
+    DEBUG_INFO,
+    "AppleANS: SART %a: base=0x%lx protected=0x%04x owned=0x%04x\n",
+    When,
+    Device->SartBase,
+    (UINT32)Device->Sart.protected_entries,
+    (UINT32)Device->Sart.used_entries
+    ));
+
+  for (Index = 0; Index < NTASI_SART_MAX_ENTRIES; Index++) {
+    Result = ntasi_sart_runtime_read (&Device->Sart, (unsigned int)Index, &Flags, &Paddr, &Size);
+    if (Result != NTASI_SART_RUNTIME_OK) {
+      ANS_DEBUG ((DEBUG_ERROR, "AppleANS: SART %a:   [%02Lu] unreadable (%d)\n", When, (UINT64)Index, Result));
+      continue;
+    }
+
+    if (Flags == 0) {
+      continue;
+    }
+
+    Armed++;
+    ANS_DEBUG ((
+      DEBUG_INFO,
+      "AppleANS: SART %a:   [%02Lu] flags=0x%02x paddr=0x%Lx size=0x%Lx %a%a\n",
+      When,
+      (UINT64)Index,
+      (UINT32)Flags,
+      (UINT64)Paddr,
+      (UINT64)Size,
+      ((Device->Sart.protected_entries & (1u << Index)) != 0) ? "iBoot-owned" : "",
+      ((Device->Sart.used_entries & (1u << Index)) != 0) ? "Mu-owned" : ""
+      ));
+  }
+
+  ANS_DEBUG ((
+    DEBUG_INFO,
+    "AppleANS: SART %a: %Lu of %Lu entries armed (SART is an ALLOW list; an armed entry "
+    "permits ANS DMA to that range and can never reject another master's transaction)\n",
+    When,
+    (UINT64)Armed,
+    (UINT64)NTASI_SART_MAX_ENTRIES
+    ));
 }
 #endif // !APPLE_ANS_QEMU_TEST
 
@@ -1513,6 +1613,11 @@ AppleNANDStorageDxeInitialize (
     goto Fail;
   }
 
+#if !defined (APPLE_ANS_QEMU_TEST)
+  // Snapshot the filter as iBoot left it, before this driver adds anything.
+  DumpSartState (Device, "as-inherited-from-iBoot");
+#endif
+
   Stage = "asc-init";
   ANS_DEBUG ((DEBUG_INFO, "AppleANS: stage \"%a\"\n", Stage));
   Result = ntasi_asc_init_variant (
@@ -1694,6 +1799,20 @@ AppleNANDStorageDxeInitialize (
       ));
   }
 
+#if !defined (APPLE_ANS_QEMU_TEST)
+  // Everything this driver will ever grant is granted by now.
+  DumpSartState (Device, "after-bring-up");
+  //
+  // The reserved regions this driver added are now in the map. Dumping it
+  // here rather than from the ExitBootServices callback is deliberate:
+  // allocation is forbidden there, and GetMemoryMap would perturb the very
+  // map being handed over. Nothing between here and the handoff changes the
+  // reserved regions -- AnsExitBootServices only revokes SART grants and
+  // halts the coprocessor; it allocates and frees nothing.
+  //
+  NtasiDumpReservedMemoryMap ("AppleANS");
+#endif
+
   ANS_DEBUG ((
     DEBUG_INFO,
     "AppleANS: bring-up completed all stages; namespace 1 ready: %Lu blocks x %u bytes\n",
@@ -1735,17 +1854,45 @@ Fail:
     if (CoprocessorStopped) {
       ntasi_rtkit_runtime_release_buffers (&Device->Rtkit);
       ntasi_sart_runtime_clear_owned (&Device->Sart);
+      FreeControllerMemory (Device);
     } else {
+      //
+      // CORRECTED 2026-07-30. This branch used to log "leaking on purpose" and
+      // then fall straight into FreeControllerMemory(), which returned every
+      // tracked page -- including the RTKit shared buffers the coprocessor is
+      // still SART-granted to write -- to the allocator. Those pages would then
+      // be handed to the next DXE consumer and ultimately to Windows, while a
+      // live coprocessor retained DMA permission to them. That is memory
+      // corruption with an arbitrary victim, and it is exactly the class of bug
+      // the USB3 0x144 investigation was asking about.
+      //
+      // Leak deliberately and completely instead: no free, no SART revoke. A
+      // few hundred KiB stranded for one boot is strictly better than DMA into
+      // memory somebody else owns. The allocation table is dropped without
+      // freeing so nothing can free it later either.
+      //
       ANS_DEBUG ((
         DEBUG_ERROR,
-        "AppleANS: coprocessor did not halt during unwind; leaking its shared "
-        "buffers and SART grants on purpose rather than revoking memory it may "
-        "still be writing\n"
+        "AppleANS: coprocessor did not halt during unwind; deliberately leaking %Lu "
+        "tracked allocations AND their SART grants rather than returning memory a "
+        "live coprocessor can still DMA into\n",
+        (UINT64)Device->AllocationCount
         ));
+      Device->AllocationCount = 0;
+      Device->AdminCommands   = NULL;
+      Device->AdminCompletions = NULL;
+      Device->AdminTcbs       = NULL;
+      Device->IoCommands      = NULL;
+      Device->IoCompletions   = NULL;
+      Device->IoTcbs          = NULL;
+      Device->Bounce          = NULL;
     }
+
+#if !defined (APPLE_ANS_QEMU_TEST)
+    DumpSartState (Device, "after-failed-bring-up");
+#endif
   }
 
-  FreeControllerMemory (Device);
   //
   // gBS->FreePool directly rather than MemoryAllocationLib's FreePool(), which
   // ASSERT_EFI_ERRORs on failure. Nothing on this unwind path may abort the

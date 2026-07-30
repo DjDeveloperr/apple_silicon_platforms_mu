@@ -42,6 +42,7 @@
 // dependency-free arithmetic header the host test compiles verbatim.
 //
 #include <Drivers/AppleAnsPmgrDomain.h>
+#include <Drivers/NtasiMemoryMapDump.h>
 
 #define APPLE_ANS_ACPI_OEM_ID        "NTASP "
 #define APPLE_ANS_ACPI_OEM_TABLE_ID  "APPLEANS"
@@ -2206,6 +2207,24 @@ AcpiPlatformEntryPoint (
   }
 
 #endif
+
+  //
+  // Dump every non-conventional memory region, in EVERY profile.
+  //
+  // Added 2026-07-30 for the BUGCODE_USB3_DRIVER 0x144 investigation. XHC1 was
+  // captured halted on USBSTS.HSE (Host System Error -- the host bus rejected
+  // its DMA) with DWC3 buserr_valid=1, and the failure correlated with
+  // firmware profiles. Firmware's most plausible route to another master's DMA
+  // fault is the memory map it hands the OS, so every profile now states
+  // exactly what it asked the OS to treat specially. AcpiPlatformDxe is the
+  // right home because it is in EVERY profile -- including baseline (which
+  // boots) and wireless (which does not, and carries no ANS driver at all) --
+  // so the maps can be diffed directly against each other.
+  //
+  // Purely observational. The ans profiles dump again from
+  // AppleNANDStorageDxe after its own reserved buffers exist.
+  //
+  NtasiDumpReservedMemoryMap ("AcpiPlatform");
 
   //
   // The driver does not require to be kept loaded.

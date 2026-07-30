@@ -44,4 +44,21 @@ int ntasi_sart_runtime_remove(struct ntasi_sart_runtime *runtime,
 /* Clears only entries owned by this runtime; firmware entries survive. */
 void ntasi_sart_runtime_clear_owned(struct ntasi_sart_runtime *runtime);
 
+/*
+ * Read back one live SART entry, decoded. Pure observation: touches no state
+ * and writes no register, so it is safe to call at any point including inside
+ * an ExitBootServices callback.
+ *
+ * Exists so a driver can DUMP the filter's true hardware state rather than its
+ * own bookkeeping. On 2026-07-30 an ANS-correlated USB3 bugcheck made "did Mu
+ * leave a SART entry in a state that could reject DMA?" a question that had to
+ * be answered from hardware, not from a used_entries bitmap that could itself
+ * be wrong.
+ *
+ * `entry` must be < NTASI_SART_MAX_ENTRIES.
+ */
+int ntasi_sart_runtime_read(struct ntasi_sart_runtime *runtime,
+                            unsigned int entry, uint8_t *flags,
+                            uint64_t *paddr, uint64_t *size);
+
 #endif

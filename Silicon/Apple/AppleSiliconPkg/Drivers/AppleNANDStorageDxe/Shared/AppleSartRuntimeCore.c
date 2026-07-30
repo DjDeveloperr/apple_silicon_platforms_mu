@@ -147,6 +147,25 @@ int ntasi_sart_runtime_remove(struct ntasi_sart_runtime *runtime,
     return NTASI_SART_RUNTIME_ERR_NOT_FOUND;
 }
 
+int ntasi_sart_runtime_read(struct ntasi_sart_runtime *runtime,
+                            unsigned int entry, uint8_t *flags,
+                            uint64_t *paddr, uint64_t *size)
+{
+    struct ntasi_sart_entry_values values;
+
+    if (runtime == NULL || runtime->params == NULL || flags == NULL ||
+        paddr == NULL || size == NULL)
+        return NTASI_SART_RUNTIME_ERR_ARGUMENT;
+    if (entry >= NTASI_SART_MAX_ENTRIES)
+        return NTASI_SART_RUNTIME_ERR_ARGUMENT;
+
+    values = read_entry(runtime, entry);
+    return ntasi_sart_entry_decode(runtime->params, &values, flags, paddr,
+                                   size) == NTASI_SART_OK
+               ? NTASI_SART_RUNTIME_OK
+               : NTASI_SART_RUNTIME_ERR_ARGUMENT;
+}
+
 void ntasi_sart_runtime_clear_owned(struct ntasi_sart_runtime *runtime)
 {
     unsigned int entry;
