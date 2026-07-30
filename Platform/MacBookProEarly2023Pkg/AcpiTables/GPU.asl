@@ -5,22 +5,33 @@
   m1n1 commit: 5b54d17e3cf7c82a9af54512fc63dcd292abd72c
   m1n1 image SHA-256: d4d9da57bf154b99ae2d302118f79b586e506068412b7fa6c1b58cfa9e808775
 
-  UNVERIFIED STALENESS NOTE (2026-07-30): MemoryInitPeiLib.c no longer
-  hardcodes these six QWordMemory addresses -- it derives them at boot from
-  the live "/arm-io/sgx" ADT node (uat_ttbs/uat_pagetables/uat_handoff) and
-  from Mu's own observed SystemMemoryTop (hw_data_a/hw_data_b/globals), the
-  way m1n1's kboot_gpu.c derives the same six regions for Linux. The three
-  ADT-sourced addresses are fixed silicon carveouts and should never drift
-  for this board. The three top-of-memory addresses below happen to match
-  what PEI computes tonight (SystemMemoryTop = 0x103db29c000), but they are
-  only a snapshot: if SystemMemoryTop ever moves (a different m1n1 build,
-  a different Mu feature profile that carves more or less memory before
-  this point), PEI's *behavior* stays safe (it degrades the GPU reservation
-  and logs loudly rather than hanging), but this static _CRS will go stale
-  again and the AppleAgxGpu Windows driver will simply fail its CRC check
-  and not load -- not hang the boot. Treat GPU.asl regeneration as owed
-  whenever the "ans"/"gpu" feature mix or m1n1 build changes, and re-run
-  whatever produced NTASI-GPU-OVERLAY.json / GPU-HANDOFF.json to confirm.
+  PROVENANCE NOTE (2026-07-30, hardware-confirmed): MemoryInitPeiLib.c no
+  longer hardcodes uat_ttbs/uat_pagetables/uat_handoff -- it reads them
+  live from the "/arm-io/sgx" ADT node at boot (dt_get("/arm-io/sgx") +
+  the "gpu-region"/"gfx-shared-region"/"gfx-handoff" "-base"/"-size"
+  properties), the same properties m1n1's kboot_gpu.c reads for Linux.
+  A live probe on this exact hardware confirmed all three are byte-exact
+  matches for the addresses below and are fixed iBoot UAT page-table
+  carveouts (named "GUAT" in the ADT's pmap-io-ranges table) -- they
+  should not drift for this board, but PEI re-reads them every boot
+  rather than trusting that.
+
+  hw_data_a/hw_data_b/globals below are NOT ADT-derivable: a live probe
+  of every property on /arm-io/sgx found no matching region (the sgx node
+  has gpu-region, gfx-shared-region, gfx-handoff, ttbat-phys-addr-base,
+  and rtkit-private-vm-region-base/size -- nothing else region-like).
+  MemoryInitPeiLib.c does NOT reserve these three at all as of 2026-07-30
+  (see NtasiLogGpuHandoffDataGap() in that file for the full rationale);
+  a prior attempt to derive them from Mu's own SystemMemoryTop crashed the
+  machine by computing an address that landed on Mu's live PEI stack
+  pointer, so guessing was abandoned rather than repeated. Until m1n1
+  publishes these three somewhere Mu can read them, the AppleAgxGpu
+  Windows driver will not find valid pre-computed firmware init data at
+  the addresses below and will not initialize -- degraded GPU, not a
+  boot hang. Treat GPU.asl regeneration as owed whenever the "ans"/"gpu"
+  feature mix or m1n1 build changes, and re-run whatever produced
+  NTASI-GPU-OVERLAY.json / GPU-HANDOFF.json to confirm the ADT-sourced
+  three still match.
 
   SPDX-License-Identifier: MIT
 **/
