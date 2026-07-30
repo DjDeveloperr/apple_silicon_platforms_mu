@@ -178,6 +178,66 @@ why nothing here forces it. The deleted `GPU.asl`'s `_DSD` (chip id, perf
 data, PMGR offsets, payload sizes and the three expected CRC32s) is recoverable
 from git history if that ABI is revisited.
 
+## The `ans-noacpi` control, and what the USB3 0x144 investigation has ruled out
+
+`BUGCODE_USB3_DRIVER 0x144` (`USB3_BUGCODE_BOOT_DEVICE_FAILED`) reproduces on
+every ANS-carrying profile and on no other: 6 boots / 0 failures for non-ANS
+profiles versus 0 / 3 for ANS profiles, on the same cable. XHC1 is captured
+halted with `USBSTS 0x1d [HCH|HSE|EINT|PCD]` and DWC3 `buserr_valid=1`. `HSE`
+is Host System Error -- the host bus rejected the controller's DMA.
+
+**Ruled out so far, each by measurement rather than argument:**
+
+* **SART.** m1n1 instantiates exactly one, `sart_init("/arm-io/sart-ans")`
+  (`src/nvme.c:334`, `:445`), consumed only by the ANS RTKit instance. In the
+  device tree `apple,sart` is a property of the nvme node alone. It is also an
+  *allow* list: an armed entry permits ANS DMA to a range and can never reject
+  another master's transaction. Confirmed clean at handoff on hardware --
+  `protected=0x002F` (all iBoot-owned), `owned=0x0000`.
+* **The memory map.** Highest described physical address is `0x103DB29C000` in
+  both `ans` and `baseline`. All ANS reserved allocations land inside valid RAM.
+* **ANS hardware mutation.** The `ans` profile at `bde9ff10` has the entire ANS
+  mutation path dead-stripped by LTO -- no `asc-init`, no `rtkit-boot`, no SART
+  writes, no handoff -- and **still bugchecks**. Mu cannot touch ANS hardware in
+  that build.
+* **XHC1's IOMMU.** There isn't one in the path: `AppleDartIoMmuDxe` programs
+  every USB DART stream to `TCR = BYPASS_DART|BYPASS_DAPF` and installs no
+  `gEdkiiIoMmuProtocol`. Measured at the crash: `DARTTCR usb1 ['0x6' x8]`. XHC1
+  DMAs to raw physical addresses.
+
+**Still open, and what `ans-noacpi` exists to separate:**
+
+1. `NTAS2003` is published, so Windows builds a devnode and its PnP arbiter
+   allocates resources for it -- an interrupt (GSIV 38, aliased to physical AIC
+   line 1832) and four 4-byte PMGR memory ranges -- even though
+   `AppleNvmeSart3` is disabled (`Start=4`) and never loads.
+2. The FD layout differs: 88 FFS versus 87.
+
+`PcdAppleAnsPublishAcpiDevice` used to be wired to `$(NTASI_ENABLE_ANS)`, the
+same define that gates the driver's FFS in the FDF, so the two could not be
+varied independently. It now has its own `$(NTASI_ANS_PUBLISH_ACPI)`, and the
+`ans-noacpi` profile sets `ans=TRUE` / `ans_acpi=FALSE`: the same 88-FFS module
+set as `ans`, with no `NTAS2003` at all.
+
+  * `ans-noacpi` boots -> the cause is the ACPI device and the resources
+    Windows allocates for it.
+  * `ans-noacpi` fails -> the cause is the FD layout / memory footprint, and
+    one variable remains.
+
+The FFS *count* and module set are identical between `ans` and `ans-noacpi`;
+the FDs are not byte-identical, because `PcdAppleAnsPublishAcpiDevice` is
+`FixedAtBuild` and LTO strips `AcpiPlatformInstallAppleAnsTable()` out of
+`AcpiPlatformDxe` when it is FALSE. That is a size delta inside one existing
+FFS, not a different set of modules, and it is verifiable: `NTAS2003` occurs
+3 times in `ans`'s `AcpiPlatform.efi` and 0 times in `ans-noacpi`'s.
+
+This matters beyond ANS. Device Manager reports **code 12 ("cannot find enough
+free resources") on all four PCIe devices** on a wireless-enabled boot. If
+Windows' resource arbiter is already failing on this platform, one more ACPI
+device claiming an interrupt is a far more plausible route from ANS to an
+unrelated USB controller than anything ANS does to its own hardware -- and the
+two problems may share a root cause in how Mu describes resources.
+
 ## 2026-07-30: ANS handoff and GPU carveout bounds
 
 Two hardware-confirmed corrections, both from
