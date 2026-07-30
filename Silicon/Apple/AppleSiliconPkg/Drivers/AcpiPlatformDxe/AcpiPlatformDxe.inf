@@ -23,6 +23,7 @@
 
 [Sources]
   AcpiPlatform.c
+  NtasiAnsPmgrResolve.h
 
 [Packages]
   MdePkg/MdePkg.dec

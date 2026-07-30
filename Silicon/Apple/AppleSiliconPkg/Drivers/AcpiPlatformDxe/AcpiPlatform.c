@@ -31,6 +31,7 @@
 
 #include <IndustryStandard/Acpi.h>
 #include <Drivers/AppleAnsHardware.h>
+#include "NtasiAnsPmgrResolve.h"
 
 #define APPLE_ANS_ACPI_OEM_ID        "NTASP "
 #define APPLE_ANS_ACPI_OEM_TABLE_ID  "APPLEANS"
@@ -122,6 +123,106 @@ AppleAnsAddMemoryResource (
            CrsNode,
            NULL
            );
+}
+
+#define NTASI_PMGR_MAX_REG_TUPLES  16u
+
+/**
+  Resolve one "/arm-io/pmgr" PMGR power-state register address live from
+  the ADT, by exact device name -- mirrors m1n1's pmgr_find_device() +
+  pmgr_device_get_addr() (src/pmgr.c). See NtasiAnsPmgrResolve.h for the
+  portable arithmetic this wraps (shared verbatim with the host test
+  Tests/test_ans_pmgr_resolve.c) and for why this exists.
+
+  NEVER falls back to a hardcoded address. On 2026-07-30 the DSC's
+  hardcoded PcdAppleAnsPmgr*Base values pointed at DCS_09/DCS_10 -- DRAM
+  controller power domains -- instead of ANS2/APCIE_ST/APCIE_ST_SYS/
+  APCIE_ST1_SYS, because they were computed against the wrong "/arm-io/
+  pmgr" register block ("pmgr" instead of "pmgr_east") and happened to
+  still pass every alignment/distinctness sanity check below. Resolving
+  strictly by name against the live ADT device table makes that class of
+  address confusion impossible by construction: this function can only
+  ever return an address it found attached to the exact name it was asked
+  to look for, read fresh from this boot's ADT, never a computed guess.
+**/
+STATIC
+EFI_STATUS
+NtasiResolveAnsPmgrDomain (
+  IN  CONST CHAR8  *DomainName,
+  OUT UINT64       *Address
+  )
+{
+  dt_node_t       *PmgrNode;
+  CONST UINT8     *Devices;
+  UINTN            DevicesLength;
+  CONST UINT32    *PsRegs;
+  UINTN            PsRegsLength;
+  UINT64           RegTupleBases[NTASI_PMGR_MAX_REG_TUPLES];
+  UINT32           RegTupleCount;
+  UINT32           TupleIndex;
+
+  PmgrNode = dt_get ("/arm-io/pmgr");
+  if (PmgrNode == NULL) {
+    DEBUG ((DEBUG_ERROR, "AppleANS ACPI: \"/arm-io/pmgr\" ADT node not found; cannot resolve %a\n", DomainName));
+    return EFI_NOT_FOUND;
+  }
+
+  Devices = dt_node_prop (PmgrNode, "devices", &DevicesLength);
+  if ((Devices == NULL) || (DevicesLength < NTASI_PMGR_DEVICE_SIZE)) {
+    DEBUG ((DEBUG_ERROR, "AppleANS ACPI: \"/arm-io/pmgr\" has no usable \"devices\" property\n"));
+    return EFI_NOT_FOUND;
+  }
+
+  PsRegs = (CONST UINT32 *)dt_node_prop (PmgrNode, "ps-regs", &PsRegsLength);
+  if ((PsRegs == NULL) || (PsRegsLength < (NTASI_PMGR_PSREG_STRIDE * sizeof (UINT32)))) {
+    DEBUG ((DEBUG_ERROR, "AppleANS ACPI: \"/arm-io/pmgr\" has no usable \"ps-regs\" property\n"));
+    return EFI_NOT_FOUND;
+  }
+
+  //
+  // Resolve every "reg" tuple on the pmgr node itself up front -- small
+  // and bounded, and every psreg_idx we might see indexes into this
+  // array. This is the multi-block piece the old hardcoded constants
+  // skipped by pointing at one block's base address directly.
+  //
+  RegTupleCount = 0;
+  for (TupleIndex = 0; TupleIndex < NTASI_PMGR_MAX_REG_TUPLES; TupleIndex++) {
+    UINT64  TupleBase;
+    UINT64  TupleSize;
+
+    if (dt_node_reg (PmgrNode, TupleIndex, &TupleBase, &TupleSize) != 0) {
+      break;
+    }
+
+    RegTupleBases[TupleIndex] = TupleBase;
+    RegTupleCount++;
+  }
+
+  if (RegTupleCount == 0) {
+    DEBUG ((DEBUG_ERROR, "AppleANS ACPI: \"/arm-io/pmgr\" has no readable \"reg\" tuples\n"));
+    return EFI_NOT_FOUND;
+  }
+
+  if (NtasiPmgrFindDomainAddress (
+        Devices,
+        (UINT32)(DevicesLength / NTASI_PMGR_DEVICE_SIZE),
+        RegTupleBases,
+        RegTupleCount,
+        PsRegs,
+        (UINT32)(PsRegsLength / sizeof (UINT32)),
+        DomainName,
+        Address
+        ) != NTASI_PMGR_TRUE)
+  {
+    DEBUG ((
+      DEBUG_ERROR,
+      "AppleANS ACPI: could not uniquely resolve PMGR domain \"%a\" from the live ADT\n",
+      DomainName
+      ));
+    return EFI_NOT_FOUND;
+  }
+
+  return EFI_SUCCESS;
 }
 
 /**
@@ -314,10 +415,85 @@ AcpiPlatformInstallAppleAnsTable (
     SartMinimumSize = APPLE_ANS_SART_V2_MIN_SIZE;
   } else if (!Legacy && (SartVersion == 3)) {
     HardwareId = "NTAS2003";
-    PmgrResetBase = FixedPcdGet64 (PcdAppleAnsPmgrResetBase);
-    PmgrApcieStBase = FixedPcdGet64 (PcdAppleAnsPmgrApcieStBase);
-    PmgrApcieStSysBase = FixedPcdGet64 (PcdAppleAnsPmgrApcieStSysBase);
-    PmgrApcieSt1SysBase = FixedPcdGet64 (PcdAppleAnsPmgrApcieSt1SysBase);
+
+    //
+    // Resolve all four PMGR domains live from the ADT, by exact uppercase
+    // name -- never from a hardcoded constant. See
+    // NtasiResolveAnsPmgrDomain() above for why: a hardcoded constant is
+    // exactly what pointed these four words at DCS_09/DCS_10 (DRAM
+    // controller power domains) on 2026-07-30. Any single domain failing
+    // to resolve uniquely withholds NTAS2003 entirely (EFI_NOT_FOUND,
+    // handled by the caller as "no ANS device today") rather than
+    // publishing three good addresses and one wrong or missing one.
+    //
+    if (EFI_ERROR (NtasiResolveAnsPmgrDomain ("ANS2", &PmgrResetBase)) ||
+        EFI_ERROR (NtasiResolveAnsPmgrDomain ("APCIE_ST", &PmgrApcieStBase)) ||
+        EFI_ERROR (NtasiResolveAnsPmgrDomain ("APCIE_ST_SYS", &PmgrApcieStSysBase)) ||
+        EFI_ERROR (NtasiResolveAnsPmgrDomain ("APCIE_ST1_SYS", &PmgrApcieSt1SysBase)))
+    {
+      DEBUG ((
+        DEBUG_ERROR,
+        "AppleANS ACPI: could not resolve all four PMGR domains from the live ADT; NTAS2003 withheld\n"
+        ));
+      return EFI_NOT_FOUND;
+    }
+
+    //
+    // Cross-check against the compiled-in PCDs. These are kept only as a
+    // documented expectation and a build-time record of the last
+    // hardware-confirmed values -- never as a fallback address -- so any
+    // disagreement here means either the DSC constants or this
+    // resolution logic has drifted from the live hardware and must be
+    // investigated before trusting either one.
+    //
+    {
+      UINT64  PcdResetBase       = FixedPcdGet64 (PcdAppleAnsPmgrResetBase);
+      UINT64  PcdApcieStBase     = FixedPcdGet64 (PcdAppleAnsPmgrApcieStBase);
+      UINT64  PcdApcieStSysBase  = FixedPcdGet64 (PcdAppleAnsPmgrApcieStSysBase);
+      UINT64  PcdApcieSt1SysBase = FixedPcdGet64 (PcdAppleAnsPmgrApcieSt1SysBase);
+
+      if (PcdResetBase != PmgrResetBase) {
+        DEBUG ((
+          DEBUG_WARN,
+          "AppleANS ACPI: PcdAppleAnsPmgrResetBase 0x%lx disagrees with ADT-resolved ANS2 0x%lx\n",
+          PcdResetBase,
+          PmgrResetBase
+          ));
+      }
+
+      if (PcdApcieStBase != PmgrApcieStBase) {
+        DEBUG ((
+          DEBUG_WARN,
+          "AppleANS ACPI: PcdAppleAnsPmgrApcieStBase 0x%lx disagrees with ADT-resolved APCIE_ST 0x%lx\n",
+          PcdApcieStBase,
+          PmgrApcieStBase
+          ));
+      }
+
+      if (PcdApcieStSysBase != PmgrApcieStSysBase) {
+        DEBUG ((
+          DEBUG_WARN,
+          "AppleANS ACPI: PcdAppleAnsPmgrApcieStSysBase 0x%lx disagrees with ADT-resolved APCIE_ST_SYS 0x%lx\n",
+          PcdApcieStSysBase,
+          PmgrApcieStSysBase
+          ));
+      }
+
+      if (PcdApcieSt1SysBase != PmgrApcieSt1SysBase) {
+        DEBUG ((
+          DEBUG_WARN,
+          "AppleANS ACPI: PcdAppleAnsPmgrApcieSt1SysBase 0x%lx disagrees with ADT-resolved APCIE_ST1_SYS 0x%lx\n",
+          PcdApcieSt1SysBase,
+          PmgrApcieSt1SysBase
+          ));
+      }
+    }
+
+    //
+    // Defense in depth on top of name-based resolution: the resolved
+    // addresses must still be four aligned, distinct words, exactly as
+    // required before.
+    //
     if ((PmgrResetBase == 0) || (PmgrApcieStBase == 0) ||
         (PmgrApcieStSysBase == 0) || (PmgrApcieSt1SysBase == 0) ||
         ((PmgrResetBase & (APPLE_ANS_PMGR_RESET_SIZE - 1)) != 0) ||
