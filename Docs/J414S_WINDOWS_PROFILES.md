@@ -87,34 +87,96 @@ real boot's PEI phase, processing that boot's actual `boot_args`, ever
 computes a nonzero value. `PcdAppleWirelessDartPageTableLimit` no longer
 exists as a PCD at all.
 
-## KNOWN GAP: `DRT0` is never published, and it is not PEI's fault
+## `DRT0` publication: fixed (was a PEI -> DXE plumbing bug)
 
 `PcdAppleWirelessDartPageTableBase/Size` are `PcdsPatchableInModule`. A
 `PatchableInModule` PCD is a **per-module copy**: `MemoryInitPeiLib`'s
-`PatchPcdSet64/32` writes the copy linked into `PrePi`, and
-`AcpiPlatformDxe`'s `PcdGet64/32` reads its own, never-patched copy, which is
-always the DEC default of zero. So
-`NtasiInstallWirelessDartTable()` takes its "no reservation published by PEI
-this boot" path on **every** boot regardless of what PEI derived, and `DRT0`
-is never installed.
+`PatchPcdSet64/32` wrote the copy linked into `PrePi`, and `AcpiPlatformDxe`'s
+`PcdGet64/32` read their own never-patched copies, which are always the DEC
+default of zero. `NtasiInstallWirelessDartTable()` therefore took its "no
+reservation published by PEI this boot" path on **every** boot regardless of
+what PEI derived and authenticated, and `DRT0` was never installed. The log
+line blamed the wrong phase.
+
+The cross-phase channel is now a GUID HOB
+(`NTASI_WIRELESS_DART_RESERVATION_HOB_GUID`), the same mechanism
+`MemoryInitPeiLib.c` already used for the appended ramdisk. PEI publishes the
+reservation only after it authenticates the ABI v2 descriptor; DXE reads the
+HOB and then **re-authenticates the descriptor itself** before publishing
+`DRT0`. The re-check is not a formality -- it proves the reservation survived
+all of PEI and DXE dispatch byte-intact, and publishing a DART page-table base
+to Windows on the strength of a HOB alone would mean trusting a structure
+nothing re-checked.
+
+The validator (`NtasiValidateWirelessHandoffV2` + its CRC-32) now lives once,
+in `Include/IndustryStandard/J414sWirelessHandoff.h`, and both phases call it.
+`Tests/test_wireless_handoff_validate.py` compiles that header verbatim on the
+host and pins every field, both page-table CRCs, and the caller-supplied
+bounds -- 37 assertions, every one of them fail-closed.
+
+The PCDs are still patched, because `BuildVirtualMemoryMap()` consumes them
+from inside `PrePi` where the patch **is** visible. They are simply no longer
+the cross-phase channel. Failure is still fail-closed at every step: no HOB, a
+malformed HOB, or a descriptor that fails re-authentication all withhold
+`DRT0` loudly, and a zero is never published.
 
 The same trap was confirmed on hardware for `PcdSystemMemoryBase/Size`: every
-GPU-profile boot in the 2026-07-30 capture printed the DSC default window
-`[0x10000000000, 0x10400000000)` rather than this machine's real
-`[0x10001E40000, 0x103DB29C000)`, which made the GPU carveout guard reject all
-three live ADT carveouts. `AcpiPlatform.c` now derives both windows from
-`boot_args` at `PcdBootArgsPointer` instead (see
-`NtasiDeriveBootArgsWindows()`), and logs a `DEBUG_WARN` whenever the PCDs
-disagree so the trap is visible rather than silently misleading.
+GPU-profile boot printed the DSC default window `[0x10000000000,
+0x10400000000)` rather than this machine's real `[0x10001E40000,
+0x103DB29C000)`, which made the GPU carveout guard reject all three live ADT
+carveouts. `AcpiPlatform.c` derives both windows from `boot_args` instead (see
+`NtasiDeriveBootArgsWindows()`) and logs a `DEBUG_WARN` when the PCDs disagree.
 
-The wireless side is **deliberately left unfixed** for now: it fails safe
-(wireless simply does not adopt the handoff), so it costs a feature rather
-than a boot. The fix is a GUID HOB from PEI to DXE --
-`MemoryInitPeiLib.c` already publishes one for the appended ramdisk
-(`NTASI_APPENDED_RAMDISK_LOCATION_HOB_GUID`), so the plumbing exists -- or an
-independent `boot_args`-derived recomputation in `AcpiPlatformDxe`. Do not
-read "DRT0 withheld" in a log as evidence that PEI's derivation failed until
-that is done.
+## `NTAS0023` (GPU) is deliberately NOT published
+
+This is a decision, recorded here and in the artifact manifest
+(`experimental_features.gpu_acpi_ntas0023_publication: false`). It used to be
+an accident, twice over:
+
+* `GPU.asl`'s FFS GUID (`2CC5C83E-…`) was never one of the four
+  `Pcd*AcpiTableStorageFile` GUIDs `AcpiPlatformDxe` reads, so the table was
+  compiled into every `gpu`-profile FV and **never installed**.
+* Its `_CRS` hardcoded `hw_data_a` at `[0x103db294000, 0x103db29c000)` --
+  inside OS RAM, ending exactly at `SystemMemoryTop`, and containing the exact
+  `SP_EL1` (`0x103db29ba10`) that crashed Mu's PEI twice.
+
+`GPU.asl` and `GpuAcpiTables.inf` are deleted, and the manifest now **fails**
+if `GPU.aml` is ever rebuilt, so those addresses cannot ship again. The `gpu`
+profile's FFS count is consequently baseline's, exactly like `wireless`:
+selecting it changes one thing a static build can prove, the
+`NTASI_J414S_GPU_RESOURCE_PROFILE` define, which gates the ADT-derived,
+DRAM-bounded GCD carveout reservations.
+
+`AppleAgxGpu`'s `_CRS` needs eight resources. Resources 2-4
+(`uat_ttbs`/`uat_pagetables`/`uat_handoff`) are real silicon carveouts and are
+resolved live from `/arm-io/sgx`, bounded against real DRAM, and reserved.
+Resources 5-7 (`hw_data_a`/`hw_data_b`/`globals`) have **no source on this boot
+path**: no ADT property carries them, m1n1's `dt_set_gpu()` never runs on the
+chainload/HV path, and computing them from Mu's own window crashed the machine
+twice. Publishing them would either hand the driver addresses inside memory
+Windows owns, or claim pre-computed init data exists when it does not. The
+Windows `AppleAgxGpu` carveout gate correctly refuses either way, so
+publication buys nothing and risks real harm.
+
+**What unblocks it:** `NtasiResolveAndReserveGpuCarveouts()` already probes all
+six regions with one naming convention. The moment `/arm-io/sgx` carries
+`hw-data-a-base/-size`, `hw-data-b-base/-size` and `gpu-globals-base/-size` --
+i.e. m1n1 publishes the preboot handoff its own `_DSD` contract
+(`ntasp,preboot-owner` = `"m1n1"`, `ntasp,preboot-handoff-required` = `One`)
+already promises -- all six resolve, the log says so in one line, and
+generating `NTAS0023` is a mechanical follow-up on the same AmlLib path `ANS0`
+and `DRT0` already use.
+
+**Worth raising with the AGX workstream:** in Asahi these three are not preboot
+carveouts at all. `HwDataA`/`HwDataB`/`Globals` are AGX *initdata* structures
+the GPU driver builds itself at runtime from the ADT's power/perf tables; m1n1
+only forwards those tables and never allocates a region for them. If
+`AppleAgxGpu` built them the same way, resources 5-7 would not need to exist
+and `NTAS0023` could be published today from resources 0-4 alone. That is a
+driver-side ABI question, not one firmware can settle unilaterally, which is
+why nothing here forces it. The deleted `GPU.asl`'s `_DSD` (chip id, perf
+data, PMGR offsets, payload sizes and the three expected CRC32s) is recoverable
+from git history if that ABI is revisited.
 
 ## 2026-07-30: ANS handoff and GPU carveout bounds
 

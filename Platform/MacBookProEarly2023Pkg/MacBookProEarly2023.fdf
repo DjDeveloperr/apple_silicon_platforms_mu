@@ -224,9 +224,15 @@ FvNameGuid         = 02e6c12f-69f7-4626-b5de-e3cfd6c0dc56
   # generates DRT0's SSDT dynamically instead, the same way it already
   # does for NTAS2003's PMGR resources. See NtasiInstallWirelessDartTable()
   # in AcpiPlatform.c.
-!if $(NTASI_J414S_GPU_RESOURCE_PROFILE) == 1
-  INF RuleOverride=ACPITABLE MacBookProEarly2023Pkg/AcpiTables/GpuAcpiTables.inf
-!endif
+  # NTAS0023 (GPU) has NO static ACPI table. GPU.asl/GpuAcpiTables.inf were
+  # deleted on 2026-07-30: their FFS GUID was never one of the four
+  # Pcd*AcpiTableStorageFile GUIDs AcpiPlatformDxe reads, so the table was
+  # compiled into every gpu-profile FV and never installed -- while its _CRS
+  # hardcoded hw_data_a at [0x103db294000, 0x103db29c000), a range inside OS
+  # RAM that contains the exact SP_EL1 (0x103db29ba10) which crashed Mu's PEI
+  # twice. Not publishing NTAS0023 is now a decision, not an accident; see
+  # NtasiResolveAndReserveGpuCarveouts() in AcpiPlatform.c for the exact
+  # condition under which it will be published.
   INF RuleOverride=ACPITABLE MacBookProFamilyPkg/AcpiTables/DeviceFamilyAcpiTables.inf
   INF RuleOverride=ACPITABLE T602XFamilyPkg/AcpiTables/CPUAcpiTables.inf
   #

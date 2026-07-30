@@ -34,17 +34,30 @@ PROFILES = {
         "gpu": False,
         "expected_ffs_count": 88,
     },
+    # CORRECTED 2026-07-30: the gpu profile used to add its own FFS
+    # (GpuAcpiTables.inf compiling a static GPU.asl). That table was NEVER
+    # installed -- its FFS GUID was not one of the four
+    # Pcd*AcpiTableStorageFile GUIDs AcpiPlatformDxe reads -- while its _CRS
+    # hardcoded hw_data_a inside OS RAM, over the exact SP_EL1 that crashed
+    # Mu's PEI twice. Both the file and the INF are deleted. Selecting "gpu"
+    # now changes exactly one thing a static build can prove: the
+    # NTASI_J414S_GPU_RESOURCE_PROFILE compiler define, which gates the
+    # ADT-derived, DRAM-bounded GCD carveout reservations in AcpiPlatformDxe.
+    # Like "wireless", it therefore adds no FFS module and its
+    # expected_ffs_count equals baseline's. See
+    # NtasiReportGpuPublicationDecision() in AcpiPlatform.c for the explicit
+    # decision not to publish NTAS0023 yet and the condition that unblocks it.
     "gpu": {
         "profile_abi": "ntasi.j414s.windows.gpu-resource-probe.v1",
         "ans": False,
         "gpu": True,
-        "expected_ffs_count": 88,
+        "expected_ffs_count": 87,
     },
     "ans-gpu": {
         "profile_abi": "ntasi.j414s.windows.ans-gpu-combined.v1",
         "ans": True,
         "gpu": True,
-        "expected_ffs_count": 89,
+        "expected_ffs_count": 88,
     },
     # CORRECTED 2026-07-30: wireless used to be its own optional FFS
     # (WirelessDartAcpiTables.inf, compiling a static WDRT.asl that baked a
@@ -71,7 +84,7 @@ PROFILES = {
         "ans": True,
         "gpu": True,
         "wireless": True,
-        "expected_ffs_count": 89,
+        "expected_ffs_count": 88,
     },
 }
 for _profile in PROFILES.values():
@@ -98,7 +111,11 @@ REQUIRED_FFS = {
 }
 OPTIONAL_FFS = {
     "ans": "ACDA0196-4589-4E4F-B71D-E9F9C2B2EA3D",
-    "gpu": "2CC5C83E-BCA6-49D9-B435-D14DC31E62AE",
+    # The former GpuAcpiTables FFS (2CC5C83E-...) is gone, deleted with
+    # GPU.asl on 2026-07-30. It is listed as FORBIDDEN rather than dropped so
+    # that a build which somehow resurrects it fails the manifest instead of
+    # quietly shipping the hardcoded hw_data_a address again.
+    "gpu_forbidden_legacy": "2CC5C83E-BCA6-49D9-B435-D14DC31E62AE",
     "arm_gic": "DE371F7C-DEC4-4D21-ADF1-593ABCC15882",
 }
 ACPI_CONTAINERS = {
@@ -109,7 +126,6 @@ ACPI_CONTAINERS = {
     "MTP.aml": "3FF4732C-9411-4E10-A10C-8B39DF282E83",
     "SMCG.aml": "3FF4732C-9411-4E10-A10C-8B39DF282E83",
     "CSRT.acpi": "D1430D86-24A4-4C2F-8F22-D24376E2E888",
-    "GPU.aml": OPTIONAL_FFS["gpu"],
 }
 BASE_ACPI = ("DSDT.aml", "MCFG.acpi", "DISP.aml", "KBL.aml", "MTP.aml", "SMCG.aml", "CSRT.acpi")
 NESTED_LOCK = Path("Tools/J414S_NESTED_GITLINK_LOCK.json")
@@ -336,17 +352,15 @@ def acpi_inventory(
         record.update({"container_ffs_guid": container_guid, "occurrences_in_ffs": occurrences})
         tables[name] = record
 
-    gpu_matches = list(build_root.rglob("GPU.aml"))
-    if bool(gpu_matches) != PROFILES[profile]["gpu"] or len(gpu_matches) > 1:
-        raise ManifestError("GPU ACPI output does not match profile")
-    if gpu_matches:
-        record = file_record(gpu_matches[0], output_root)
-        container_guid = ACPI_CONTAINERS["GPU.aml"]
-        occurrences = ffs_by_guid[container_guid].read_bytes().count(gpu_matches[0].read_bytes())
-        if occurrences != 1:
-            raise ManifestError("GPU.aml does not occur exactly once in its final-FV FFS")
-        record.update({"container_ffs_guid": container_guid, "occurrences_in_ffs": occurrences})
-        tables["GPU.aml"] = record
+    # GPU.aml must not exist in ANY profile any more. GPU.asl and
+    # GpuAcpiTables.inf were deleted on 2026-07-30: the table was compiled
+    # into every gpu-profile FV and never installed (its FFS GUID is not one
+    # of the four Pcd*AcpiTableStorageFile GUIDs AcpiPlatformDxe reads), and
+    # its _CRS hardcoded hw_data_a at [0x103db294000, 0x103db29c000) -- inside
+    # OS RAM, containing the exact SP_EL1 that crashed Mu's PEI twice.
+    # Fail the manifest rather than let it come back.
+    if list(build_root.rglob("GPU.aml")):
+        raise ManifestError("GPU.aml was rebuilt; GPU.asl/GpuAcpiTables.inf must stay deleted")
 
     # DRT0 (wireless) is no longer a static compiled table this static
     # inventory can see: NtasiInstallWirelessDartTable() builds and installs
@@ -371,10 +385,10 @@ def acpi_inventory(
         "dsdt_drt0_absent": "Device (DRT0)" not in dsdt,
         "dsdt_ntas0011_absent": "NTAS0011" not in dsdt,
         "disp_ntas0070": "NTAS0070" in disp,
+        # No static GPU table exists in any profile; NTAS0023 is deliberately
+        # not published (see NtasiReportGpuPublicationDecision()).
         "gpu_ntas0023": False,
     }
-    if gpu_matches:
-        assertions["gpu_ntas0023"] = "NTAS0023" in decompile_aml(gpu_matches[0])
 
     mcfg = find_unique(build_root, "MCFG.acpi").read_bytes()
     if len(mcfg) != 60 or mcfg[:4] != b"MCFG":
@@ -423,7 +437,13 @@ def profile_policy(profile: str) -> dict[str, Any]:
         "experimental_features": {
             "ans_publication": selected["ans"],
             "ans_block_io": False,
-            "gpu_resource_publication": selected["gpu"],
+            # The gpu profile reserves the ADT-derived, DRAM-bounded GPU
+            # carveouts in the GCD. It does NOT publish an ACPI device: see
+            # NtasiReportGpuPublicationDecision() in AcpiPlatform.c. Recorded
+            # as two separate facts so the artifact manifest states the
+            # decision instead of leaving it to be inferred.
+            "gpu_carveout_reservation": selected["gpu"],
+            "gpu_acpi_ntas0023_publication": False,
             "wireless_dart_handoff": selected["wireless"],
             "drt0_publication": selected["wireless"],
             "wifi_profile_available": selected["wireless"],
@@ -577,7 +597,7 @@ def generate_manifest(args: argparse.Namespace) -> dict[str, Any]:
         raise ManifestError(f"required baseline FFS missing: {sorted(missing)}")
     expected_optional = {
         OPTIONAL_FFS["ans"]: PROFILES[profile]["ans"],
-        OPTIONAL_FFS["gpu"]: PROFILES[profile]["gpu"],
+        OPTIONAL_FFS["gpu_forbidden_legacy"]: False,
         OPTIONAL_FFS["arm_gic"]: False,
     }
     for guid, expected in expected_optional.items():
@@ -742,7 +762,7 @@ def verify_manifest(manifest_path: Path, source_root: Path | None = None) -> dic
         raise ManifestError("required baseline FFS is absent")
     optional_expect = {
         OPTIONAL_FFS["ans"]: PROFILES[profile]["ans"],
-        OPTIONAL_FFS["gpu"]: PROFILES[profile]["gpu"],
+        OPTIONAL_FFS["gpu_forbidden_legacy"]: False,
         OPTIONAL_FFS["arm_gic"]: False,
     }
     if any((guid in guids) != expected for guid, expected in optional_expect.items()):
@@ -751,7 +771,7 @@ def verify_manifest(manifest_path: Path, source_root: Path | None = None) -> dic
         raise ManifestError("profile FFS count mismatch")
 
     acpi = manifest["acpi"]
-    expected_tables = set(BASE_ACPI) | ({"GPU.aml"} if PROFILES[profile]["gpu"] else set())
+    expected_tables = set(BASE_ACPI)
     if set(acpi.get("tables", {})) != expected_tables:
         raise ManifestError("ACPI table inventory does not match profile")
     for name, record in acpi["tables"].items():
@@ -773,7 +793,7 @@ def verify_manifest(manifest_path: Path, source_root: Path | None = None) -> dic
         "dsdt_drt0_absent": True,
         "dsdt_ntas0011_absent": True,
         "disp_ntas0070": True,
-        "gpu_ntas0023": PROFILES[profile]["gpu"],
+        "gpu_ntas0023": False,
     }
     if acpi["assertions"] != expected_assertions:
         raise ManifestError("ACPI semantic assertions mismatch")

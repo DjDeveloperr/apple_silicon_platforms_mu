@@ -31,12 +31,9 @@ def valid_shape(profile: str = "baseline") -> dict[str, object]:
         name: {**record(f"Build/{name}"), "container_ffs_guid": M.ACPI_CONTAINERS[name], "occurrences_in_ffs": 1}
         for name in M.BASE_ACPI
     }
-    if M.PROFILES[profile]["gpu"]:
-        tables["GPU.aml"] = {
-            **record("Build/GPU.aml"),
-            "container_ffs_guid": M.ACPI_CONTAINERS["GPU.aml"],
-            "occurrences_in_ffs": 1,
-        }
+    # No GPU.aml in any profile: GPU.asl/GpuAcpiTables.inf were deleted on
+    # 2026-07-30 (compiled into every gpu FV, never installed, and its _CRS
+    # hardcoded hw_data_a over Mu's own PEI stack).
     return {
         "schema": M.SCHEMA,
         "artifact_status": "READY_FOR_SUPERVISED_HARDWARE_TEST",

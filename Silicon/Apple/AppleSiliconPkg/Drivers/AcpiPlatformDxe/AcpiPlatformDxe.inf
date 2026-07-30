@@ -46,6 +46,10 @@
   # power-state words for the ANS domains.
   IoLib
   PrintLib
+  # PEI -> DXE wireless DART reservation handoff
+  # (NTASI_WIRELESS_DART_RESERVATION_HOB_GUID); the PatchableInModule PCDs
+  # this replaced never crossed the phase boundary.
+  HobLib
 
 [Protocols]
   gEfiAcpiTableProtocolGuid                     ## CONSUMES

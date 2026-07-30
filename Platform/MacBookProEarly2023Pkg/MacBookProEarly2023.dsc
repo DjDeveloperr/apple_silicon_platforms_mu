@@ -76,9 +76,6 @@
 [Components.common]
 
   MacBookProEarly2023Pkg/AcpiTables/DeviceAcpiTables.inf
-!if $(NTASI_J414S_GPU_RESOURCE_PROFILE) == 1
-  MacBookProEarly2023Pkg/AcpiTables/GpuAcpiTables.inf
-!endif
 
 !include MacBookProFamilyPkg/MacBookProFamilyPkg.dsc.inc
 !include T602XFamilyPkg/T602XFamilyPkg.dsc.inc

@@ -44,84 +44,6 @@ STATIC BOOLEAN  mAppendedRamdiskCorrupt;
 STATIC UINT64   mAppendedRamdiskReservationSize;
 
 #if NTASI_ENABLE_WIRELESS_DART_HANDOFF
-STATIC
-UINT32
-NtasiWirelessCrc32 (
-  IN CONST VOID  *Data,
-  IN UINT32      Length
-  )
-{
-  CONST UINT8  *Bytes;
-  UINT32       Crc;
-  UINT32       Index;
-  UINT32       Bit;
-
-  Bytes = Data;
-  Crc   = MAX_UINT32;
-  for (Index = 0; Index < Length; Index++) {
-    Crc ^= Bytes[Index];
-    for (Bit = 0; Bit < 8; Bit++) {
-      Crc = (Crc >> 1) ^ (0xedb88320U & (0U - (Crc & 1U)));
-    }
-  }
-
-  return ~Crc;
-}
-
-STATIC
-BOOLEAN
-NtasiValidateWirelessHandoffV2 (
-  IN EFI_PHYSICAL_ADDRESS  Base,
-  IN UINT32                Size,
-  IN EFI_PHYSICAL_ADDRESS  GuestMemoryTop
-  )
-{
-  CONST NTASI_WIRELESS_HANDOFF_DESCRIPTOR_V2  *Descriptor;
-  NTASI_WIRELESS_HANDOFF_DESCRIPTOR_V2        Copy;
-  UINT32                                       DescriptorCrc;
-
-  if ((Size != NTASI_WIRELESS_HANDOFF_V2_RESERVATION_SIZE) ||
-      ((Base & (NTASI_WIRELESS_HANDOFF_V2_PAGE_SIZE - 1)) != 0) ||
-      (Base > MAX_UINT64 - Size))
-  {
-    return FALSE;
-  }
-
-  Descriptor = (CONST VOID *)(UINTN)(Base + NTASI_WIRELESS_HANDOFF_V2_DESCRIPTOR_OFFSET);
-  if ((Descriptor->Signature != NTASI_WIRELESS_HANDOFF_V2_SIGNATURE) ||
-      (Descriptor->Version != NTASI_WIRELESS_HANDOFF_V2_VERSION) ||
-      (Descriptor->StructureSize != sizeof (*Descriptor)) ||
-      (Descriptor->Flags != NTASI_WIRELESS_HANDOFF_V2_FLAG_INSTALLED) ||
-      (Descriptor->Sid != NTASI_WIRELESS_HANDOFF_V2_SID) ||
-      (Descriptor->PageShift != NTASI_WIRELESS_HANDOFF_V2_PAGE_SHIFT) ||
-      (Descriptor->Reserved != 0) ||
-      (Descriptor->ReservationBase != Base) ||
-      (Descriptor->ReservationSize != Size) ||
-      (Descriptor->GuestMemoryTop != GuestMemoryTop) ||
-      (Descriptor->PhysicalMemoryTop < Base + Size) ||
-      (Descriptor->DartBase != NTASI_WIRELESS_HANDOFF_V2_DART_BASE) ||
-      (Descriptor->L1Physical != Base + NTASI_WIRELESS_HANDOFF_V2_L1_OFFSET) ||
-      (Descriptor->MsiL2Physical != Base + NTASI_WIRELESS_HANDOFF_V2_MSI_L2_OFFSET) ||
-      (Descriptor->DescriptorPhysical != Base + NTASI_WIRELESS_HANDOFF_V2_DESCRIPTOR_OFFSET))
-  {
-    return FALSE;
-  }
-
-  Copy          = *Descriptor;
-  DescriptorCrc = Copy.DescriptorCrc32;
-  Copy.DescriptorCrc32 = 0;
-  return (DescriptorCrc != 0) &&
-         (NtasiWirelessCrc32 (&Copy, sizeof (Copy)) == DescriptorCrc) &&
-         (NtasiWirelessCrc32 (
-            (CONST VOID *)(UINTN)(Base + NTASI_WIRELESS_HANDOFF_V2_L1_OFFSET),
-            NTASI_WIRELESS_HANDOFF_V2_PAGE_SIZE
-            ) == Descriptor->L1Crc32) &&
-         (NtasiWirelessCrc32 (
-            (CONST VOID *)(UINTN)(Base + NTASI_WIRELESS_HANDOFF_V2_MSI_L2_OFFSET),
-            NTASI_WIRELESS_HANDOFF_V2_PAGE_SIZE
-            ) == Descriptor->MsiL2Crc32);
-}
-
 //
 // Derive the wireless SID-1 reservation live at boot, the way SystemMemoryTop
 // itself is already derived -- never from a hand-picked constant. Baking a
@@ -260,6 +182,11 @@ NtasiDeriveWirelessReservation (
 
 STATIC CONST EFI_GUID  mNtasiAppendedRamdiskLocationHobGuid =
   NTASI_APPENDED_RAMDISK_LOCATION_HOB_GUID;
+
+#if NTASI_ENABLE_WIRELESS_DART_HANDOFF
+STATIC CONST EFI_GUID  mNtasiWirelessDartReservationHobGuid =
+  NTASI_WIRELESS_DART_RESERVATION_HOB_GUID;
+#endif
 
 VOID BuildMemoryTypeInformationHob(VOID);
 
@@ -666,6 +593,8 @@ EFI_STATUS EFIAPI MemoryPeim(IN EFI_PHYSICAL_ADDRESS UefiMemoryBase, IN UINT64 U
         PatchPcdSet64 (PcdAppleWirelessDartPageTableBase, 0);
         PatchPcdSet32 (PcdAppleWirelessDartPageTableSize, 0);
       } else {
+        NTASI_WIRELESS_DART_RESERVATION_HOB  Reservation;
+
         // top_of_memory_alloc() removes this reservation from boot_args before
         // Mu. Publish it as cacheable RAM, then reserve its allocation so DXE
         // and Windows can validate it but can never reuse it.
@@ -681,6 +610,51 @@ EFI_STATUS EFIAPI MemoryPeim(IN EFI_PHYSICAL_ADDRESS UefiMemoryBase, IN UINT64 U
           EfiReservedMemoryType
           );
         DEBUG ((DEBUG_INFO, "MemoryInitPeiLib: wireless: authenticated and reserved ABI v2 at 0x%lx (0x%x bytes)\n", WirelessDartBase, WirelessDartSize));
+
+        //
+        // Hand the authenticated reservation to DXE through a GUID HOB, NOT
+        // through PcdAppleWirelessDartPageTableBase/Size.
+        //
+        // Those PCDs are [PcdsPatchableInModule]: the PatchPcdSet64/32 above
+        // writes the copy linked into PrePi, so AcpiPlatformDxe's PcdGet64/32
+        // reads its own never-patched copy and always saw zero. DRT0 was
+        // therefore withheld on EVERY boot regardless of what this code
+        // derived and authenticated -- with a log line claiming PEI had
+        // published nothing, which was the opposite of the truth. The PCDs
+        // are still patched because BuildVirtualMemoryMap() consumes them
+        // from inside this same module, where the patch is visible; they are
+        // simply no longer the cross-phase channel.
+        //
+        // Same mechanism (and same fix pattern) as
+        // NTASI_APPENDED_RAMDISK_LOCATION_HOB_GUID above.
+        //
+        Reservation.Signature       = NTASI_WIRELESS_DART_RESERVATION_HOB_SIGNATURE;
+        Reservation.Version         = NTASI_WIRELESS_DART_RESERVATION_HOB_VERSION;
+        Reservation.StructureSize   = sizeof (Reservation);
+        Reservation.ReservationBase = WirelessDartBase;
+        Reservation.ReservationSize = WirelessDartSize;
+        Reservation.GuestMemoryTop  = SystemMemoryTop;
+        if (BuildGuidDataHob (
+              &mNtasiWirelessDartReservationHobGuid,
+              &Reservation,
+              sizeof (Reservation)
+              ) == NULL)
+        {
+          // Non-fatal, consistent with every other wireless failure path:
+          // DXE will find no HOB and withhold DRT0.
+          DEBUG ((
+            DEBUG_ERROR,
+            "MemoryInitPeiLib: wireless: could not publish the reservation HOB; DRT0 will be withheld in DXE\n"
+            ));
+        } else {
+          DEBUG ((
+            DEBUG_INFO,
+            "MemoryInitPeiLib: wireless: published reservation HOB 0x%lx/+0x%x (guest_top 0x%lx) for AcpiPlatformDxe\n",
+            WirelessDartBase,
+            WirelessDartSize,
+            SystemMemoryTop
+            ));
+        }
       }
     }
   }

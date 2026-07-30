@@ -28,10 +28,12 @@
 #include <Library/UefiBootServicesTableLib.h>
 #include <Library/DxeServicesTableLib.h>
 #include <Library/DebugLib.h>
+#include <Library/HobLib.h>
 #include <Library/PcdLib.h>
 #include <Library/PrintLib.h>
 
 #include <IndustryStandard/Acpi.h>
+#include <IndustryStandard/J414sWirelessHandoff.h>
 #include <Drivers/AppleAnsHardware.h>
 //
 // Moved out of this directory on 2026-07-30 so AppleNANDStorageDxe can share
@@ -46,6 +48,11 @@
 #define APPLE_ANS_PMGR_RESET_SIZE     sizeof (UINT32)
 
 STATIC CONST CHAR8  mAppleAnsAcpiTag[] = "AppleANS ACPI";
+
+#if NTASI_ENABLE_WIRELESS_DART_HANDOFF
+STATIC CONST EFI_GUID  mNtasiWirelessDartReservationHobGuid =
+  NTASI_WIRELESS_DART_RESERVATION_HOB_GUID;
+#endif
 
 STATIC
 BOOLEAN
@@ -414,7 +421,7 @@ NtasiGpuDtNodeU64 (
 // correctness, and a failure here is logged and never fatal.
 //
 STATIC
-VOID
+BOOLEAN
 NtasiReserveGpuAdtCarveout (
   IN dt_node_t             *SgxNode,
   IN CONST CHAR8           *AdtPropertyPrefix,
@@ -436,20 +443,20 @@ NtasiReserveGpuAdtCarveout (
   AsciiSPrint (PropName, sizeof (PropName), "%a-base", AdtPropertyPrefix);
   if (!NtasiGpuDtNodeU64 (SgxNode, PropName, &Base)) {
     DEBUG ((DEBUG_ERROR, "AppleAgxGpu: %a: missing ADT property \"%a\" on /arm-io/sgx; GPU degraded\n", Label, PropName));
-    return;
+    return FALSE;
   }
 
   AsciiSPrint (PropName, sizeof (PropName), "%a-size", AdtPropertyPrefix);
   if (!NtasiGpuDtNodeU64 (SgxNode, PropName, &Size)) {
     DEBUG ((DEBUG_ERROR, "AppleAgxGpu: %a: missing ADT property \"%a\" on /arm-io/sgx; GPU degraded\n", Label, PropName));
-    return;
+    return FALSE;
   }
 
   DEBUG ((DEBUG_INFO, "AppleAgxGpu: %a: ADT reports 0x%lx/+0x%lx\n", Label, Base, Size));
 
   if ((Size == 0) || (Base > MAX_UINT64 - (Size - 1))) {
     DEBUG ((DEBUG_ERROR, "AppleAgxGpu: %a: implausible ADT region 0x%lx/+0x%lx; GPU degraded\n", Label, Base, Size));
-    return;
+    return FALSE;
   }
 
   DEBUG ((DEBUG_INFO, "AppleAgxGpu: stage \"safety-check-%a\"\n", Label));
@@ -464,7 +471,7 @@ NtasiReserveGpuAdtCarveout (
          CurrentStackPointer
          ))
   {
-    return;
+    return FALSE;
   }
 
   DEBUG ((DEBUG_INFO, "AppleAgxGpu: stage \"gcd-reserve-%a\"\n", Label));
@@ -478,36 +485,99 @@ NtasiReserveGpuAdtCarveout (
       Size,
       Status
       ));
-    return;
+    return FALSE;
   }
 
   DEBUG ((DEBUG_INFO, "AppleAgxGpu: %a: reserved 0x%lx/+0x%lx (out-of-window carveout, GCD)\n", Label, Base, Size));
+  return TRUE;
 }
 
 //
-// hw_data_a / hw_data_b / globals have no known live source (no ADT
-// property, and m1n1's dt_set_gpu() -- the only code that computes them --
-// is never called on this project's chainload/HV boot path). See the
-// 2026-07-30 incident history in NtasiGpuReservationGuard.h: a prior
-// attempt to derive them from Mu's own memory window crashed the machine
-// twice. Until m1n1 publishes them somewhere Mu can read them, or a
-// fresh hardware-captured constant is authenticated the way
-// NtasiValidateWirelessHandoffV2() authenticates the wireless DART
-// handoff (see MemoryInitPeiLib.c), Mu does not reserve them at all.
-// AppleAgxGpu will not find valid pre-computed firmware init data there
-// and will not initialize -- degraded GPU, never a boot risk.
+// THE NTAS0023 PUBLICATION DECISION, MADE EXPLICIT (2026-07-30).
+//
+// AppleAgxGpu's _CRS contract is eight resources in a fixed order:
+//   0 ASC, 1 SGX, 2 uat_ttbs, 3 uat_pagetables, 4 uat_handoff,
+//   5 hw_data_a, 6 hw_data_b, 7 globals.
+//
+// Resources 2-4 are real silicon carveouts and ARE derivable: they come from
+// "/arm-io/sgx"'s gpu-region / gfx-shared-region / gfx-handoff "-base"/"-size"
+// properties, exactly the ones m1n1's kboot_gpu.c reads for Linux. This
+// function resolves them live, bounds them against the machine's real DRAM
+// window, and reserves them in the GCD.
+//
+// Resources 5-7 have NO live source on this boot path:
+//   * /arm-io/sgx carries no matching property (a live probe found only
+//     gpu-region, gfx-shared-region, gfx-handoff, ttbat-phys-addr-base and
+//     rtkit-private-vm-region-base/size).
+//   * m1n1's dt_set_gpu() -- the only code that computes anything comparable
+//     -- is never called on this project's chainload/HV path.
+//   * A prior attempt to compute them from Mu's own memory window crashed the
+//     machine twice (see NtasiGpuReservationGuard.h).
+//
+// Until 2026-07-30 the tree "handled" this by shipping a static GPU.asl whose
+// _CRS hardcoded hw_data_a at [0x103db294000, 0x103db29c000) -- inside OS RAM,
+// ending exactly at SystemMemoryTop, and containing the exact SP_EL1
+// (0x103db29ba10) that crashed PEI. That table was ALSO never installed: its
+// FFS GUID was not one of the four Pcd*AcpiTableStorageFile GUIDs
+// AcpiPlatformDxe reads, so it was compiled into every gpu-profile FV and
+// silently ignored. Both facts were accidents.
+//
+// They are now decisions. GPU.asl and GpuAcpiTables.inf are deleted, so no
+// build can ship those addresses again, and this firmware DELIBERATELY DOES
+// NOT PUBLISH NTAS0023 while resources 5-7 cannot be sourced truthfully.
+// Publishing them would either hand AppleAgxGpu addresses inside memory
+// Windows owns, or -- if firmware allocated empty regions instead -- claim
+// pre-computed init data exists when it does not; the driver's carveout gate
+// would correctly refuse either way, so publication buys nothing and risks
+// real harm.
+//
+// WHAT UNBLOCKS IT. This function already probes all six regions using one
+// naming convention. The moment "/arm-io/sgx" carries hw-data-a-base/-size,
+// hw-data-b-base/-size and gpu-globals-base/-size -- i.e. m1n1 publishes the
+// preboot handoff its own _DSD contract ("ntasp,preboot-owner" = "m1n1",
+// "ntasp,preboot-handoff-required" = One) already promises -- all six resolve,
+// this function says so in one log line, and generating NTAS0023 becomes a
+// mechanical follow-up using the same AmlLib path ANS0 and DRT0 already use.
+//
+// WORTH RAISING WITH THE AGX WORKSTREAM: in Asahi these three are not preboot
+// carveouts at all. HwDataA/HwDataB/Globals are AGX *initdata* structures the
+// GPU driver builds itself at runtime from the ADT's power/perf tables; m1n1
+// only forwards those tables (as DT properties), it never allocates a region
+// for them. If AppleAgxGpu built them the same way, resources 5-7 would not
+// need to exist and NTAS0023 could be published today from resources 0-4
+// alone. That is a driver-side ABI question, not something firmware can
+// decide unilaterally, which is why nothing here has been changed to force it.
 //
 STATIC
 VOID
-NtasiLogGpuHandoffDataGap (
-  VOID
+NtasiReportGpuPublicationDecision (
+  IN UINTN  ResolvedRegions,
+  IN UINTN  TotalRegions
   )
 {
+  if (ResolvedRegions == TotalRegions) {
+    DEBUG ((
+      DEBUG_WARN,
+      "AppleAgxGpu: all %Lu preboot regions now resolve from the live ADT -- the "
+      "condition for publishing NTAS0023 is met. Firmware still does not publish it: "
+      "generating the SSDT is a deliberate follow-up (see the comment above "
+      "NtasiReportGpuPublicationDecision() in AcpiPlatform.c).\n",
+      (UINT64)TotalRegions
+      ));
+    return;
+  }
+
   DEBUG ((
     DEBUG_ERROR,
-    "AppleAgxGpu: hw_data_a/hw_data_b/globals have no known live source; not reserved. "
-    "GPU firmware init data will not be pre-populated; GPU degraded, boot continues. "
-    "See NtasiLogGpuHandoffDataGap() history in AcpiPlatform.c.\n"
+    "AppleAgxGpu: NTAS0023 NOT PUBLISHED -- deliberate. %Lu of %Lu preboot regions "
+    "resolved from the live ADT; hw_data_a/hw_data_b/globals have no source on this "
+    "boot path, so the AppleAgxGpu _CRS cannot be built truthfully. This is a decision, "
+    "not an omission: GPU.asl (which hardcoded hw_data_a inside OS RAM, over Mu's own "
+    "PEI stack) was deleted, and no static GPU table is shipped. Publish becomes "
+    "possible when /arm-io/sgx carries hw-data-a-base/-size, hw-data-b-base/-size and "
+    "gpu-globals-base/-size. GPU unavailable; boot unaffected.\n",
+    (UINT64)ResolvedRegions,
+    (UINT64)TotalRegions
     ));
 }
 
@@ -527,6 +597,11 @@ NtasiResolveAndReserveGpuCarveouts (
   UINT64     SystemMemoryTop;
   UINT64     DramWindowBase;
   UINT64     DramWindowTop;
+  UINTN      Resolved;
+  UINTN      Total;
+
+  Resolved = 0;
+  Total    = 6;
 
   DEBUG ((DEBUG_INFO, "AppleAgxGpu: bring-up starting\n"));
 
@@ -542,7 +617,7 @@ NtasiResolveAndReserveGpuCarveouts (
   {
     // Already logged in detail. Without provable windows there is no way to
     // tell a real carveout from a stale constant, so reserve nothing.
-    NtasiLogGpuHandoffDataGap ();
+    NtasiReportGpuPublicationDecision (0, Total);
     DEBUG ((DEBUG_INFO, "AppleAgxGpu: bring-up finished\n"));
     return;
   }
@@ -581,12 +656,46 @@ NtasiResolveAndReserveGpuCarveouts (
   if (SgxNode == NULL) {
     DEBUG ((DEBUG_ERROR, "AppleAgxGpu: \"/arm-io/sgx\" ADT node not found; all GPU preboot reservations skipped, GPU degraded\n"));
   } else {
-    NtasiReserveGpuAdtCarveout (SgxNode, "gpu-region", "uat_ttbs", SystemMemoryBase, SystemMemoryTop, DramWindowBase, DramWindowTop, CurrentSp);
-    NtasiReserveGpuAdtCarveout (SgxNode, "gfx-shared-region", "uat_pagetables", SystemMemoryBase, SystemMemoryTop, DramWindowBase, DramWindowTop, CurrentSp);
-    NtasiReserveGpuAdtCarveout (SgxNode, "gfx-handoff", "uat_handoff", SystemMemoryBase, SystemMemoryTop, DramWindowBase, DramWindowTop, CurrentSp);
+    //
+    // All six AppleAgxGpu preboot regions, probed with ONE naming convention.
+    // The first three exist today. The last three are what m1n1 must publish
+    // before NTAS0023 can be built truthfully -- probing for them now means
+    // the day they appear, this log line says so and nothing here has to
+    // change to notice.
+    //
+    STATIC CONST struct {
+      CONST CHAR8    *Prefix;
+      CONST CHAR8    *Label;
+    } Regions[] = {
+      { "gpu-region",        "uat_ttbs"       },
+      { "gfx-shared-region", "uat_pagetables" },
+      { "gfx-handoff",       "uat_handoff"    },
+      { "hw-data-a",         "hw_data_a"      },
+      { "hw-data-b",         "hw_data_b"      },
+      { "gpu-globals",       "globals"        },
+    };
+    UINTN  Index;
+
+    for (Index = 0; Index < ARRAY_SIZE (Regions); Index++) {
+      if (NtasiReserveGpuAdtCarveout (
+            SgxNode,
+            Regions[Index].Prefix,
+            Regions[Index].Label,
+            SystemMemoryBase,
+            SystemMemoryTop,
+            DramWindowBase,
+            DramWindowTop,
+            CurrentSp
+            ))
+      {
+        Resolved++;
+      }
+    }
+
+    Total = ARRAY_SIZE (Regions);
   }
 
-  NtasiLogGpuHandoffDataGap ();
+  NtasiReportGpuPublicationDecision (Resolved, Total);
   DEBUG ((DEBUG_INFO, "AppleAgxGpu: bring-up finished\n"));
 }
 #endif // NTASI_J414S_GPU_RESOURCE_PROFILE
@@ -641,43 +750,102 @@ NtasiInstallWirelessDartTable (
   RootNode = NULL;
   Table    = NULL;
 
-  DEBUG ((DEBUG_INFO, "WirelessDART ACPI: stage \"read-reservation-pcds\"\n"));
-  ReservationBase = PcdGet64 (PcdAppleWirelessDartPageTableBase);
-  ReservationSize = PcdGet32 (PcdAppleWirelessDartPageTableSize);
-  if ((ReservationBase == 0) || (ReservationSize == 0)) {
-    //
-    // KNOWN GAP, identified 2026-07-30 and NOT yet fixed -- do not read this
-    // "withheld" line as proof that PEI's derivation failed.
-    //
-    // PcdAppleWirelessDartPageTableBase/Size are declared in
-    // [PcdsPatchableInModule] (AppleSiliconPkg.dec). A PatchableInModule PCD
-    // is a PER-MODULE copy: MemoryInitPeiLib's PatchPcdSet64/32 writes the
-    // copy linked into PrePi, and this driver's PcdGet64/32 reads its own
-    // never-patched copy, which is always the DEC default of zero. So this
-    // path is taken on EVERY boot regardless of what PEI derived, and DRT0 is
-    // never published.
-    //
-    // The same trap was confirmed on hardware for PcdSystemMemoryBase/Size,
-    // which read the DSC defaults here (see NtasiDeriveBootArgsWindows()
-    // above, which is why the GPU carveout guard no longer uses them). The
-    // correct fix is a GUID HOB from PEI -- MemoryInitPeiLib.c already
-    // publishes one for the appended ramdisk
-    // (NTASI_APPENDED_RAMDISK_LOCATION_HOB_GUID), so the plumbing exists --
-    // or an independent boot_args-derived recomputation here. Deliberately
-    // left alone tonight rather than changed untested alongside the ANS and
-    // GPU fixes: this failure mode is fail-safe (no DRT0, wireless simply
-    // does not adopt the handoff), so it costs a feature, not a boot.
-    //
+  //
+  // FIXED 2026-07-30. This used to read
+  // PcdAppleWirelessDartPageTableBase/Size, which are
+  // [PcdsPatchableInModule] -- a PER-MODULE copy. MemoryInitPeiLib's
+  // PatchPcdSet64/32 writes the copy linked into PrePi; this driver's
+  // PcdGet64/32 read their own never-patched copies, which are always the DEC
+  // default of zero. DRT0 was therefore withheld on EVERY boot regardless of
+  // what PEI derived and authenticated, and the log line said "no reservation
+  // published by PEI this boot" -- the exact opposite of the truth. Wireless
+  // could not work, and the evidence pointed at the wrong phase.
+  //
+  // PEI now hands the authenticated reservation over in a GUID HOB, the same
+  // mechanism it already uses for the appended ramdisk. DXE then
+  // re-authenticates the descriptor itself, using the one shared copy of the
+  // validator in <IndustryStandard/J414sWirelessHandoff.h>, against the exact
+  // guest_top PEI used. That is deliberately not a formality: it proves the
+  // reservation survived all of PEI and DXE dispatch byte-intact, and
+  // publishing a DART page-table base to Windows on the strength of a HOB
+  // alone would mean trusting a structure nothing re-checked.
+  //
+  // Fail-closed throughout: no HOB, a malformed HOB, or a descriptor that
+  // fails re-authentication all withhold DRT0 loudly. A zero is never
+  // published.
+  //
+  DEBUG ((DEBUG_INFO, "WirelessDART ACPI: stage \"read-reservation-hob\"\n"));
+  {
+    CONST NTASI_WIRELESS_DART_RESERVATION_HOB  *Reservation;
+    VOID                                       *GuidHob;
+
+    GuidHob = GetFirstGuidHob (&mNtasiWirelessDartReservationHobGuid);
+    if (GuidHob == NULL) {
+      DEBUG ((
+        DEBUG_ERROR,
+        "WirelessDART ACPI: PEI published no reservation HOB this boot; DRT0 withheld. "
+        "PEI logs the reason (derivation declined, or the ABI v2 descriptor at the derived "
+        "address failed authentication) -- look for \"MemoryInitPeiLib: wireless:\".\n"
+        ));
+      return EFI_NOT_FOUND;
+    }
+
+    Reservation = GET_GUID_HOB_DATA (GuidHob);
+    if ((GET_GUID_HOB_DATA_SIZE (GuidHob) < sizeof (*Reservation)) ||
+        (Reservation->Signature != NTASI_WIRELESS_DART_RESERVATION_HOB_SIGNATURE) ||
+        (Reservation->Version != NTASI_WIRELESS_DART_RESERVATION_HOB_VERSION) ||
+        (Reservation->StructureSize != sizeof (*Reservation)))
+    {
+      DEBUG ((
+        DEBUG_ERROR,
+        "WirelessDART ACPI: reservation HOB is malformed (size=%u sig=0x%x ver=%u struct=%u); DRT0 withheld\n",
+        (UINT32)GET_GUID_HOB_DATA_SIZE (GuidHob),
+        Reservation->Signature,
+        (UINT32)Reservation->Version,
+        (UINT32)Reservation->StructureSize
+        ));
+      return EFI_NOT_FOUND;
+    }
+
+    if ((Reservation->ReservationBase == 0) ||
+        (Reservation->ReservationSize == 0) ||
+        (Reservation->ReservationSize > MAX_UINT32))
+    {
+      DEBUG ((
+        DEBUG_ERROR,
+        "WirelessDART ACPI: reservation HOB carries an unusable 0x%lx/+0x%lx; DRT0 withheld\n",
+        Reservation->ReservationBase,
+        Reservation->ReservationSize
+        ));
+      return EFI_NOT_FOUND;
+    }
+
+    DEBUG ((DEBUG_INFO, "WirelessDART ACPI: stage \"reauthenticate-descriptor\"\n"));
+    if (!NtasiValidateWirelessHandoffV2 (
+           Reservation->ReservationBase,
+           (UINT32)Reservation->ReservationSize,
+           Reservation->GuestMemoryTop
+           ))
+    {
+      DEBUG ((
+        DEBUG_ERROR,
+        "WirelessDART ACPI: ABI v2 descriptor at 0x%lx/+0x%lx no longer authenticates in DXE "
+        "(PEI accepted it, so something modified the reservation after PEI reserved it); DRT0 withheld\n",
+        Reservation->ReservationBase,
+        Reservation->ReservationSize
+        ));
+      return EFI_NOT_FOUND;
+    }
+
+    ReservationBase = Reservation->ReservationBase;
+    ReservationSize = (UINT32)Reservation->ReservationSize;
     DEBUG ((
-      DEBUG_ERROR,
-      "WirelessDART ACPI: reservation PCDs read 0x%lx/+0x%x in this module; DRT0 withheld. "
-      "NOTE: these are PatchableInModule, so PEI's PatchPcdSet never reaches this driver -- "
-      "this is a known firmware gap, not evidence that PEI's derivation failed. "
-      "See the comment at this DEBUG in AcpiPlatform.c.\n",
+      DEBUG_INFO,
+      "WirelessDART ACPI: reservation 0x%lx/+0x%x re-authenticated in DXE (guest_top 0x%lx)\n",
       ReservationBase,
-      ReservationSize
+      ReservationSize,
+      Reservation->GuestMemoryTop
       ));
-    return EFI_NOT_FOUND;
   }
 
   DEBUG ((DEBUG_INFO, "WirelessDART ACPI: stage \"build-ssdt\" reservation=0x%lx/+0x%x\n", ReservationBase, ReservationSize));
