@@ -1207,9 +1207,64 @@ AnsExitBootServices (
   }
 
 #if !defined (APPLE_ANS_QEMU_TEST)
+  //
+  // The step Mu was missing, and m1n1 never omits. nvme_shutdown() (m1n1
+  // src/nvme.c) ends with:
+  //
+  //     rtkit_sleep(nvme_rtkit);
+  //     pmgr_reset(nvme_die, "ANS");
+  //     pmgr_reset(nvme_die, "ANS2");
+  //
+  // Clearing the ASC run bit (all rtkit_sleep does) halts the coprocessor's
+  // CPU. It does NOT quiesce the block's AXI/fabric interface. pmgr_reset is
+  // what does that: DEV_DISABLE detaches the device from the fabric and RESET
+  // returns its master port to a known state, so nothing that was in flight
+  // when the CPU stopped can remain dangling.
+  //
+  // On 2026-07-30 a BUGCODE_USB3_DRIVER 0x144 reproduced on the `ans` profile
+  // with the Windows ANS driver DISABLED (Start=4) -- so the cause had to be
+  // hardware state Mu left behind -- while `gpu` on the same commit and cable
+  // booted. XHC1 was halted on USBSTS.HSE with DWC3 buserr_valid=1, and the
+  // failure was load-dependent, appearing only once real USB I/O started.
+  // "Halted but never reset" is the one difference from m1n1 that fits: a
+  // dangling fabric transaction is exactly the kind of fault that surfaces on
+  // another master under contention rather than immediately.
+  //
+  // Only reached when bring-up actually ran, and only after the coprocessor is
+  // confirmed halted -- resetting a running block would be worse than not
+  // resetting at all.
+  //
+  if (Stopped) {
+    EFI_STATUS  ResetStatus;
+
+    ResetStatus = AppleAnsPmgrResetDomain (
+                    "AppleANS",
+                    "ANS2",
+                    FixedPcdGet64 (PcdAppleAnsPmgrResetBase)
+                    );
+    if (EFI_ERROR (ResetStatus)) {
+      ANS_DEBUG ((
+        DEBUG_ERROR,
+        "AppleANS: ANS2 PMGR reset did not run (%r); the block is halted but its fabric "
+        "interface was not quiesced -- this is the state that correlated with the USB3 0x144\n",
+        ResetStatus
+        ));
+    }
+
+    ReportAnsPmgrDomains ();
+  }
+
   // The exact SART state Windows inherits. Read-only, so it is safe here even
   // though allocation is not.
   DumpSartState (Device, "handed-to-os");
+
+  ANS_DEBUG ((
+    DEBUG_INFO,
+    "AppleANS: ASC CPU_CONTROL handed to OS = 0x%08x (run bit %a)\n",
+    MmioRead32 (Device->CpuBase + NTASI_ASC_CPU_CONTROL),
+    ((MmioRead32 (Device->CpuBase + NTASI_ASC_CPU_CONTROL) & NTASI_ASC_CPU_CONTROL_START) != 0)
+      ? "SET" : "clear"
+    ));
 #endif
 
   ArmDataSynchronizationBarrier ();
@@ -1603,6 +1658,57 @@ AppleNANDStorageDxeInitialize (
   Stage = "pmgr-domain-report";
   ANS_DEBUG ((DEBUG_INFO, "AppleANS: stage \"%a\" (read-only; never writes a PMGR word)\n", Stage));
   ReportAnsPmgrDomains ();
+
+  //
+  // MINIMAL PERTURBATION GATE -- default: leave the hardware exactly as iBoot
+  // left it.
+  //
+  // 2026-07-30 hardware result: the `ans` profile bugchecked
+  // BUGCODE_USB3_DRIVER 0x144 with the Windows ANS driver DISABLED in the
+  // registry (Start=4, verified from an offline hive), while `gpu` on the same
+  // commit, same cable and same everything else booted to the desktop. Tally
+  // on that cable: non-ANS profiles 6 boots / 0 failures, ANS profiles
+  // 0 boots / 3 failures. With no Windows ANS driver loading, the only
+  // remaining variable is hardware state Mu's bring-up leaves behind.
+  //
+  // Mu's bring-up does two things m1n1 never does:
+  //   1. It hard-stops a LIVE, un-quiesced coprocessor at the "asc-cold-stop-
+  //      check" stage below. iBoot leaves ANS running with its own firmware
+  //      servicing the boot SSD; clearing the run bit underneath that can
+  //      strand an outstanding fabric transaction.
+  //   2. It used to end without pmgr_reset(ANS2). That is now fixed (see
+  //      AnsExitBootServices), but a reset only helps if bring-up ran at all.
+  //
+  // Nothing needs Mu to bring ANS up. PcdAppleAnsPublishBlockIo is FALSE, so
+  // no boot option is produced, and Windows' own driver performs a full
+  // bring-up from a cold ADT state exactly as Linux's apple-nvme does. The
+  // DXE bring-up only ever validated the seam -- and it has: a previous boot
+  // identified namespace 1 and read real blocks.
+  //
+  // So the default is now to touch nothing: discovery, the read-only PMGR
+  // report, and the diagnostics above all still run, then this driver returns.
+  // Set PcdAppleAnsPerformDxeBringUp TRUE (DSC define NTASI_ANS_DXE_BRINGUP)
+  // to restore the full bring-up, which is now m1n1-complete including the
+  // teardown reset.
+  //
+  if (!FixedPcdGetBool (PcdAppleAnsPerformDxeBringUp)) {
+    ANS_DEBUG ((
+      DEBUG_WARN,
+      "AppleANS: DXE bring-up withheld by PcdAppleAnsPerformDxeBringUp; hardware left exactly "
+      "as iBoot handed it over (coprocessor untouched, SART untouched, NVMe registers untouched). "
+      "NTAS2003 is still published for the OS driver, which performs its own bring-up.\n"
+      ));
+    NtasiDumpReservedMemoryMap ("AppleANS");
+    FreePool (Device);
+    mAns = NULL;
+    return EFI_SUCCESS;
+  }
+
+  ANS_DEBUG ((
+    DEBUG_WARN,
+    "AppleANS: DXE bring-up ENABLED by PcdAppleAnsPerformDxeBringUp -- this firmware will halt "
+    "and reset the ANS coprocessor. Correlated with BUGCODE_USB3_DRIVER 0x144 on 2026-07-30.\n"
+    ));
 #endif
 
   Stage = "sart-init";

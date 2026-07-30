@@ -19,6 +19,7 @@
   PLATFORM_NAME                  = MacBookProEarly2023
   DEFINE NTASI_ENABLE_WIRELESS_DART_HANDOFF = 0
   DEFINE NTASI_J414S_GPU_RESOURCE_PROFILE = 0
+  DEFINE NTASI_ANS_DXE_BRINGUP = FALSE
   PLATFORM_GUID                  = d70b31ca-2cbc-433b-885f-b8bbda409959
   PLATFORM_VERSION               = 1.0
   DSC_SPECIFICATION              = 0x00010005
@@ -57,6 +58,10 @@
   # ANS publication is the only storage-firmware experiment.  The unified
   # baseline leaves this FALSE; the ans build profile overrides it to TRUE.
   gAppleSiliconPkgTokenSpaceGuid.PcdAppleAnsPublishAcpiDevice|$(NTASI_ENABLE_ANS)
+  # Mu-side ANS bring-up. FALSE leaves the coprocessor exactly as iBoot left it
+  # (running), which is the state every booting profile has. Flip
+  # NTASI_ANS_DXE_BRINGUP to TRUE and rebuild to restore the full bring-up.
+  gAppleSiliconPkgTokenSpaceGuid.PcdAppleAnsPerformDxeBringUp|$(NTASI_ANS_DXE_BRINGUP)
   # CORRECTED 2026-07-30 (hardware-confirmed): these four were resolved
   # against the wrong PMGR register block. /arm-io/pmgr's "ps-regs" table
   # has multiple blocks (reg tuples); ANS2/APCIE_ST/APCIE_ST_SYS/

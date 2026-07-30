@@ -15,7 +15,7 @@
   only the EDK2-side ADT walk and the PMGR register field decode, both of
   which need AppleDTLib/DebugLib and therefore cannot live there.
 
-  WHY READ-ONLY, AND WHY NO PMGR WRITES ANYWHERE IN THIS FIRMWARE:
+  NO PMGR *ENABLE* ANYWHERE IN THIS FIRMWARE, AND EXACTLY ONE PMGR *RESET*:
 
   m1n1 -- the authoritative reference for this silicon -- performs NO power
   enable for ANS at all. Its nvme_init() (src/nvme.c) never calls
@@ -32,10 +32,15 @@
   APCIE_ST_SYS and APCIE_ST1_SYS were all already ACTUAL=0xf TARGET=0xf
   before any software touched them, and a "touching ANS MMIO before a PMGR
   sequence stalls the AMBA bus" theory was explicitly falsified (see
-  AppleSiliconPkg.dec). So there is nothing to enable -- and a PMGR write
-  from firmware is precisely the operation that, with a wrong base, lands on
-  DCS_09/DCS_10 (DRAM controller power domains). This file therefore reads,
-  reports, and refuses; it never writes.
+  AppleSiliconPkg.dec). So there is nothing to enable.
+
+  AppleAnsPmgrReportDomain() below is therefore read-only and is what runs on
+  every ANS boot. AppleAnsPmgrResetDomain() is the single exception: it is the
+  teardown reset m1n1 performs and Mu previously omitted, it runs only from
+  the opt-in DXE bring-up path, and it is guarded by an
+  ExpectedAddress cross-check because a wrong PMGR address is precisely the
+  operation that once landed on DCS_09/DCS_10 (DRAM controller power domains).
+  See its own comment for the full safety argument.
 
   SPDX-License-Identifier: MIT
 **/
@@ -46,6 +51,7 @@
 #include <Library/AppleDTLib.h>
 #include <Library/DebugLib.h>
 #include <Library/IoLib.h>
+#include <Library/TimerLib.h>
 
 #include <Drivers/NtasiAnsPmgrResolve.h>
 
@@ -57,6 +63,8 @@
 #define APPLE_PMGR_PS_TARGET_SHIFT  0u
 #define APPLE_PMGR_PS_TARGET_MASK   (0xFu << APPLE_PMGR_PS_TARGET_SHIFT)  // GENMASK(3,0)
 #define APPLE_PMGR_PS_ACTIVE        0xFu
+#define APPLE_PMGR_RESET            0x80000000u  // BIT(31), m1n1 src/pmgr.h:9
+#define APPLE_PMGR_DEV_DISABLE      0x00000400u  // BIT(10), m1n1 src/pmgr.h:13
 #define APPLE_PMGR_PS_CLKGATE       0x4u
 #define APPLE_PMGR_PS_PWRGATE       0x0u
 
@@ -255,6 +263,112 @@ AppleAnsPmgrReportDomain (
     Target,
     *Active ? "ACTIVE" : "NOT ACTIVE"
     ));
+}
+
+/**
+  Reset one ADT-resolved PMGR device, byte for byte m1n1's
+  pmgr_reset_device() (src/pmgr.c): refuse unless PS_ACTUAL is ACTIVE, then
+  DEV_DISABLE, RESET, 10 us, clear RESET, clear DEV_DISABLE.
+
+  THE ONLY PMGR WRITE IN THIS FIRMWARE, and it exists for one reason.
+
+  m1n1's nvme_shutdown() (src/nvme.c) ends with:
+
+      rtkit_sleep(nvme_rtkit);
+      pmgr_reset(nvme_die, "ANS");
+      pmgr_reset(nvme_die, "ANS2");
+
+  Mu used to stop at rtkit_sleep -- clearing the ASC run bit and nothing more.
+  Clearing the run bit halts the coprocessor's CPU; it does NOT quiesce the
+  block's AXI/fabric interface. pmgr_reset is what does that: DEV_DISABLE
+  detaches the device from the fabric and RESET returns its master interface
+  to a known state, so any transaction still outstanding when the CPU stopped
+  cannot remain dangling. A block left halted-but-not-reset is a plausible
+  route to another bus master seeing an unexplained bus error later, under
+  load -- which is the shape of the 2026-07-30 XHC1 USBSTS.HSE failure that
+  correlated with ANS-carrying firmware.
+
+  SAFETY, because a wrong PMGR address writes to a DRAM controller and this
+  file's own history includes exactly that mistake (the old hardcoded
+  PcdAppleAnsPmgr*Base constants resolved to DCS_09/DCS_10):
+
+    * The address comes from AppleAnsPmgrResolveDomain(), which can only ever
+      return an address it found attached to the exact device name it was
+      asked for, in this boot's live ADT.
+    * ExpectedAddress must ALSO match, or nothing is written. Callers pass the
+      hardware-confirmed PCD, so a resolution that drifts writes nothing.
+    * The register is re-read and refused unless PS_ACTUAL == PS_ACTIVE,
+      exactly as m1n1 refuses to reset a gated device.
+    * Read-modify-write of single defined bits only; no field is invented.
+
+  @retval EFI_SUCCESS       The reset sequence completed.
+  @retval EFI_NOT_FOUND     Name did not resolve, or disagreed with
+                            ExpectedAddress.
+  @retval EFI_NOT_READY     The domain is not ACTIVE; refused (m1n1 does the
+                            same).
+**/
+STATIC
+inline
+EFI_STATUS
+AppleAnsPmgrResetDomain (
+  IN CONST CHAR8  *Tag,
+  IN CONST CHAR8  *DomainName,
+  IN UINT64       ExpectedAddress
+  )
+{
+  EFI_STATUS  Status;
+  UINT64      Address;
+  UINT32      Value;
+
+  Address = 0;
+  Status  = AppleAnsPmgrResolveDomain (Tag, DomainName, &Address);
+  if (EFI_ERROR (Status) || (Address == 0) || ((Address & (sizeof (UINT32) - 1)) != 0)) {
+    return EFI_NOT_FOUND;
+  }
+
+  if ((ExpectedAddress == 0) || (Address != ExpectedAddress)) {
+    DEBUG ((
+      DEBUG_ERROR,
+      "%a: PMGR \"%a\" resolved to 0x%Lx but 0x%Lx was expected; refusing to WRITE an "
+      "address this firmware cannot corroborate\n",
+      Tag,
+      DomainName,
+      Address,
+      ExpectedAddress
+      ));
+    return EFI_NOT_FOUND;
+  }
+
+  Value = MmioRead32 ((UINTN)Address);
+  if (((Value & APPLE_PMGR_PS_ACTUAL_MASK) >> APPLE_PMGR_PS_ACTUAL_SHIFT) != APPLE_PMGR_PS_ACTIVE) {
+    DEBUG ((
+      DEBUG_WARN,
+      "%a: PMGR \"%a\" @0x%Lx = 0x%08x is not ACTIVE; will not reset (matches m1n1)\n",
+      Tag,
+      DomainName,
+      Address,
+      Value
+      ));
+    return EFI_NOT_READY;
+  }
+
+  DEBUG ((DEBUG_INFO, "%a: PMGR \"%a\" @0x%Lx: resetting (0x%08x)\n", Tag, DomainName, Address, Value));
+
+  MmioOr32 ((UINTN)Address, APPLE_PMGR_DEV_DISABLE);
+  MmioOr32 ((UINTN)Address, APPLE_PMGR_RESET);
+  MicroSecondDelay (10);
+  MmioAnd32 ((UINTN)Address, (UINT32) ~APPLE_PMGR_RESET);
+  MmioAnd32 ((UINTN)Address, (UINT32) ~APPLE_PMGR_DEV_DISABLE);
+
+  DEBUG ((
+    DEBUG_INFO,
+    "%a: PMGR \"%a\" @0x%Lx: reset done (now 0x%08x)\n",
+    Tag,
+    DomainName,
+    Address,
+    MmioRead32 ((UINTN)Address)
+    ));
+  return EFI_SUCCESS;
 }
 
 #endif // APPLE_ANS_PMGR_DOMAIN_H_

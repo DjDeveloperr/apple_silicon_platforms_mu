@@ -40,6 +40,21 @@
   # option for it.  Windows does not need it: the NTAS200x device comes from
   # the runtime SSDT, which reads the live ADT directly.
   gAppleSiliconPkgTokenSpaceGuid.PcdAppleAnsPublishBlockIo|FALSE|BOOLEAN|0x0000471C
+  # Perform Mu's own ANS/RTKit/NVMe bring-up in DXE.
+  #
+  # FALSE (default) leaves the coprocessor, SART and NVMe registers exactly as
+  # iBoot handed them over; AppleNANDStorageDxe still runs discovery, the
+  # read-only PMGR report and the SART/memory-map diagnostics, then returns.
+  #
+  # Set FALSE on 2026-07-30: the `ans` profile reproduced BUGCODE_USB3_DRIVER
+  # 0x144 with the Windows ANS driver DISABLED (Start=4), while `gpu` on the
+  # same commit and cable booted -- 6 boots / 0 failures for non-ANS profiles
+  # versus 0 / 3 for ANS profiles. With no OS driver loading, hardware state
+  # left behind by this bring-up was the only remaining variable, and the
+  # bring-up hard-stops a live un-quiesced coprocessor that iBoot leaves
+  # running. Nothing needs it: PcdAppleAnsPublishBlockIo is FALSE and the OS
+  # driver brings ANS up itself from a cold ADT state.
+  gAppleSiliconPkgTokenSpaceGuid.PcdAppleAnsPerformDxeBringUp|FALSE|BOOLEAN|0x00004721
   # Exact four-byte PMGR power-state registers, exported to NTAS2003's ACPI
   # _CRS. RETRACTED 2026-07-30: earlier comments here and on Mu's own ANS
   # bring-up code claimed touching ANS/SART/mailbox MMIO before this PMGR

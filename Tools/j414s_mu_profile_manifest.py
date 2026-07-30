@@ -469,6 +469,7 @@ def parse_pcd_values(build_report: str) -> dict[str, int]:
     names = (
         "PcdAppleAnsPublishAcpiDevice",
         "PcdAppleAnsPublishBlockIo",
+        "PcdAppleAnsPerformDxeBringUp",
         "PcdAppleWirelessDartPageTableBase",
         "PcdAppleWirelessDartPageTableSize",
     )
@@ -633,6 +634,12 @@ def generate_manifest(args: argparse.Namespace) -> dict[str, Any]:
     expected_pcds = {
         "PcdAppleAnsPublishAcpiDevice": 1 if PROFILES[profile]["ans"] else 0,
         "PcdAppleAnsPublishBlockIo": 0,
+        # Mu-side ANS bring-up is withheld in every shipped profile: it
+        # reproduced BUGCODE_USB3_DRIVER 0x144 with the Windows ANS driver
+        # disabled, so the hardware state it left behind was the only
+        # remaining variable. Recorded here so an artifact states which mode
+        # it was built in rather than leaving it to be inferred.
+        "PcdAppleAnsPerformDxeBringUp": 0,
         "PcdAppleWirelessDartPageTableBase": 0,
         "PcdAppleWirelessDartPageTableSize": 0,
     }
@@ -754,6 +761,12 @@ def verify_manifest(manifest_path: Path, source_root: Path | None = None) -> dic
     expected_pcds = {
         "PcdAppleAnsPublishAcpiDevice": 1 if PROFILES[profile]["ans"] else 0,
         "PcdAppleAnsPublishBlockIo": 0,
+        # Mu-side ANS bring-up is withheld in every shipped profile: it
+        # reproduced BUGCODE_USB3_DRIVER 0x144 with the Windows ANS driver
+        # disabled, so the hardware state it left behind was the only
+        # remaining variable. Recorded here so an artifact states which mode
+        # it was built in rather than leaving it to be inferred.
+        "PcdAppleAnsPerformDxeBringUp": 0,
         "PcdAppleWirelessDartPageTableBase": 0,
         "PcdAppleWirelessDartPageTableSize": 0,
     }

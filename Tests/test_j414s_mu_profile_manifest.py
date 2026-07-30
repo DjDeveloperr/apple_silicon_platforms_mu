@@ -237,6 +237,7 @@ class EvidenceParserTests(unittest.TestCase):
             for name, value in (
                 ("PcdAppleAnsPublishAcpiDevice", "0"),
                 ("PcdAppleAnsPublishBlockIo", "0"),
+                ("PcdAppleAnsPerformDxeBringUp", "0"),
                 ("PcdAppleWirelessDartPageTableBase", "0x0"),
                 ("PcdAppleWirelessDartPageTableSize", "0x0"),
             )
@@ -244,6 +245,7 @@ class EvidenceParserTests(unittest.TestCase):
         self.assertEqual(set(M.parse_pcd_values(report)), {
             "PcdAppleAnsPublishAcpiDevice",
             "PcdAppleAnsPublishBlockIo",
+            "PcdAppleAnsPerformDxeBringUp",
             "PcdAppleWirelessDartPageTableBase",
             "PcdAppleWirelessDartPageTableSize",
         })
