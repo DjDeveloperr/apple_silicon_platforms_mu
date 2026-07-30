@@ -119,15 +119,55 @@
             Method (_CBA, 0, NotSerialized) {
                 Return (FixedPcdGet64 (PcdPciExpressBaseAddress))
             }
+            //
+            // One identity-mapped (TRA = 0), 32-bit, non-prefetchable
+            // producer window at bus == CPU 0xC0000000..0xCFFFFFFF.
+            //
+            // WHY THIS SHAPE (2026-07-30, code-12 root-cause work):
+            //
+            //  * Every resource Windows' PnP arbiters have ever granted on
+            //    this machine is below 4 GiB (XHC1/XHC2 aliases, MTP, ANS,
+            //    DISP, UART); the one _CRS consumer ever published above the
+            //    proven range (native XHC1 at 0xB02280000) was refused by the
+            //    root memory arbiter and had to be aliased to 0x60000000.
+            //    The previous translated window (bus 0xC0000000 -> CPU
+            //    0x5C0000000, TRA 0x500000000) put every BAR grant in exactly
+            //    that unproven-high class, and additionally relied on the
+            //    arbiter honouring a producer-side _TRA -- while ledger row
+            //    "HV: Unmapped IPA 0x1800000" proves this Windows build maps
+            //    the RAW base of consumer descriptors, so producer _TRA was
+            //    the only untested translation path left in the boot.
+            //  * m1n1 (tools/m1n1-windows-debug.py in the drivers repo) now
+            //    installs a stage-2 alias guest 0xC0000000 -> host
+            //    0x5C0000000 (256 MiB) whenever post-HV PCIe init runs, so
+            //    guest-physical == PCI-bus address inside this window.  The
+            //    hardware window itself is unchanged: the apcie fabric still
+            //    forwards host 0x5C0000000+off as bus 0xC0000000+off (ADT
+            //    apcie "ranges", measured), and Mu's own PciHostBridgeDxe
+            //    still allocates BARs at bus 0xC0000000+ (translation-aware
+            //    via PcdPciMmio32Translation), so Mu's boot configuration
+            //    (WiFi BAR2=0xC0000000, BT BAR2=0xC1000000, SD
+            //    BAR0=0xC2100000, all measured 2026-07-30) sits inside this
+            //    window and stays valid for Windows to adopt.
+            //  * 256 MiB comfortably covers the 34 MiB Mu actually assigns
+            //    and stays far from the XHC1/XHC2 aliases at 0x60000000/
+            //    0x61000000 and the MTP staging alias at 0x1800000.
+            //
+            // The 64-bit prefetchable window (bus == CPU 0x5A0000000,
+            // 512 MiB) is deliberately NOT published: both BCM4388 functions
+            // expose only 64-bit NON-prefetchable BARs (low bits 0x4) and the
+            // GL9755 a 32-bit non-prefetchable BAR, so per PCI bridge rules
+            // nothing on this fabric can be placed in a prefetchable window.
+            // Publishing an unproven-high producer range Windows never needs
+            // only re-introduces the exact arbitration doubt this change
+            // removes.
+            //
             Name (_CRS, ResourceTemplate () {
                 WordBusNumber (ResourceProducer, MinFixed, MaxFixed, PosDecode,
                     0, 0, 4, 0, 5)
                 QWordMemory (ResourceProducer, PosDecode, MinFixed, MaxFixed,
                     NonCacheable, ReadWrite, 0,
-                    0xc0000000, 0xffffffff, 0x500000000, 0x40000000)
-                QWordMemory (ResourceProducer, PosDecode, MinFixed, MaxFixed,
-                    Prefetchable, ReadWrite, 0,
-                    0x00000005a0000000, 0x00000005bfffffff, 0, 0x20000000)
+                    0xc0000000, 0xcfffffff, 0, 0x10000000)
             })
             Method (_STA) { Return (0x0f) }
         }

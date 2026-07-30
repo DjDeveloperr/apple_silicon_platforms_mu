@@ -50,6 +50,14 @@
 
 STATIC CONST CHAR8  mAppleAnsAcpiTag[] = "AppleANS ACPI";
 
+//
+// ACPI 6.4 s6.2.5 device-properties UUID, daffd814-6eba-4d8c-8a91-bc9bbf4aa301.
+//
+STATIC CONST EFI_GUID  gAppleAnsDsdPropertiesGuid = {
+  0xdaffd814, 0x6eba, 0x4d8c,
+  { 0x8a, 0x91, 0xbc, 0x9b, 0xbf, 0x4a, 0xa3, 0x01 }
+};
+
 #if NTASI_ENABLE_WIRELESS_DART_HANDOFF
 STATIC CONST EFI_GUID  mNtasiWirelessDartReservationHobGuid =
   NTASI_WIRELESS_DART_RESERVATION_HOB_GUID;
@@ -881,20 +889,58 @@ NtasiInstallWirelessDartTable (
     goto Exit;
   }
 
-  Status = AmlCodeGenNameResourceTemplate ("_CRS", DeviceNode, &CrsNode);
+  //
+  // NO _CRS -- deliberate, and the whole point of the 2026-07-30 change.
+  //
+  // DRT0 used to publish two QWordMemory consumer resources (the DART
+  // aperture at 0x594000000 and the derived top-of-DRAM reservation, e.g.
+  // 0x103FFFF0000 on the measured boot).  Both sat in address classes this
+  // Windows build's root memory arbiter has never granted on this machine:
+  //
+  //   * the reservation additionally overlaps the very range PEI publishes
+  //     as EfiReservedMemoryType (MemoryInitPeiLib builds a SYSTEM_MEMORY
+  //     resource HOB plus an EfiReservedMemoryType allocation HOB for it, and
+  //     the measured UEFI memory map shows
+  //     "[0x103FFFF0000, 0x10400000000) 16 pages Reserved"), so the arbiter
+  //     sees a device claiming loader-owned reserved memory;
+  //   * the only high consumer resource ever tested on this machine (native
+  //     XHC1 at 0xB02280000) was refused outright and had to be aliased low.
+  //
+  // The measured result was CM_PROB_NORMAL_CONFLICT (Code 12) on
+  // ACPI\NTAS0011 with no resources assigned, which also starves the three
+  // PCIe endpoints of their DART provider.
+  //
+  // The fix: publish NOTHING for the PnP arbiters to grant.  AppleDart.sys
+  // discovers both ranges by evaluating the four integer methods below
+  // (IOCTL_ACPI_EVAL_METHOD to its own PDO) and maps them with
+  // MmMapIoSpaceEx.  The addresses stay TRUE physical addresses, so every
+  // physical-equality check of the wireless-handoff ABI v2 descriptor
+  // (reservation_base, l1_physical, dart_base, TTBR adoption) is unchanged.
+  // The descriptor's signature/CRC validation -- not ACPI -- remains the
+  // proof of authenticity, exactly as docs/
+  // apple-bcm-wireless-dart-handoff-abi-spec.md specifies; ACPI is only the
+  // coarse "where to look" channel, and a method serves that role as well as
+  // a _CRS entry without exposing the range to resource arbitration.
+  //
+  // DRTB/DRTL: the fixed T8110 DART aperture (silicon constant).
+  // RSVB/RSVS: this boot's derived, re-authenticated reservation.
+  //
+  Status = AmlCodeGenMethodRetInteger ("DRTB", NTASI_WIRELESS_DART_APERTURE_BASE, 0, FALSE, 0, DeviceNode, NULL);
   if (EFI_ERROR (Status)) {
     goto Exit;
   }
 
-  // 0: DART aperture (fixed hardware MMIO, not part of the derived
-  // reservation).
-  Status = AppleAnsAddMemoryResource (CrsNode, NTASI_WIRELESS_DART_APERTURE_BASE, NTASI_WIRELESS_DART_APERTURE_SIZE);
+  Status = AmlCodeGenMethodRetInteger ("DRTL", NTASI_WIRELESS_DART_APERTURE_SIZE, 0, FALSE, 0, DeviceNode, NULL);
   if (EFI_ERROR (Status)) {
     goto Exit;
   }
 
-  // 1: the derived SID-1 page-table/descriptor reservation.
-  Status = AppleAnsAddMemoryResource (CrsNode, ReservationBase, ReservationSize);
+  Status = AmlCodeGenMethodRetInteger ("RSVB", ReservationBase, 0, FALSE, 0, DeviceNode, NULL);
+  if (EFI_ERROR (Status)) {
+    goto Exit;
+  }
+
+  Status = AmlCodeGenMethodRetInteger ("RSVS", ReservationSize, 0, FALSE, 0, DeviceNode, NULL);
   if (EFI_ERROR (Status)) {
     goto Exit;
   }
@@ -949,15 +995,18 @@ Exit:
   hardware profile are derived from the live Apple Device Tree so one firmware
   binary does not bake in a board-specific MMIO map.
 
-  The first three memory resources have a stable ABI with the Windows miniport:
+  The three memory resources have a stable ABI with the Windows miniport:
     0: ASC CPU/mailbox aperture (mailbox registers are at +0x8000)
     1: ANS NVMe aperture (ADT reg[3])
     2: SART aperture
-  NTAS2003 appends four deliberately narrow resources in driver ABI order:
-    3: exact 4-byte ps_ans2 PMGR power/reset word
-    4: exact 4-byte ps_apcie_st parent power word
-    5: exact 4-byte ps_apcie_st_sys power word
-    6: exact 4-byte ps_apcie_st1_sys power word
+
+  CHANGED 2026-07-30: NTAS2003 used to append four more resources -- the exact
+  4-byte ps_ans2 / ps_apcie_st / ps_apcie_st_sys / ps_apcie_st1_sys PMGR words
+  -- as _CRS indices 3-6. Every one of them lands inside the 4 KiB page KBL0
+  already claims (KBL.asl:75-87), so two _STA=0x0F devices were claiming the
+  same memory exclusively. They are now published as _DSD integer properties
+  instead; see the comment at the removal site for the full rationale. A
+  future ANS driver must read them from _DSD, not from _CRS.
 **/
 STATIC
 EFI_STATUS
@@ -1325,40 +1374,46 @@ AcpiPlatformInstallAppleAnsTable (
     goto Exit;
   }
 
-  if (SartVersion == 3) {
-    Status = AppleAnsAddMemoryResource (
-               CrsNode,
-               PmgrResetBase,
-               APPLE_ANS_PMGR_RESET_SIZE
-               );
-    if (EFI_ERROR (Status)) {
-      goto Exit;
-    }
-    Status = AppleAnsAddMemoryResource (
-               CrsNode,
-               PmgrApcieStBase,
-               APPLE_ANS_PMGR_RESET_SIZE
-               );
-    if (EFI_ERROR (Status)) {
-      goto Exit;
-    }
-    Status = AppleAnsAddMemoryResource (
-               CrsNode,
-               PmgrApcieStSysBase,
-               APPLE_ANS_PMGR_RESET_SIZE
-               );
-    if (EFI_ERROR (Status)) {
-      goto Exit;
-    }
-    Status = AppleAnsAddMemoryResource (
-               CrsNode,
-               PmgrApcieSt1SysBase,
-               APPLE_ANS_PMGR_RESET_SIZE
-               );
-    if (EFI_ERROR (Status)) {
-      goto Exit;
-    }
-  }
+  //
+  // THE FOUR PMGR WORDS ARE NO LONGER _CRS RESOURCES (fixed 2026-07-30).
+  //
+  // They used to be appended here as four exact 4-byte ResourceConsumer
+  // QWordMemory descriptors at 0x2902801A8 (ps_ans2), 0x2902801A0
+  // (ps_apcie_st), 0x290280408 (ps_apcie_st_sys) and 0x290280410
+  // (ps_apcie_st1_sys). Every one of those is INSIDE the 4 KiB page
+  // [0x290280000, 0x290280FFF] that KBL0 (NTAS0051, keyboard backlight)
+  // already claims as its own ResourceConsumer memory (KBL.asl:75-87) to
+  // reach ps_sio at +0x1c0 and ps_fpwm0 at +0x1e8.
+  //
+  // Two _STA=0x0F devices claiming the same physical memory exclusively is a
+  // genuine ACPI resource conflict, and it is one this firmware created:
+  // commit bef9067 (2026-07-30 01:29) moved these four words from the "pmgr"
+  // block at 0x28E080xxx -- where they did not overlap anything -- to
+  // "pmgr_east" at 0x290280xxx, which is correct for the hardware and
+  // collided with KBL0.
+  //
+  // WHY THE FIX IS HERE AND NOT IN KBL.asl: PMGR power-state pages are
+  // inherently shared on this silicon -- one page carries the power words of
+  // many unrelated devices -- so ANY exclusive consumer claim over part of one
+  // is wrong in principle. KBL0's whole-page claim is coarse, but its driver
+  // is deployed and working and maps that descriptor to reach two fixed
+  // offsets; narrowing it would break a live driver's ABI to fix a conflict
+  // this device introduced. NTAS2003's claims are the newer and more clearly
+  // mistaken ones: firmware only ever READS these words (see
+  // AppleAnsPmgrReportDomain()), and no consumer needs the OS resource
+  // arbiter to hand them out.
+  //
+  // The addresses are still published, as _DSD integer properties below.
+  // _DSD carries data, not resource claims, so the arbiter never sees them --
+  // which is the correct shape for "here is where this register lives" as
+  // opposed to "grant this device exclusive ownership of these bytes".
+  //
+  // ABI NOTE: this changes NTAS2003's _CRS from seven memory resources to
+  // three. Nothing consumes the old layout today -- AppleNvmeSart3 is
+  // disabled (Start=4) and never loads -- so the change costs nothing now,
+  // but a future ANS driver must read the four addresses from _DSD rather
+  // than from _CRS indices 3-6.
+  //
 
   Status = AmlCodeGenRdInterrupt (
              TRUE,                       // ResourceConsumer
@@ -1372,6 +1427,58 @@ AcpiPlatformInstallAppleAnsTable (
              );
   if (EFI_ERROR (Status)) {
     goto Exit;
+  }
+
+  //
+  // The PMGR power-state register addresses, as data rather than as resource
+  // claims. See the comment above the _CRS memory resources for why these are
+  // not QWordMemory descriptors any more.
+  //
+  if (SartVersion == 3) {
+    AML_OBJECT_NODE_HANDLE  DsdNode;
+    AML_OBJECT_NODE_HANDLE  DsdPackageNode;
+
+    DsdNode        = NULL;
+    DsdPackageNode = NULL;
+
+    Status = AmlCodeGenNamePackage ("_DSD", DeviceNode, &DsdNode);
+    if (EFI_ERROR (Status)) {
+      goto Exit;
+    }
+
+    Status = AmlAddDeviceDataDescriptorPackage (
+               &gAppleAnsDsdPropertiesGuid,
+               DsdNode,
+               &DsdPackageNode
+               );
+    if (EFI_ERROR (Status)) {
+      goto Exit;
+    }
+
+    Status = AmlAddNameIntegerPackage ("ntasp,pmgr-ans2", PmgrResetBase, DsdPackageNode);
+    if (EFI_ERROR (Status)) {
+      goto Exit;
+    }
+
+    Status = AmlAddNameIntegerPackage ("ntasp,pmgr-apcie-st", PmgrApcieStBase, DsdPackageNode);
+    if (EFI_ERROR (Status)) {
+      goto Exit;
+    }
+
+    Status = AmlAddNameIntegerPackage ("ntasp,pmgr-apcie-st-sys", PmgrApcieStSysBase, DsdPackageNode);
+    if (EFI_ERROR (Status)) {
+      goto Exit;
+    }
+
+    Status = AmlAddNameIntegerPackage ("ntasp,pmgr-apcie-st1-sys", PmgrApcieSt1SysBase, DsdPackageNode);
+    if (EFI_ERROR (Status)) {
+      goto Exit;
+    }
+
+    Status = AmlAddNameIntegerPackage ("ntasp,pmgr-word-size", APPLE_ANS_PMGR_RESET_SIZE, DsdPackageNode);
+    if (EFI_ERROR (Status)) {
+      goto Exit;
+    }
   }
 
   Status = AmlSerializeDefinitionBlock (RootNode, &Table);
@@ -1389,7 +1496,9 @@ AcpiPlatformInstallAppleAnsTable (
   if (!EFI_ERROR (Status)) {
     DEBUG ((
       DEBUG_INFO,
-      "AppleANS ACPI: %a cpu=%lx/%lx nvme=%lx/%lx sart=%lx/%lx pmgr-ans2=%lx apcie-st=%lx st-sys=%lx st1-sys=%lx size=%x irq=%u physical=%u contract=%a\n",
+      "AppleANS ACPI: %a cpu=%lx/%lx nvme=%lx/%lx sart=%lx/%lx pmgr-ans2=%lx apcie-st=%lx st-sys=%lx st1-sys=%lx "
+      "pmgr-word-size=%x (published via _DSD, NOT _CRS -- those addresses are inside KBL0's page) "
+      "irq=%u physical=%u contract=%a\n",
       HardwareId,
       CpuBase,
       CpuSize,
