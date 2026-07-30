@@ -87,6 +87,65 @@ real boot's PEI phase, processing that boot's actual `boot_args`, ever
 computes a nonzero value. `PcdAppleWirelessDartPageTableLimit` no longer
 exists as a PCD at all.
 
+## KNOWN GAP: `DRT0` is never published, and it is not PEI's fault
+
+`PcdAppleWirelessDartPageTableBase/Size` are `PcdsPatchableInModule`. A
+`PatchableInModule` PCD is a **per-module copy**: `MemoryInitPeiLib`'s
+`PatchPcdSet64/32` writes the copy linked into `PrePi`, and
+`AcpiPlatformDxe`'s `PcdGet64/32` reads its own, never-patched copy, which is
+always the DEC default of zero. So
+`NtasiInstallWirelessDartTable()` takes its "no reservation published by PEI
+this boot" path on **every** boot regardless of what PEI derived, and `DRT0`
+is never installed.
+
+The same trap was confirmed on hardware for `PcdSystemMemoryBase/Size`: every
+GPU-profile boot in the 2026-07-30 capture printed the DSC default window
+`[0x10000000000, 0x10400000000)` rather than this machine's real
+`[0x10001E40000, 0x103DB29C000)`, which made the GPU carveout guard reject all
+three live ADT carveouts. `AcpiPlatform.c` now derives both windows from
+`boot_args` at `PcdBootArgsPointer` instead (see
+`NtasiDeriveBootArgsWindows()`), and logs a `DEBUG_WARN` whenever the PCDs
+disagree so the trap is visible rather than silently misleading.
+
+The wireless side is **deliberately left unfixed** for now: it fails safe
+(wireless simply does not adopt the handoff), so it costs a feature rather
+than a boot. The fix is a GUID HOB from PEI to DXE --
+`MemoryInitPeiLib.c` already publishes one for the appended ramdisk
+(`NTASI_APPENDED_RAMDISK_LOCATION_HOB_GUID`), so the plumbing exists -- or an
+independent `boot_args`-derived recomputation in `AcpiPlatformDxe`. Do not
+read "DRT0 withheld" in a log as evidence that PEI's derivation failed until
+that is done.
+
+## 2026-07-30: ANS handoff and GPU carveout bounds
+
+Two hardware-confirmed corrections, both from
+`build/m2-pro-readiness/logs/mu-secondary-uart.log` in the drivers repo.
+
+ANS does **not** hang. The `ans` profile completes every bring-up stage and
+boots Windows; the earlier `sart-init` exception was the unmapped
+`/arm-io/ans` MMIO aperture, fixed by `4a2b071`. What remained was
+`AppleANS: RTKit handoff failed: -25` from `AnsExitBootServices()`.
+`-25` is `NTASI_RTKIT_RUNTIME_ERR_BUFFER`; the causes were a buffer request
+carrying a non-zero IOVA being rejected (m1n1 adopts the coprocessor's own
+address and sends no reply), a 44-bit IOVA mask where m1n1 uses
+`GENMASK(41, 0)`, and unmodelled system messages aborting the receive where
+m1n1 logs and continues. The handoff is now fail-safe: the ASC run bit is
+driven low unconditionally, SART grants are revoked only once the coprocessor
+is confirmed halted, and the RTKit shared buffers are 16 KiB-granular
+`EfiReservedMemoryType` so they survive into the OS instead of being handed
+back seconds before Windows reuses them. Pinned by
+`Tests/test_rtkit_buffer_request.py`.
+
+GPU carveouts are now bounded by the machine's real installed-DRAM window
+(`ALIGN_DOWN(phys_base, 4GiB) + mem_size_actual`, m1n1's own
+`top_of_memory_alloc()` formula) via `NtasiRangeWithinWindow()`. That is the
+bound the original incident actually lacked: three of the six hardcoded
+constants sat above `boot_args`' `mem_size` ceiling, and PEI's HOB-punching
+reservation path could not represent them, so `MemoryInitPeiLib` returned a
+fatal status with no console. Nothing is hardcoded and nothing is bounded by a
+build-time default any more. Pinned by
+`Tests/test_gpu_reservation_guard.py`.
+
 `NtasiDeriveWirelessReservation()` places the reservation at the top of Mu's
 own `mem_size_actual`-derived window, working downward, rather than counting
 up from `guest_top + 16KiB` -- this is what keeps it clear of the TrustZone
