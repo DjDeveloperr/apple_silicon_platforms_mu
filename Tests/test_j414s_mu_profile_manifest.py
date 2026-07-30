@@ -31,13 +31,13 @@ def valid_shape(profile: str = "baseline") -> dict[str, object]:
         name: {**record(f"Build/{name}"), "container_ffs_guid": M.ACPI_CONTAINERS[name], "occurrences_in_ffs": 1}
         for name in M.BASE_ACPI
     }
-    if profile == "gpu":
+    if M.PROFILES[profile]["gpu"]:
         tables["GPU.aml"] = {
             **record("Build/GPU.aml"),
             "container_ffs_guid": M.ACPI_CONTAINERS["GPU.aml"],
             "occurrences_in_ffs": 1,
         }
-    if profile == "wireless":
+    if M.PROFILES[profile]["wireless"]:
         tables["WDRT.aml"] = {
             **record("Build/WDRT.aml"),
             "container_ffs_guid": M.ACPI_CONTAINERS["WDRT.aml"],

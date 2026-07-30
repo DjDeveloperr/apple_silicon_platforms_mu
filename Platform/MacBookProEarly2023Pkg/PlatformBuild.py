@@ -185,11 +185,12 @@ class PlatformBuilder( UefiBuilder, BuildSettingsManager):
             "baseline": {"ans": "FALSE", "gpu": "0"},
             "ans": {"ans": "TRUE", "gpu": "0"},
             "gpu": {"ans": "FALSE", "gpu": "1"},
+            "ans-gpu": {"ans": "TRUE", "gpu": "1"},
             "wireless": {"ans": "FALSE", "gpu": "0"},
         }
         if profile not in profile_values:
             raise ValueError(
-                "NTASI_MU_PROFILE must be one of: baseline, ans, gpu, wireless"
+                "NTASI_MU_PROFILE must be one of: baseline, ans, gpu, ans-gpu, wireless"
             )
         logging.info("Building the J414s Windows Mu profile: %s", profile)
 
