@@ -83,6 +83,8 @@ NtasiDumpReservedMemoryMap (
   UINTN                  Offset;
   UINTN                  Printed;
   UINT64                 ConventionalPages;
+  UINT64                 HighestEnd;
+  UINT64                 End;
 
   Map               = NULL;
   MapSize           = 0;
@@ -124,8 +126,23 @@ NtasiDumpReservedMemoryMap (
 
   Printed           = 0;
   ConventionalPages = 0;
+  HighestEnd        = 0;
   for (Offset = 0; Offset + DescriptorSize <= MapSize; Offset += DescriptorSize) {
     Entry = (EFI_MEMORY_DESCRIPTOR *)((UINT8 *)Map + Offset);
+
+    //
+    // Track the top across EVERY descriptor, conventional included. With the
+    // USB DARTs in full bypass (AppleDartIoMmuDxe writes TCR = BYPASS_DART |
+    // BYPASS_DAPF to all 16 SIDs and installs no IOMMU protocol), XHC DMA is
+    // raw physical -- so "what is the highest physical address firmware told
+    // the OS exists?" is the single number most likely to differ between a
+    // profile that boots and one that dies on USBSTS.HSE. It would be
+    // invisible if only non-conventional regions were printed.
+    //
+    End = Entry->PhysicalStart + LShiftU64 (Entry->NumberOfPages, EFI_PAGE_SHIFT);
+    if (End > HighestEnd) {
+      HighestEnd = End;
+    }
 
     if (Entry->Type == EfiConventionalMemory) {
       ConventionalPages += Entry->NumberOfPages;
@@ -147,11 +164,13 @@ NtasiDumpReservedMemoryMap (
 
   DEBUG ((
     DEBUG_INFO,
-    "%a: memory map: %Lu non-conventional regions; %Lu conventional pages (0x%Lx bytes) free for the OS\n",
+    "%a: memory map: %Lu non-conventional regions; %Lu conventional pages (0x%Lx bytes) free for the OS; "
+    "highest described physical address 0x%Lx\n",
     Tag,
     (UINT64)Printed,
     ConventionalPages,
-    LShiftU64 (ConventionalPages, EFI_PAGE_SHIFT)
+    LShiftU64 (ConventionalPages, EFI_PAGE_SHIFT),
+    HighestEnd
     ));
 
   FreePool (Map);
