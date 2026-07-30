@@ -1664,6 +1664,22 @@ AppleNANDStorageDxeInitialize (
   ANS_DEBUG ((DEBUG_INFO, "AppleANS: stage \"%a\" (read-only; never writes a PMGR word)\n", Stage));
   ReportAnsPmgrDomains ();
 
+#endif
+
+  Stage = "sart-init";
+  ANS_DEBUG ((DEBUG_INFO, "AppleANS: stage \"%a\"\n", Stage));
+  Result = ntasi_sart_runtime_init (&Device->Sart, SartParams, &SartOps, Device);
+  if (Result != 0) {
+    Status = EFI_DEVICE_ERROR;
+    goto Fail;
+  }
+
+#if !defined (APPLE_ANS_QEMU_TEST)
+  // Snapshot the filter as iBoot left it, before this driver adds anything.
+  DumpSartState (Device, "as-inherited-from-iBoot");
+#endif
+
+#if !defined (APPLE_ANS_QEMU_TEST)
   //
   // MINIMAL PERTURBATION GATE -- default: leave the hardware exactly as iBoot
   // left it.
@@ -1714,19 +1730,6 @@ AppleNANDStorageDxeInitialize (
     "AppleANS: DXE bring-up ENABLED by PcdAppleAnsPerformDxeBringUp -- this firmware will halt "
     "and reset the ANS coprocessor. Correlated with BUGCODE_USB3_DRIVER 0x144 on 2026-07-30.\n"
     ));
-#endif
-
-  Stage = "sart-init";
-  ANS_DEBUG ((DEBUG_INFO, "AppleANS: stage \"%a\"\n", Stage));
-  Result = ntasi_sart_runtime_init (&Device->Sart, SartParams, &SartOps, Device);
-  if (Result != 0) {
-    Status = EFI_DEVICE_ERROR;
-    goto Fail;
-  }
-
-#if !defined (APPLE_ANS_QEMU_TEST)
-  // Snapshot the filter as iBoot left it, before this driver adds anything.
-  DumpSartState (Device, "as-inherited-from-iBoot");
 #endif
 
   Stage = "asc-init";
