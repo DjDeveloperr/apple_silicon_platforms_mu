@@ -21,6 +21,7 @@
 #include <Library/DevicePathLib.h>
 #include <Library/IoLib.h>
 #include <Library/MemoryAllocationLib.h>
+#include <Library/PrintLib.h>
 #include <Library/TimerLib.h>
 #include <Library/UefiBootServicesTableLib.h>
 #include <Protocol/BlockIo.h>
@@ -106,6 +107,29 @@ typedef struct {
   EFI_DEVICE_PATH_PROTOCOL  End;
 } APPLE_ANS_DEVICE_PATH;
 
+//
+// One page allocation owned by this driver.
+//
+// RawBase/RawPages are EXACTLY what was handed back by gBS->AllocatePages and
+// are the only pair ever passed to gBS->FreePages, so every free this driver
+// performs is a whole-allocation free. Base/Size are the aligned, usable
+// window inside it. See AnsAllocatePages() for why partial frees are banned
+// here.
+//
+typedef struct {
+  EFI_PHYSICAL_ADDRESS  RawBase;
+  UINTN                 RawPages;
+  VOID                  *Base;
+  UINTN                 Size;
+} APPLE_ANS_PAGE_ALLOCATION;
+
+//
+// 4 RTKit shared buffers (crashlog/syslog/ioreport/oslog) + 6 queue regions +
+// 1 bounce buffer = 11. Sized with headroom; AnsAllocatePages() fails cleanly
+// rather than overflowing it.
+//
+#define APPLE_ANS_MAX_ALLOCATIONS  16u
+
 typedef struct {
   EFI_HANDLE                        Handle;
   EFI_EVENT                         ExitBootServicesEvent;
@@ -128,18 +152,341 @@ typedef struct {
   VOID                              *IoCompletions;
   VOID                              *IoTcbs;
   VOID                              *Bounce;
-  UINTN                             AdminCommandPages;
-  UINTN                             AdminCompletionPages;
-  UINTN                             AdminTcbPages;
-  UINTN                             IoCommandPages;
-  UINTN                             IoCompletionPages;
-  UINTN                             IoTcbPages;
+  APPLE_ANS_PAGE_ALLOCATION         Allocations[APPLE_ANS_MAX_ALLOCATIONS];
+  UINTN                             AllocationCount;
   EFI_BLOCK_IO_MEDIA                Media;
   EFI_BLOCK_IO_PROTOCOL             BlockIo;
   APPLE_ANS_DEVICE_PATH             DevicePath;
   BOOLEAN                           Fatal;
   BOOLEAN                           HandedOff;
 } APPLE_ANS_DEVICE;
+
+/**
+  Page allocator for everything this driver owns.
+
+  WHY THIS EXISTS INSTEAD OF MemoryAllocationLib's AllocateAlignedPages() /
+  AllocateAlignedReservedPages(), 2026-07-30 hardware failure:
+
+    AppleANS: stage "rtkit-boot" (bounded at 2000000 polls per wait)
+    ASSERT_EFI_ERROR (Status = Invalid Parameter)
+    ASSERT [AppleNANDStorageDxe] MemoryAllocationLib.c(222): ...
+
+  MemoryAllocationLib.c:222 is NOT the ASSERT after gBS->AllocatePages (that
+  is line 200, and it returns NULL on error rather than asserting). It is the
+  ASSERT_EFI_ERROR after the gBS->FreePages on line 221 -- the free of the
+  TRAILING slack pages in InternalAllocateAlignedPages(). The allocation
+  itself succeeded. The chain:
+
+    1. AllocateAlignedReservedPages(Pages, 0x4000) over-allocates
+       RealPages = Pages + 4 of EfiReservedMemoryType.
+    2. CoreInternalAllocatePages (MdeModulePkg/Core/Dxe/Mem/Page.c) uses
+       RUNTIME_PAGE_ALLOCATION_GRANULARITY for EfiReservedMemoryType, which is
+       0x10000 on AARCH64 (MdePkg/Include/AArch64/ProcessorBind.h:169 --
+       __DEPRECATED_AARCH64_4K_RUNTIME_GRANULARITY is NOT defined in this
+       build). So it returns a 64 KiB-aligned address.
+    3. The lib aligns up to 0x4000 -- already satisfied -- so it skips the
+       LEADING free, then frees the trailing slack at
+       AlignedMemory + EFI_PAGES_TO_SIZE(Pages). For a 16 KiB buffer that is
+       base + 0x4000: 16 KiB-aligned, but NOT 64 KiB-aligned.
+    4. CoreInternalFreePages sees Entry->Type == EfiReservedMemoryType, sets
+       Alignment = 0x10000, and returns EFI_INVALID_PARAMETER at Page.c:1938
+       because (Memory & 0xFFFF) != 0.
+    5. ASSERT_EFI_ERROR at MemoryAllocationLib.c:222 kills the boot.
+
+  AllocateAlignedReservedPages() is therefore structurally unusable on AARCH64
+  for ANY alignment below 64 KiB: the trailing partial free can never satisfy
+  the reserved-memory free granularity. It is not a bad size or a bad memory
+  type -- it is the wrong API for this memory type on this architecture.
+
+  This allocator makes that class of failure impossible rather than avoiding
+  one instance of it:
+
+    * It NEVER performs a partial free. RawBase/RawPages are recorded and the
+      only free ever issued is the whole allocation, which is always legal at
+      whatever granularity the core applied.
+    * Alignment is raised to at least the memory type's own free granularity,
+      so the base is guaranteed to be a legal free address.
+    * Every status is checked. No ASSERT, no ASSERT_EFI_ERROR, no code path
+      that can abort the boot. An allocation failure aborts ANS bring-up and
+      nothing else -- this is an optional storage coprocessor on a machine
+      that boots Windows from USB.
+    * The fast path allocates exactly the pages needed and only falls back to
+      an over-allocate-and-align if the core hands back a misaligned base,
+      which for reserved memory it never will.
+
+  @param[in]      Device      Owning device; the allocation is recorded in its
+                              table so nothing can leak or be double-freed.
+  @param[in]      Purpose     Short label for the log line.
+  @param[in]      MemoryType  EFI memory type to allocate.
+  @param[in]      Size        Requested size in bytes.
+  @param[in]      Alignment   Required alignment, a power of two.
+  @param[out]     Allocation  Receives the recorded allocation on success.
+
+  @retval EFI_SUCCESS            Allocated; *Allocation is valid.
+  @retval EFI_INVALID_PARAMETER  Bad size/alignment (logged).
+  @retval EFI_OUT_OF_RESOURCES   Allocation failed or the table is full
+                                 (logged).
+**/
+STATIC
+EFI_STATUS
+AnsAllocatePages (
+  IN OUT APPLE_ANS_DEVICE           *Device,
+  IN     CONST CHAR8                *Purpose,
+  IN     EFI_MEMORY_TYPE            MemoryType,
+  IN     UINTN                      Size,
+  IN     UINTN                      Alignment,
+  OUT    APPLE_ANS_PAGE_ALLOCATION  **Allocation
+  )
+{
+  EFI_STATUS                 Status;
+  EFI_PHYSICAL_ADDRESS       Raw;
+  EFI_PHYSICAL_ADDRESS       Aligned;
+  UINTN                      Granularity;
+  UINTN                      Effective;
+  UINTN                      UsableSize;
+  UINTN                      UsablePages;
+  UINTN                      RawPages;
+  APPLE_ANS_PAGE_ALLOCATION  *Record;
+
+  *Allocation = NULL;
+
+  //
+  // Free granularity for this memory type, mirroring CoreInternalFreePages()
+  // exactly. Raising the requested alignment to at least this value is what
+  // guarantees the recorded base is always a legal FreePages address.
+  //
+  if ((MemoryType == EfiReservedMemoryType) ||
+      (MemoryType == EfiACPIMemoryNVS) ||
+      (MemoryType == EfiRuntimeServicesCode) ||
+      (MemoryType == EfiRuntimeServicesData))
+  {
+    Granularity = RUNTIME_PAGE_ALLOCATION_GRANULARITY;
+  } else {
+    Granularity = DEFAULT_PAGE_ALLOCATION_GRANULARITY;
+  }
+
+  Effective = (Alignment > Granularity) ? Alignment : Granularity;
+
+  if ((Size == 0) || (Effective == 0) || ((Effective & (Effective - 1)) != 0)) {
+    ANS_DEBUG ((
+      DEBUG_ERROR,
+      "AppleANS: alloc \"%a\": refusing size=0x%Lx alignment=0x%Lx (must be nonzero, alignment a power of two)\n",
+      Purpose,
+      (UINT64)Size,
+      (UINT64)Alignment
+      ));
+    return EFI_INVALID_PARAMETER;
+  }
+
+  if (Size > MAX_UINTN - (Effective - 1)) {
+    ANS_DEBUG ((
+      DEBUG_ERROR,
+      "AppleANS: alloc \"%a\": size 0x%Lx overflows when aligned up to 0x%Lx\n",
+      Purpose,
+      (UINT64)Size,
+      (UINT64)Effective
+      ));
+    return EFI_INVALID_PARAMETER;
+  }
+
+  UsableSize  = ALIGN_VALUE (Size, Effective);
+  UsablePages = EFI_SIZE_TO_PAGES (UsableSize);
+  if (UsablePages == 0) {
+    ANS_DEBUG ((DEBUG_ERROR, "AppleANS: alloc \"%a\": computed zero pages for size 0x%Lx\n", Purpose, (UINT64)Size));
+    return EFI_INVALID_PARAMETER;
+  }
+
+  if (Device->AllocationCount >= APPLE_ANS_MAX_ALLOCATIONS) {
+    ANS_DEBUG ((
+      DEBUG_ERROR,
+      "AppleANS: alloc \"%a\": allocation table full (%Lu entries); ANS bring-up aborted\n",
+      Purpose,
+      (UINT64)Device->AllocationCount
+      ));
+    return EFI_OUT_OF_RESOURCES;
+  }
+
+  ANS_DEBUG ((
+    DEBUG_INFO,
+    "AppleANS: alloc \"%a\": requested=0x%Lx usable=0x%Lx pages=%Lu type=%Lu alignment=0x%Lx granularity=0x%Lx\n",
+    Purpose,
+    (UINT64)Size,
+    (UINT64)UsableSize,
+    (UINT64)UsablePages,
+    (UINT64)MemoryType,
+    (UINT64)Effective,
+    (UINT64)Granularity
+    ));
+
+  //
+  // Fast path: ask for exactly what is needed. For any type whose granularity
+  // already meets or exceeds the requested alignment -- which is every
+  // reserved allocation on AARCH64 -- the core's own alignment guarantee
+  // satisfies us with zero slack.
+  //
+  Raw      = 0;
+  RawPages = UsablePages;
+  Status   = gBS->AllocatePages (AllocateAnyPages, MemoryType, RawPages, &Raw);
+  if (!EFI_ERROR (Status) && ((Raw & (Effective - 1)) != 0)) {
+    //
+    // Core handed back a base that does not meet our alignment. Give it back
+    // whole (always legal) and retry with one alignment unit of slack.
+    //
+    EFI_STATUS  FreeStatus;
+
+    FreeStatus = gBS->FreePages (Raw, RawPages);
+    if (EFI_ERROR (FreeStatus)) {
+      ANS_DEBUG ((
+        DEBUG_WARN,
+        "AppleANS: alloc \"%a\": could not return misaligned block 0x%Lx/%Lu pages: %r (leaked, continuing)\n",
+        Purpose,
+        (UINT64)Raw,
+        (UINT64)RawPages,
+        FreeStatus
+        ));
+    }
+
+    Raw      = 0;
+    RawPages = UsablePages + EFI_SIZE_TO_PAGES (Effective);
+    Status   = gBS->AllocatePages (AllocateAnyPages, MemoryType, RawPages, &Raw);
+  }
+
+  if (EFI_ERROR (Status)) {
+    ANS_DEBUG ((
+      DEBUG_ERROR,
+      "AppleANS: alloc \"%a\": gBS->AllocatePages(AllocateAnyPages, type=%Lu, pages=%Lu) failed: %r; ANS bring-up aborted, boot continues\n",
+      Purpose,
+      (UINT64)MemoryType,
+      (UINT64)RawPages,
+      Status
+      ));
+    return EFI_OUT_OF_RESOURCES;
+  }
+
+  Aligned = ALIGN_VALUE (Raw, (EFI_PHYSICAL_ADDRESS)Effective);
+  if ((Aligned < Raw) ||
+      ((Aligned - Raw) + UsableSize > EFI_PAGES_TO_SIZE (RawPages)))
+  {
+    //
+    // Cannot happen with the slack computed above, but never trust arithmetic
+    // that decides where a DMA-capable coprocessor may write.
+    //
+    ANS_DEBUG ((
+      DEBUG_ERROR,
+      "AppleANS: alloc \"%a\": 0x%Lx/%Lu pages cannot hold 0x%Lx aligned to 0x%Lx; releasing and aborting ANS bring-up\n",
+      Purpose,
+      (UINT64)Raw,
+      (UINT64)RawPages,
+      (UINT64)UsableSize,
+      (UINT64)Effective
+      ));
+    gBS->FreePages (Raw, RawPages);
+    return EFI_OUT_OF_RESOURCES;
+  }
+
+  Record = &Device->Allocations[Device->AllocationCount];
+  Device->AllocationCount++;
+  Record->RawBase  = Raw;
+  Record->RawPages = RawPages;
+  Record->Base     = (VOID *)(UINTN)Aligned;
+  Record->Size     = UsableSize;
+  ZeroMem (Record->Base, Record->Size);
+
+  ANS_DEBUG ((
+    DEBUG_INFO,
+    "AppleANS: alloc \"%a\": base=0x%Lx size=0x%Lx (raw 0x%Lx/%Lu pages)\n",
+    Purpose,
+    (UINT64)Aligned,
+    (UINT64)UsableSize,
+    (UINT64)Raw,
+    (UINT64)RawPages
+    ));
+
+  *Allocation = Record;
+  return EFI_SUCCESS;
+}
+
+/**
+  Release one allocation previously made by AnsAllocatePages(), identified by
+  its aligned base. Whole-allocation free only; status checked, never
+  asserted. A failure is logged and the allocation is dropped from the table
+  (leaked) rather than retried -- at this point the alternative is an assert.
+**/
+STATIC
+VOID
+AnsFreePagesByBase (
+  IN OUT APPLE_ANS_DEVICE  *Device,
+  IN     CONST CHAR8       *Purpose,
+  IN     VOID              *Base
+  )
+{
+  UINTN       Index;
+  EFI_STATUS  Status;
+
+  if (Base == NULL) {
+    return;
+  }
+
+  for (Index = 0; Index < Device->AllocationCount; Index++) {
+    if (Device->Allocations[Index].Base != Base) {
+      continue;
+    }
+
+    Status = gBS->FreePages (
+                    Device->Allocations[Index].RawBase,
+                    Device->Allocations[Index].RawPages
+                    );
+    if (EFI_ERROR (Status)) {
+      ANS_DEBUG ((
+        DEBUG_ERROR,
+        "AppleANS: free \"%a\": gBS->FreePages(0x%Lx, %Lu) failed: %r (leaked, boot continues)\n",
+        Purpose,
+        (UINT64)Device->Allocations[Index].RawBase,
+        (UINT64)Device->Allocations[Index].RawPages,
+        Status
+        ));
+    }
+
+    Device->AllocationCount--;
+    Device->Allocations[Index] = Device->Allocations[Device->AllocationCount];
+    ZeroMem (&Device->Allocations[Device->AllocationCount], sizeof (Device->Allocations[0]));
+    return;
+  }
+
+  ANS_DEBUG ((DEBUG_WARN, "AppleANS: free \"%a\": 0x%lx is not a tracked allocation\n", Purpose, (UINTN)Base));
+}
+
+/**
+  Release every allocation still recorded. Whole-allocation frees only,
+  status checked, never asserted.
+**/
+STATIC
+VOID
+AnsFreeAllPages (
+  IN OUT APPLE_ANS_DEVICE  *Device
+  )
+{
+  EFI_STATUS  Status;
+
+  while (Device->AllocationCount > 0) {
+    Device->AllocationCount--;
+    Status = gBS->FreePages (
+                    Device->Allocations[Device->AllocationCount].RawBase,
+                    Device->Allocations[Device->AllocationCount].RawPages
+                    );
+    if (EFI_ERROR (Status)) {
+      ANS_DEBUG ((
+        DEBUG_ERROR,
+        "AppleANS: free-all: gBS->FreePages(0x%Lx, %Lu) failed: %r (leaked, boot continues)\n",
+        (UINT64)Device->Allocations[Device->AllocationCount].RawBase,
+        (UINT64)Device->Allocations[Device->AllocationCount].RawPages,
+        Status
+        ));
+    }
+
+    ZeroMem (&Device->Allocations[Device->AllocationCount], sizeof (Device->Allocations[0]));
+  }
+}
 
 STATIC APPLE_ANS_DEVICE  *mAns;
 
@@ -313,57 +660,76 @@ AllocateRtkitShared (
   OUT struct ntasi_rtkit_shared_buffer *Buffer
   )
 {
-  APPLE_ANS_DEVICE  *Device = Opaque;
-  VOID              *Address;
-  UINTN             Pages;
-  UINTN             MappedSize;
-  int               Result;
+  APPLE_ANS_DEVICE           *Device = Opaque;
+  APPLE_ANS_PAGE_ALLOCATION  *Allocation;
+  CHAR8                      Purpose[32];
+  EFI_STATUS                 Status;
+  int                        Result;
 
-  MappedSize = ALIGN_VALUE (Size, NTASI_RTKIT_SHARED_ALIGN);
-  Pages      = EFI_SIZE_TO_PAGES (MappedSize);
-  MappedSize = EFI_PAGES_TO_SIZE (Pages);
-  Address    = AllocateAlignedReservedPages (Pages, NTASI_RTKIT_SHARED_ALIGN);
-  if (Address == NULL) {
-    ANS_DEBUG ((
-      DEBUG_ERROR,
-      "AppleANS: RTKit endpoint 0x%x: cannot allocate %Lu reserved bytes\n",
-      (UINT32)Endpoint,
-      (UINT64)MappedSize
-      ));
+  AsciiSPrint (Purpose, sizeof (Purpose), "rtkit-ep-0x%x", (UINT32)Endpoint);
+
+  //
+  // EfiReservedMemoryType, not EfiBootServicesData: m1n1's own
+  // rtkit_set_buffer_pool() states the requirement outright -- "the pool
+  // region must be reserved out of that OS's memory map ... whenever the IOP
+  // keeps running into the next OS". Boot-services memory goes straight back
+  // to Windows at ExitBootServices.
+  //
+  // The alignment asked for is NTASI_RTKIT_SHARED_ALIGN (16 KiB, matching
+  // m1n1's memalign(SZ_16K)); AnsAllocatePages() raises it to the reserved
+  // free granularity (64 KiB on AARCH64) so the base is always a legal
+  // FreePages address, and never performs the partial free that made
+  // AllocateAlignedReservedPages() assert here on 2026-07-30.
+  //
+  Status = AnsAllocatePages (
+             Device,
+             Purpose,
+             EfiReservedMemoryType,
+             Size,
+             NTASI_RTKIT_SHARED_ALIGN,
+             &Allocation
+             );
+  if (EFI_ERROR (Status)) {
+    // AnsAllocatePages already logged the specifics.
     return -1;
   }
 
-  ZeroMem (Address, MappedSize);
+  //
+  // Grant exactly what was allocated, so the matching
+  // ntasi_sart_runtime_remove() looks for the same (paddr, size) pair that
+  // was programmed. Granting less than we own would leave the tail
+  // unreachable; granting more would expose memory we do not own.
+  //
   Result = ntasi_sart_runtime_add (
              &Device->Sart,
-             (UINT64)(UINTN)Address,
-             MappedSize,
+             (UINT64)(UINTN)Allocation->Base,
+             Allocation->Size,
              NULL
              );
   if (Result != 0) {
     ANS_DEBUG ((
       DEBUG_ERROR,
       "AppleANS: RTKit endpoint 0x%x: SART grant for 0x%lx/+0x%Lx failed: %d "
-      "(only 16 SART entries exist; iBoot may hold some)\n",
+      "(only 16 SART entries exist; iBoot may hold some); ANS bring-up aborted, boot continues\n",
       (UINT32)Endpoint,
-      (UINTN)Address,
-      (UINT64)MappedSize,
+      (UINTN)Allocation->Base,
+      (UINT64)Allocation->Size,
       Result
       ));
-    FreeAlignedPages (Address, Pages);
+    AnsFreePagesByBase (Device, Purpose, Allocation->Base);
     return Result;
   }
 
-  Buffer->cpu_address    = Address;
-  Buffer->device_address = (UINT64)(UINTN)Address;
-  Buffer->size           = MappedSize;
+  Buffer->cpu_address    = Allocation->Base;
+  Buffer->device_address = (UINT64)(UINTN)Allocation->Base;
+  Buffer->size           = Allocation->Size;
   Buffer->iop_owned      = false;
   ANS_DEBUG ((
     DEBUG_INFO,
     "AppleANS: RTKit endpoint 0x%x: granted 0x%lx/+0x%Lx (reserved, SART)\n",
     (UINT32)Endpoint,
-    (UINTN)Address,
-    (UINT64)MappedSize
+    (UINTN)Allocation->Base,
+    (UINT64)Allocation->Size
     ));
   return 0;
 }
@@ -376,20 +742,19 @@ ReleaseRtkitShared (
   )
 {
   APPLE_ANS_DEVICE  *Device = Opaque;
-  UINTN             Pages;
+  CHAR8             Purpose[32];
 
-  (VOID)Endpoint;
   if (Buffer->iop_owned || (Buffer->cpu_address == NULL)) {
     return;
   }
 
-  Pages = EFI_SIZE_TO_PAGES (Buffer->size);
+  AsciiSPrint (Purpose, sizeof (Purpose), "rtkit-ep-0x%x", (UINT32)Endpoint);
   ntasi_sart_runtime_remove (
     &Device->Sart,
     Buffer->device_address,
-    EFI_PAGES_TO_SIZE (Pages)
+    Buffer->size
     );
-  FreeAlignedPages (Buffer->cpu_address, Pages);
+  AnsFreePagesByBase (Device, Purpose, Buffer->cpu_address);
 }
 
 STATIC VOID
@@ -598,21 +963,41 @@ AnsFlushBlocks (
   return EFI_SUCCESS;
 }
 
+//
+// Queue/TCB/bounce memory. Routed through AnsAllocatePages() for the same
+// reason the RTKit buffers are: MemoryAllocationLib's AllocateAlignedPages()
+// ASSERT_EFI_ERRORs on any FreePages failure during its own internal
+// slack-trimming, and FreeAlignedPages() ASSERTs on both Pages == 0 and any
+// FreePages failure. Those asserts have not fired for these EfiBootServicesData
+// allocations (their free granularity is only 4 KiB on AARCH64, so the partial
+// frees are legal), but an optional storage coprocessor must not retain ANY
+// code path that can abort the boot -- so no allocation here uses that library
+// at all any more.
+//
 STATIC VOID *
 AllocateQueueMemory (
-  IN UINTN  Size,
-  OUT UINTN *Pages
+  IN OUT APPLE_ANS_DEVICE  *Device,
+  IN     CONST CHAR8       *Purpose,
+  IN     UINTN             Size
   )
 {
-  VOID  *Address;
+  APPLE_ANS_PAGE_ALLOCATION  *Allocation;
+  EFI_STATUS                 Status;
 
-  *Pages  = EFI_SIZE_TO_PAGES (Size);
-  Address = AllocateAlignedPages (*Pages, NTASI_ANS_QUEUE_ALIGN);
-  if (Address != NULL) {
-    ZeroMem (Address, EFI_PAGES_TO_SIZE (*Pages));
+  Status = AnsAllocatePages (
+             Device,
+             Purpose,
+             EfiBootServicesData,
+             Size,
+             NTASI_ANS_QUEUE_ALIGN,
+             &Allocation
+             );
+  if (EFI_ERROR (Status)) {
+    // AnsAllocatePages already logged the specifics.
+    return NULL;
   }
 
-  return Address;
+  return Allocation->Base;
 }
 
 STATIC EFI_STATUS
@@ -628,39 +1013,45 @@ AllocateControllerMemory (
            NTASI_ANS_SUBMISSION_LINEAR_NVMMU;
 
   Device->AdminCommands = AllocateQueueMemory (
+                              Device,
+                              "admin-sq",
                               ntasi_ans_command_bytes (
                                 Device->NvmeHw,
                                 TRUE,
                                 Device->NvmeHw->admin_queue_depth
-                                ),
-                              &Device->AdminCommandPages
+                                )
                               );
   Device->AdminCompletions = AllocateQueueMemory (
+                                 Device,
+                                 "admin-cq",
                                  ntasi_ans_cq_bytes (
                                    Device->NvmeHw->admin_queue_depth
-                                   ),
-                                 &Device->AdminCompletionPages
+                                   )
                                  );
   Device->IoCommands = AllocateQueueMemory (
-                           ntasi_ans_command_bytes (Device->NvmeHw, FALSE, Slots),
-                           &Device->IoCommandPages
+                           Device,
+                           "io-sq",
+                           ntasi_ans_command_bytes (Device->NvmeHw, FALSE, Slots)
                            );
   Device->IoCompletions = AllocateQueueMemory (
-                              ntasi_ans_cq_bytes (Slots),
-                              &Device->IoCompletionPages
+                              Device,
+                              "io-cq",
+                              ntasi_ans_cq_bytes (Slots)
                               );
   if (Linear) {
     Device->AdminTcbs = AllocateQueueMemory (
-                            ntasi_ans_tcb_bytes (Slots),
-                            &Device->AdminTcbPages
+                            Device,
+                            "admin-tcb",
+                            ntasi_ans_tcb_bytes (Slots)
                             );
     Device->IoTcbs = AllocateQueueMemory (
-                         ntasi_ans_tcb_bytes (Slots),
-                         &Device->IoTcbPages
+                         Device,
+                         "io-tcb",
+                         ntasi_ans_tcb_bytes (Slots)
                          );
   }
 
-  Device->Bounce = AllocateAlignedPages (1, NTASI_ANS_DATA_ALIGN);
+  Device->Bounce = AllocateQueueMemory (Device, "bounce", NTASI_ANS_DATA_ALIGN);
   if ((Device->AdminCommands == NULL) ||
       (Device->AdminCompletions == NULL) ||
       (Device->IoCommands == NULL) ||
@@ -668,10 +1059,13 @@ AllocateControllerMemory (
       (Device->Bounce == NULL) ||
       (Linear && ((Device->AdminTcbs == NULL) || (Device->IoTcbs == NULL))))
   {
+    ANS_DEBUG ((
+      DEBUG_ERROR,
+      "AppleANS: controller memory allocation failed; ANS bring-up aborted, boot continues\n"
+      ));
     return EFI_OUT_OF_RESOURCES;
   }
 
-  ZeroMem (Device->Bounce, NTASI_ANS_DATA_ALIGN);
   Device->AdminMemory = (struct ntasi_ans_queue_memory) {
     .commands        = Device->AdminCommands,
     .completions     = Device->AdminCompletions,
@@ -691,32 +1085,24 @@ AllocateControllerMemory (
   return EFI_SUCCESS;
 }
 
+//
+// Releases every page allocation this driver still owns -- queue memory and
+// any RTKit shared buffer that was not already released. Whole-allocation
+// frees with checked status; nothing here can assert.
+//
 STATIC VOID
 FreeControllerMemory (
-  IN APPLE_ANS_DEVICE *Device
+  IN OUT APPLE_ANS_DEVICE *Device
   )
 {
-  if (Device->AdminCommands != NULL) {
-    FreeAlignedPages (Device->AdminCommands, Device->AdminCommandPages);
-  }
-  if (Device->AdminCompletions != NULL) {
-    FreeAlignedPages (Device->AdminCompletions, Device->AdminCompletionPages);
-  }
-  if (Device->AdminTcbs != NULL) {
-    FreeAlignedPages (Device->AdminTcbs, Device->AdminTcbPages);
-  }
-  if (Device->IoCommands != NULL) {
-    FreeAlignedPages (Device->IoCommands, Device->IoCommandPages);
-  }
-  if (Device->IoCompletions != NULL) {
-    FreeAlignedPages (Device->IoCompletions, Device->IoCompletionPages);
-  }
-  if (Device->IoTcbs != NULL) {
-    FreeAlignedPages (Device->IoTcbs, Device->IoTcbPages);
-  }
-  if (Device->Bounce != NULL) {
-    FreeAlignedPages (Device->Bounce, 1);
-  }
+  AnsFreeAllPages (Device);
+  Device->AdminCommands    = NULL;
+  Device->AdminCompletions = NULL;
+  Device->AdminTcbs        = NULL;
+  Device->IoCommands       = NULL;
+  Device->IoCompletions    = NULL;
+  Device->IoTcbs           = NULL;
+  Device->Bounce           = NULL;
 }
 
 //
@@ -1360,7 +1746,19 @@ Fail:
   }
 
   FreeControllerMemory (Device);
-  FreePool (Device);
+  //
+  // gBS->FreePool directly rather than MemoryAllocationLib's FreePool(), which
+  // ASSERT_EFI_ERRORs on failure. Nothing on this unwind path may abort the
+  // boot -- ANS is optional.
+  //
+  {
+    EFI_STATUS  PoolStatus;
+
+    PoolStatus = gBS->FreePool (Device);
+    if (EFI_ERROR (PoolStatus)) {
+      ANS_DEBUG ((DEBUG_ERROR, "AppleANS: FreePool failed: %r (leaked, boot continues)\n", PoolStatus));
+    }
+  }
   mAns = NULL;
   return Status;
 }

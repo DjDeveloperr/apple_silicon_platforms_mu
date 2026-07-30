@@ -43,6 +43,7 @@
   DxeServicesTableLib
   IoLib
   MemoryAllocationLib
+  PrintLib
   TimerLib
   UefiBootServicesTableLib
   UefiDriverEntryPoint
