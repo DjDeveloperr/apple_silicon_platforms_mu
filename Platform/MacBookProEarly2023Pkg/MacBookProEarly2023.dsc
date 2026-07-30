@@ -20,6 +20,7 @@
   DEFINE NTASI_ENABLE_WIRELESS_DART_HANDOFF = 0
   DEFINE NTASI_J414S_GPU_RESOURCE_PROFILE = 0
   DEFINE NTASI_ANS_DXE_BRINGUP = FALSE
+  DEFINE NTASI_ANS_PUBLISH_ACPI = FALSE
   PLATFORM_GUID                  = d70b31ca-2cbc-433b-885f-b8bbda409959
   PLATFORM_VERSION               = 1.0
   DSC_SPECIFICATION              = 0x00010005
@@ -57,7 +58,11 @@
   gAppleSiliconPkgTokenSpaceGuid.PcdAppleAnsExpectedPhysicalInterrupt|1832
   # ANS publication is the only storage-firmware experiment.  The unified
   # baseline leaves this FALSE; the ans build profile overrides it to TRUE.
-  gAppleSiliconPkgTokenSpaceGuid.PcdAppleAnsPublishAcpiDevice|$(NTASI_ENABLE_ANS)
+  # DECOUPLED 2026-07-30 from NTASI_ENABLE_ANS (which gates the driver FFS) so
+  # "the ANS driver is in the FV" and "NTAS2003 is published to Windows" can be
+  # varied independently. The `ans-noacpi` profile is exactly that experiment:
+  # identical FFS set to `ans`, no NTAS2003.
+  gAppleSiliconPkgTokenSpaceGuid.PcdAppleAnsPublishAcpiDevice|$(NTASI_ANS_PUBLISH_ACPI)
   # Mu-side ANS bring-up. FALSE leaves the coprocessor exactly as iBoot left it
   # (running), which is the state every booting profile has. Flip
   # NTASI_ANS_DXE_BRINGUP to TRUE and rebuild to restore the full bring-up.

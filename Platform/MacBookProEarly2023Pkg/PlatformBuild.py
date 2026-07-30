@@ -180,19 +180,25 @@ class PlatformBuilder( UefiBuilder, BuildSettingsManager):
         logging.debug("PlatformBuilder SetPlatformEnv")
         profile = os.environ.get("NTASI_MU_PROFILE", "baseline").strip().lower()
         profile_values = {
-            "baseline": {"ans": "FALSE", "gpu": "0", "wireless": "0"},
-            "ans": {"ans": "TRUE", "gpu": "0", "wireless": "0"},
-            "gpu": {"ans": "FALSE", "gpu": "1", "wireless": "0"},
-            "ans-gpu": {"ans": "TRUE", "gpu": "1", "wireless": "0"},
-            "wireless": {"ans": "FALSE", "gpu": "0", "wireless": "1"},
-            "gpu-wireless": {"ans": "FALSE", "gpu": "1", "wireless": "1"},
-            "ans-gpu-wireless": {"ans": "TRUE", "gpu": "1", "wireless": "1"},
+            "baseline": {"ans_acpi": "FALSE", "ans": "FALSE", "gpu": "0", "wireless": "0"},
+            "ans": {"ans": "TRUE", "gpu": "0", "wireless": "0", "ans_acpi": "TRUE"},
+            # Single-variable control for the BUGCODE_USB3_DRIVER 0x144
+            # investigation: byte-for-byte the same FFS set as "ans" (the
+            # AppleNANDStorageDxe module is still in the FV) but NTAS2003 is
+            # never published, so Windows never builds a devnode for it and
+            # its PnP arbiter never allocates resources for it.
+            "ans-noacpi": {"ans": "TRUE", "gpu": "0", "wireless": "0", "ans_acpi": "FALSE"},
+            "gpu": {"ans_acpi": "FALSE", "ans": "FALSE", "gpu": "1", "wireless": "0"},
+            "ans-gpu": {"ans": "TRUE", "gpu": "1", "wireless": "0", "ans_acpi": "TRUE"},
+            "wireless": {"ans_acpi": "FALSE", "ans": "FALSE", "gpu": "0", "wireless": "1"},
+            "gpu-wireless": {"ans_acpi": "FALSE", "ans": "FALSE", "gpu": "1", "wireless": "1"},
+            "ans-gpu-wireless": {"ans": "TRUE", "gpu": "1", "wireless": "1", "ans_acpi": "TRUE"},
         }
         if profile not in profile_values:
             raise ValueError(
                 "NTASI_MU_PROFILE must be one of: "
-                "baseline, ans, gpu, ans-gpu, wireless, gpu-wireless, "
-                "ans-gpu-wireless"
+                "baseline, ans, ans-noacpi, gpu, ans-gpu, wireless, "
+                "gpu-wireless, ans-gpu-wireless"
             )
         logging.info("Building the J414s Windows Mu profile: %s", profile)
 
@@ -221,6 +227,11 @@ class PlatformBuilder( UefiBuilder, BuildSettingsManager):
         self.env.SetValue(
             "BLD_*_NTASI_ENABLE_ANS",
             profile_values[profile]["ans"],
+            "Selected by NTASI_MU_PROFILE",
+        )
+        self.env.SetValue(
+            "BLD_*_NTASI_ANS_PUBLISH_ACPI",
+            profile_values[profile]["ans_acpi"],
             "Selected by NTASI_MU_PROFILE",
         )
         self.env.SetValue(

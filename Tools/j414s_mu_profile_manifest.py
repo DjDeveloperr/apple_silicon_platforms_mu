@@ -47,6 +47,24 @@ PROFILES = {
     # expected_ffs_count equals baseline's. See
     # NtasiReportGpuPublicationDecision() in AcpiPlatform.c for the explicit
     # decision not to publish NTAS0023 yet and the condition that unblocks it.
+    # SINGLE-VARIABLE CONTROL, 2026-07-30. Identical FFS set to "ans" -- the
+    # AppleNANDStorageDxe module is still in the FV -- but NTAS2003 is never
+    # published, so Windows never builds a devnode for it and its PnP resource
+    # arbiter never allocates an interrupt or the four 4-byte PMGR memory
+    # ranges for it. This isolates "the ACPI device and its resources" from
+    # "the ANS driver exists in the firmware image".
+    #
+    # Needed because the `ans` profile at bde9ff10 -- where the entire ANS
+    # hardware mutation path is dead-stripped from the binary -- still
+    # bugchecked BUGCODE_USB3_DRIVER 0x144, exonerating ANS hardware mutation
+    # and leaving only the ACPI device and the FD layout as variables.
+    "ans-noacpi": {
+        "profile_abi": "ntasi.j414s.windows.ans-driver-no-acpi-control.v1",
+        "ans": True,
+        "ans_acpi": False,
+        "gpu": False,
+        "expected_ffs_count": 88,
+    },
     "gpu": {
         "profile_abi": "ntasi.j414s.windows.gpu-resource-probe.v1",
         "ans": False,
@@ -103,6 +121,9 @@ PROFILES = {
 }
 for _profile in PROFILES.values():
     _profile.setdefault("wireless", False)
+    # NTAS2003 publication defaults to tracking driver presence; only the
+    # ans-noacpi control decouples them.
+    _profile.setdefault("ans_acpi", _profile["ans"])
 REQUIRED_FFS = {
     "168D1A6E-F4A5-448A-9E95-795661BB3067": "ArmPciCpuIo2Dxe",
     "128FB770-5E79-4176-9E51-9BB268A17DD1": "PciHostBridgeDxe",
@@ -449,7 +470,7 @@ def profile_policy(profile: str) -> dict[str, Any]:
             },
         },
         "experimental_features": {
-            "ans_publication": selected["ans"],
+            "ans_publication": selected["ans_acpi"],
             "ans_block_io": False,
             # The gpu profile reserves the ADT-derived, DRAM-bounded GPU
             # carveouts in the GCD. It does NOT publish an ACPI device: see
@@ -591,6 +612,7 @@ def generate_manifest(args: argparse.Namespace) -> dict[str, Any]:
     defines = parse_defines(build_text)
     expected_defines = {
         "NTASI_ENABLE_ANS": "TRUE" if PROFILES[profile]["ans"] else "FALSE",
+        "NTASI_ANS_PUBLISH_ACPI": "TRUE" if PROFILES[profile]["ans_acpi"] else "FALSE",
         "NTASI_J414S_GPU_RESOURCE_PROFILE": "1" if PROFILES[profile]["gpu"] else "0",
         "NTASI_ENABLE_WIRELESS_DART_HANDOFF": "1" if PROFILES[profile]["wireless"] else "0",
     }
@@ -632,7 +654,7 @@ def generate_manifest(args: argparse.Namespace) -> dict[str, Any]:
     # anything else here would mean this static build artifact claims to
     # know a value only a real boot's boot_args can produce.
     expected_pcds = {
-        "PcdAppleAnsPublishAcpiDevice": 1 if PROFILES[profile]["ans"] else 0,
+        "PcdAppleAnsPublishAcpiDevice": 1 if PROFILES[profile]["ans_acpi"] else 0,
         "PcdAppleAnsPublishBlockIo": 0,
         # Mu-side ANS bring-up is withheld in every shipped profile: it
         # reproduced BUGCODE_USB3_DRIVER 0x144 with the Windows ANS driver
@@ -759,7 +781,7 @@ def verify_manifest(manifest_path: Path, source_root: Path | None = None) -> dic
     reject_legacy_paths(build_options.read_text(encoding="utf-8", errors="replace"), "build options")
     pcds = parse_pcd_values(report_text)
     expected_pcds = {
-        "PcdAppleAnsPublishAcpiDevice": 1 if PROFILES[profile]["ans"] else 0,
+        "PcdAppleAnsPublishAcpiDevice": 1 if PROFILES[profile]["ans_acpi"] else 0,
         "PcdAppleAnsPublishBlockIo": 0,
         # Mu-side ANS bring-up is withheld in every shipped profile: it
         # reproduced BUGCODE_USB3_DRIVER 0x144 with the Windows ANS driver

@@ -12,6 +12,9 @@ profile=$1
 case "$profile" in
     baseline) ;;
     ans) ;;
+    # Same FFS set as `ans`, NTAS2003 withheld. Single-variable control
+    # for the BUGCODE_USB3_DRIVER 0x144 investigation.
+    ans-noacpi) ;;
     gpu) ;;
     ans-gpu) ;;
     # CORRECTED 2026-07-30: wireless used to require a second argument -- a
