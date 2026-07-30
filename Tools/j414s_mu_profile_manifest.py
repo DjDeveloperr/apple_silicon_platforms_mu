@@ -79,6 +79,20 @@ PROFILES = {
         "wireless": True,
         "expected_ffs_count": 87,
     },
+    # ANS is deliberately excluded here. Measured on hardware 2026-07-30:
+    # baseline and gpu both boot Windows and stay up, while ans-gpu bugchecks
+    # BUGCODE_USB3_DRIVER (0x144) with XHC1 halted on HOST SYSTEM ERROR and a
+    # DWC3 bus error -- with the port power rails DOWN and XHC2 disabled, so
+    # neither of those is the cause. gpu-wireless exists to exercise the
+    # wireless handoff without dragging ANS in alongside it.
+    # Like gpu and wireless, it adds no FFS module of its own.
+    "gpu-wireless": {
+        "profile_abi": "ntasi.j414s.windows.gpu-wireless-combined.v1",
+        "ans": False,
+        "gpu": True,
+        "wireless": True,
+        "expected_ffs_count": 87,
+    },
     "ans-gpu-wireless": {
         "profile_abi": "ntasi.j414s.windows.ans-gpu-wireless-combined.v1",
         "ans": True,

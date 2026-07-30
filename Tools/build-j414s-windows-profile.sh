@@ -3,7 +3,7 @@
 set -eu
 
 usage() {
-    echo "usage: $0 baseline|ans|gpu|ans-gpu|wireless|ans-gpu-wireless" >&2
+    echo "usage: $0 baseline|ans|gpu|ans-gpu|wireless|gpu-wireless|ans-gpu-wireless" >&2
     exit 2
 }
 
@@ -22,6 +22,7 @@ case "$profile" in
     # wireless takes no manifest and needs no more evidence at build time
     # than ans or gpu do.
     wireless) ;;
+    gpu-wireless) ;;
     ans-gpu-wireless) ;;
     *) usage ;;
 esac
