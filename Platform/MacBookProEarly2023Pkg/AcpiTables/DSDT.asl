@@ -267,8 +267,39 @@
             Name(_HID, "APPL8900") // naming it APPL8900 since the Samsung based UART was used since the S5L8900
             Name(_UID, Zero)
             Name (_CRS, ResourceTemplate () {
+                //
+                // ResourceConsumer, NOT ResourceProducer.
+                //
+                // COM0 is a leaf device: it consumes this register block. A
+                // producer descriptor declares a window a bridge decodes on
+                // behalf of its children -- which is why PCI0's _CRS above
+                // correctly uses ResourceProducer, and why COM0 was, before this
+                // change, the only leaf device in this DSDT that did. XHC1 and
+                // XHC2 both use ResourceConsumer.
+                //
+                // Scope of this fix, stated honestly. Per ACPI 6.0+ section
+                // 6.4.3.5.1, General Flags bit[0] of the QWord Address Space
+                // Descriptor is specified as IGNORED; Consumer/Producer is
+                // architecturally meaningful only in the Extended Address Space
+                // Descriptor (6.4.3.5.4). Linux ignores the bit for QWord/DWord/
+                // Word descriptors for exactly that reason. So a spec-conforming
+                // consumer must hand this range to the driver either way, and
+                // this change is therefore NOT proven to be what makes
+                // AppleSerial bind. Windows' ACPI.sys behaviour here has not
+                // been verified against a Microsoft primary source, and it has
+                // never been observed on this hardware.
+                //
+                // It is corrected anyway because ResourceConsumer is the
+                // semantically correct and ASL-default value for a leaf device,
+                // it matches the two nodes on this platform whose drivers do
+                // bind, and it removes a free variable from the first boot that
+                // tries to open \\.\COM1. If the device still fails to start,
+                // this was not the cause -- look at _STA, at the interrupt
+                // descriptor (GSIV 1198, see below), and at whether
+                // AppleSerial.sys loaded at all.
+                //
                 QWordMemory (
-                ResourceProducer,     // ResourceUsage
+                ResourceConsumer,     // ResourceUsage
                 PosDecode,            // Decode
                 MinFixed,             // IsMinFixed
                 MaxFixed,             // IsMaxFixed
@@ -280,7 +311,7 @@
                 0x0000000000000000,   // AddressTranslation - TRA
                 0x0000000000001000    // RangeLength - LEN
                 )
-                Interrupt(ResourceConsumer, Level, ActiveHigh, Exclusive) { 1198 }            
+                Interrupt(ResourceConsumer, Level, ActiveHigh, Exclusive) { 1198 }
             })
             Method (_STA) {
                 Return (0xF)
