@@ -6,12 +6,22 @@
 
 #include <PiDxe.h>
 #include <Guid/GlobalVariable.h>
+#include <Guid/FileInfo.h>
 #include <Protocol/BlockIo.h>
 #include <Protocol/SimpleFileSystem.h>
 #include <Library/BaseMemoryLib.h>
 #include <Library/HobLib.h>
 #include <Library/UefiBootManagerLib.h>
+#include <Library/UefiLib.h>
 #include <Library/UefiRuntimeServicesTableLib.h>
+
+//
+// Path the WinPE offline-deploy lane writes its verdict to, and the cap on how
+// much of it we are willing to push through a 115200-baud console on the boot
+// path. See EchoEvidenceFile() for the full rationale.
+//
+#define NTASI_EVIDENCE_ECHO_PATH       L"\\NTASI\\last-deploy.txt"
+#define NTASI_EVIDENCE_ECHO_MAX_BYTES  (16u * 1024u)
 
 #include "BootRamdiskHelperDxe.h"
 #define NTASI_APPENDED_RAMDISK_INCLUDE_FAT_VALIDATOR  1
@@ -321,6 +331,232 @@ RegisterAppendedRamdisk (
   return RegisterRamdisk ((UINTN)Image, ImageSize, TRUE);
 }
 
+/**
+  Echo a WinPE evidence file from any attached filesystem to the SERIAL console.
+
+  WHY THIS EXISTS: WinPE on this machine has no serial console at all. COM0 is an
+  Apple UART with no inbox Windows driver, and m1n1 owns the only physical UART for
+  its proxy protocol, so everything the offline-deploy lane prints reaches the
+  PANEL and nowhere else -- the user has to photograph the screen to tell us what
+  happened. That has repeatedly left the deploy lane un-debuggable: it silently
+  failed to install a single driver across many runs while reporting partial
+  success, and nobody could see why.
+
+  Mu, unlike WinPE, has BOTH a FAT driver and the serial console. So the deploy
+  lane writes its verdict to \NTASI\last-deploy.txt on a FAT volume (the ESP), and
+  the very next Mu boot prints it over the wire, where it lands in the host-side
+  log automatically.
+
+  Deliberately best-effort: this is a diagnostic aid on the boot path, and it must
+  never be able to stop the machine booting. Every failure is logged and ignored.
+
+  The file is DELETED after a successful echo so each deploy's evidence is printed
+  exactly once and a stale verdict can never be mistaken for a fresh one. If the
+  delete fails the file is still echoed, but the failure is logged loudly -- a
+  verdict that reprints every boot means the volume is not writable, which is
+  itself worth knowing.
+**/
+STATIC
+VOID
+EchoEvidenceFile (
+  VOID
+  )
+{
+  EFI_SIMPLE_FILE_SYSTEM_PROTOCOL  *Fs;
+  EFI_FILE_PROTOCOL                *Root;
+  EFI_FILE_PROTOCOL                *File;
+  EFI_FILE_INFO                    *Info;
+  EFI_HANDLE                       *Handles;
+  EFI_STATUS                       Status;
+  UINTN                            HandleCount;
+  UINTN                            Index;
+  UINTN                            InfoSize;
+  UINTN                            ReadSize;
+  UINTN                            Cursor;
+  UINTN                            LineStart;
+  CHAR8                            *Buffer;
+  UINT64                           FileSize;
+  UINTN                            Echoed;
+
+  Handles     = NULL;
+  HandleCount = 0;
+  Echoed      = 0;
+
+  Status = gBS->LocateHandleBuffer (
+                  ByProtocol,
+                  &gEfiSimpleFileSystemProtocolGuid,
+                  NULL,
+                  &HandleCount,
+                  &Handles
+                  );
+  if (EFI_ERROR (Status) || (Handles == NULL)) {
+    return;
+  }
+
+  for (Index = 0; Index < HandleCount; Index++) {
+    Status = gBS->HandleProtocol (
+                    Handles[Index],
+                    &gEfiSimpleFileSystemProtocolGuid,
+                    (VOID **)&Fs
+                    );
+    if (EFI_ERROR (Status) || (Fs == NULL)) {
+      continue;
+    }
+
+    Root = NULL;
+    Status = Fs->OpenVolume (Fs, &Root);
+    if (EFI_ERROR (Status) || (Root == NULL)) {
+      continue;
+    }
+
+    File   = NULL;
+    Status = Root->Open (
+                     Root,
+                     &File,
+                     NTASI_EVIDENCE_ECHO_PATH,
+                     EFI_FILE_MODE_READ | EFI_FILE_MODE_WRITE,
+                     0
+                     );
+    if (EFI_ERROR (Status) || (File == NULL)) {
+      //
+      // Retry read-only: on a volume Mu cannot write we still want the text.
+      //
+      File   = NULL;
+      Status = Root->Open (Root, &File, NTASI_EVIDENCE_ECHO_PATH, EFI_FILE_MODE_READ, 0);
+      if (EFI_ERROR (Status) || (File == NULL)) {
+        Root->Close (Root);
+        continue;
+      }
+    }
+
+    //
+    // Size the file. Cap the echo: this runs on the boot path and the console is
+    // a 115200-baud serial line, so an unbounded dump would add minutes to every
+    // boot. The lane's verdict block is a few hundred bytes.
+    //
+    InfoSize = 0;
+    Info     = NULL;
+    Status   = File->GetInfo (File, &gEfiFileInfoGuid, &InfoSize, NULL);
+    if (Status == EFI_BUFFER_TOO_SMALL) {
+      Info = AllocateZeroPool (InfoSize);
+      if (Info != NULL) {
+        Status = File->GetInfo (File, &gEfiFileInfoGuid, &InfoSize, Info);
+      } else {
+        Status = EFI_OUT_OF_RESOURCES;
+      }
+    }
+    if (EFI_ERROR (Status) || (Info == NULL)) {
+      if (Info != NULL) {
+        FreePool (Info);
+      }
+      File->Close (File);
+      Root->Close (Root);
+      continue;
+    }
+
+    FileSize = Info->FileSize;
+    FreePool (Info);
+    if (FileSize == 0) {
+      File->Close (File);
+      Root->Close (Root);
+      continue;
+    }
+    if (FileSize > NTASI_EVIDENCE_ECHO_MAX_BYTES) {
+      DEBUG ((
+        DEBUG_WARN,
+        "NTASI evidence: %s is %lu bytes; echoing only the first %u\n",
+        NTASI_EVIDENCE_ECHO_PATH,
+        FileSize,
+        (UINT32)NTASI_EVIDENCE_ECHO_MAX_BYTES
+        ));
+      FileSize = NTASI_EVIDENCE_ECHO_MAX_BYTES;
+    }
+
+    Buffer = AllocateZeroPool ((UINTN)FileSize + 1);
+    if (Buffer == NULL) {
+      File->Close (File);
+      Root->Close (Root);
+      continue;
+    }
+
+    ReadSize = (UINTN)FileSize;
+    Status   = File->Read (File, &ReadSize, Buffer);
+    if (EFI_ERROR (Status) || (ReadSize == 0)) {
+      FreePool (Buffer);
+      File->Close (File);
+      Root->Close (Root);
+      continue;
+    }
+    Buffer[ReadSize] = '\0';
+
+    DEBUG ((DEBUG_ERROR, "==== NTASI EVIDENCE BEGIN (%s, %u bytes) ====\n",
+            NTASI_EVIDENCE_ECHO_PATH, (UINT32)ReadSize));
+    //
+    // Emit line by line. DEBUG() has a bounded internal buffer, so a single
+    // print of the whole file would be truncated; and CR/LF from a Windows
+    // batch script must not corrupt the framing of the host-side log.
+    //
+    LineStart = 0;
+    for (Cursor = 0; Cursor <= ReadSize; Cursor++) {
+      if ((Cursor == ReadSize) || (Buffer[Cursor] == '\n')) {
+        if (Cursor > LineStart) {
+          if (Buffer[Cursor - 1] == '\r') {
+            Buffer[Cursor - 1] = '\0';
+          }
+        }
+        if (Cursor < ReadSize) {
+          Buffer[Cursor] = '\0';
+        }
+        DEBUG ((DEBUG_ERROR, "NTASI| %a\n", &Buffer[LineStart]));
+        LineStart = Cursor + 1;
+      }
+    }
+    DEBUG ((DEBUG_ERROR, "==== NTASI EVIDENCE END ====\n"));
+    Echoed++;
+
+    FreePool (Buffer);
+
+    //
+    // Print once, then remove. Delete() closes the handle either way.
+    //
+    Status = File->Delete (File);
+    if (EFI_ERROR (Status)) {
+      DEBUG ((
+        DEBUG_ERROR,
+        "NTASI evidence: could NOT delete %s (%r) -- it will reprint every boot; "
+        "treat a repeated verdict as stale and the volume as unwritable\n",
+        NTASI_EVIDENCE_ECHO_PATH,
+        Status
+        ));
+    }
+
+    Root->Close (Root);
+  }
+
+  FreePool (Handles);
+
+  if (Echoed == 0) {
+    DEBUG ((DEBUG_INFO, "NTASI evidence: no %s on any attached volume\n",
+            NTASI_EVIDENCE_ECHO_PATH));
+  }
+}
+
+STATIC
+VOID
+EFIAPI
+OnReadyToBootEchoEvidence (
+  IN EFI_EVENT  Event,
+  IN VOID       *Context
+  )
+{
+  //
+  // ReadyToBoot, not driver entry: at entry the ESP is not connected yet, so
+  // OpenVolume would find nothing. By ReadyToBoot BDS has connected the boot
+  // devices and every FAT volume is enumerable.
+  //
+  EchoEvidenceFile ();
+}
+
 EFI_STATUS
 EFIAPI
 BootRamdiskHelperDxeInitialize (
@@ -332,8 +568,24 @@ BootRamdiskHelperDxeInitialize (
   VOID        *OriginalRamDiskPtr;
   UINTN       RamDiskSize;
   EFI_STATUS  Status;
+  EFI_EVENT   ReadyToBootEvent;
 
   DEBUG ((DEBUG_INFO, "BootRamdiskHelperDxe started\n"));
+
+  //
+  // Registered before any early-return below: the evidence echo is independent
+  // of whether this boot uses an appended ramdisk, an FV ramdisk, or neither.
+  //
+  ReadyToBootEvent = NULL;
+  Status = EfiCreateEventReadyToBootEx (
+             TPL_CALLBACK,
+             OnReadyToBootEchoEvidence,
+             NULL,
+             &ReadyToBootEvent
+             );
+  if (EFI_ERROR (Status)) {
+    DEBUG ((DEBUG_ERROR, "BootRamdiskHelperDxe: evidence echo not armed: %r\n", Status));
+  }
 
   Status = RegisterAppendedRamdisk ();
   if (Status != EFI_NOT_FOUND) {

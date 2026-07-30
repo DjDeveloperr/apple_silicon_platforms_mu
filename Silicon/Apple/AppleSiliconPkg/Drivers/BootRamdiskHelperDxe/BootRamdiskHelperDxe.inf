@@ -50,6 +50,7 @@
   gEfiVirtualCdGuid            ## SOMETIMES_CONSUMES ## GUID
   gEfiVirtualDiskGuid          ## SOMETIMES_CONSUMES ## GUID
   gAppleSiliconPkgEmbeddedRamdiskGuid
+  gEfiFileInfoGuid             ## CONSUMES ## GUID  (evidence-file echo)
 
 [Pcd.common]
   gAppleSiliconPkgTokenSpaceGuid.PcdInitializeRamdisk
