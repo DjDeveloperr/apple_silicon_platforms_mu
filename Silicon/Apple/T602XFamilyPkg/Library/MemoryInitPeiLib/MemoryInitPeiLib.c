@@ -133,8 +133,8 @@ STATIC VOID InitMmu(IN ARM_MEMORY_REGION_DESCRIPTOR *MemoryTable)
     RETURN_STATUS StatusCode;
 
     DEBUG(
-        (DEBUG_INFO, 
-        "MemoryInitPeiLib: Enabling MMU, Page Table Base: 0x%p, Page Table Size: 0x%p\n", 
+        (DEBUG_INFO,
+        "MemoryInitPeiLib: Enabling MMU, Page Table Base: 0x%p, Page Table Size: 0x%p\n",
         &MemoryTranslationTableBase, &MemoryTranslationTableSize)
         );
     StatusCode = ArmConfigureMmu(MemoryTable, &MemoryTranslationTableBase, &MemoryTranslationTableSize);
@@ -254,6 +254,202 @@ ReserveAllocatedSystemMemoryRegion (
 
   return FALSE;
 }
+
+#if NTASI_J414S_GPU_RESOURCE_PROFILE
+//
+// GPU firmware init-data payload sizes for the currently supported GPU
+// firmware compat version (13.5 -- see GPU.asl's
+// "ntasp,gpu-firmware-compat-major"/"-minor" and "ntasp,*-payload-size"
+// _DSD values, which must move together with these if the compat version
+// ever changes). These are fixed ABI struct sizes, not a per-boot memory
+// layout, so unlike the addresses below they are safe to keep as compile
+// time constants.
+//
+#define NTASI_GPU_HWCAL_A_PAYLOAD_SIZE  0x6C34ULL
+#define NTASI_GPU_HWCAL_B_PAYLOAD_SIZE  0x1884ULL
+#define NTASI_GPU_GLOBALS_PAYLOAD_SIZE  0x1715CULL
+
+//
+// Read a raw 64-bit Apple ADT scalar property (the "-base"/"-size" style
+// properties are stored as a bare native UINT64, not an OpenFirmware
+// #address-cells/#size-cells encoded "reg" pair -- see m1n1's
+// ADT_GETPROP(adt, node, "gfx-handoff-base", &u64_var) in src/adt.h,
+// which copies sizeof(UINT64) bytes verbatim).
+//
+STATIC
+BOOLEAN
+NtasiDtNodeU64 (
+  IN  dt_node_t    *Node,
+  IN  CONST CHAR8  *PropName,
+  OUT UINT64       *Value
+  )
+{
+  VOID    *Raw;
+  size_t  Length;
+
+  if (Node == NULL) {
+    return FALSE;
+  }
+
+  Raw = dt_node_prop (Node, PropName, &Length);
+  if ((Raw == NULL) || (Length < sizeof (UINT64))) {
+    return FALSE;
+  }
+
+  *Value = *(UINT64 *)Raw;
+  return TRUE;
+}
+
+//
+// uat_ttbs / uat_pagetables / uat_handoff: fixed silicon carveouts read
+// live from the "/arm-io/sgx" ADT node, using exactly the property names
+// m1n1's dt_set_region() (src/kboot_gpu.c) reads for the same three
+// regions ("gpu-region", "gfx-shared-region", "gfx-handoff" + "-base"/
+// "-size"). These are carved out of physical DRAM by iBoot *above* the
+// boot_args memory window Mu is handed -- that is why they measure as
+// "outside system memory" tonight; it is how the hardware is wired, not
+// drift. Nothing in Mu's own memory map ever claims that address range on
+// its own, so this can never need ReserveAllocatedSystemMemoryRegion()'s
+// "must already be covered by a System Memory HOB" contract; it always
+// succeeds, and only documents the reservation in the UEFI memory map.
+//
+STATIC
+VOID
+NtasiReserveGpuAdtCarveout (
+  IN dt_node_t                    *SgxNode,
+  IN CONST CHAR8                  *AdtPropertyPrefix,
+  IN CONST CHAR8                  *Label,
+  IN EFI_PHYSICAL_ADDRESS         SystemMemoryBase,
+  IN EFI_PHYSICAL_ADDRESS         SystemMemoryTop,
+  IN EFI_RESOURCE_ATTRIBUTE_TYPE  ResourceAttributes
+  )
+{
+  CHAR8   PropName[40];
+  UINT64  Base;
+  UINT64  Size;
+
+  AsciiSPrint (PropName, sizeof (PropName), "%a-base", AdtPropertyPrefix);
+  if (!NtasiDtNodeU64 (SgxNode, PropName, &Base)) {
+    DEBUG ((DEBUG_ERROR, "AppleAgxGpu: %a: missing ADT property \"%a\" on sgx; GPU degraded\n", Label, PropName));
+    return;
+  }
+
+  AsciiSPrint (PropName, sizeof (PropName), "%a-size", AdtPropertyPrefix);
+  if (!NtasiDtNodeU64 (SgxNode, PropName, &Size)) {
+    DEBUG ((DEBUG_ERROR, "AppleAgxGpu: %a: missing ADT property \"%a\" on sgx; GPU degraded\n", Label, PropName));
+    return;
+  }
+
+  if ((Size == 0) || (Base > MAX_UINT64 - (Size - 1))) {
+    DEBUG ((DEBUG_ERROR, "AppleAgxGpu: %a: implausible ADT region 0x%lx/+0x%lx; GPU degraded\n", Label, Base, Size));
+    return;
+  }
+
+  if ((Base >= SystemMemoryBase) && (Base <= SystemMemoryTop) &&
+      ((SystemMemoryTop - Base) >= Size))
+  {
+    //
+    // Unusual but not impossible: this unit's carveout happens to fall
+    // inside the boot_args window. Fold it into System Memory like the
+    // "inside" reservations below so DXE/Windows can never allocate over
+    // it.
+    //
+    if ((Size > MAX_UINT32) ||
+        !ReserveAllocatedSystemMemoryRegion (Base, (UINT32)Size, ResourceAttributes))
+    {
+      DEBUG ((DEBUG_ERROR, "AppleAgxGpu: %a: could not reserve 0x%lx/+0x%lx inside system memory; GPU degraded\n", Label, Base, Size));
+    } else {
+      DEBUG ((DEBUG_INFO, "AppleAgxGpu: %a: reserved 0x%lx/+0x%lx (in-window)\n", Label, Base, Size));
+    }
+
+    return;
+  }
+
+  //
+  // Expected case: iBoot's own carveout, outside the boot_args memory
+  // window. Record it explicitly so it is visible in the UEFI memory map
+  // even though nothing would otherwise claim it.
+  //
+  BuildResourceDescriptorHob (
+    EFI_RESOURCE_MEMORY_RESERVED,
+    0,
+    Base,
+    Size
+    );
+  DEBUG ((DEBUG_INFO, "AppleAgxGpu: %a: reserved 0x%lx/+0x%lx (out-of-window carveout)\n", Label, Base, Size));
+}
+
+//
+// hw_data_a / hw_data_b / globals: the GPU firmware init-data blobs m1n1
+// carves from the *top* of the same usable-memory window Mu is handed,
+// via top_of_memory_alloc() called for data_a then data_b then globals in
+// that order (kboot_gpu.c's dt_set_gpu()) -- a bump allocator that hands
+// out the highest address first. So instead of hardcoding a snapshot of
+// one boot's addresses, stack the three (firmware-ABI-fixed-size) blobs
+// downward from Mu's own live SystemMemoryTop in the same order m1n1
+// uses. If SystemMemoryTop is ever too small to hold them, log loudly and
+// leave the GPU degraded instead of hanging PEI.
+//
+STATIC
+VOID
+NtasiReserveGpuHandoffData (
+  IN EFI_PHYSICAL_ADDRESS         SystemMemoryBase,
+  IN EFI_PHYSICAL_ADDRESS         SystemMemoryTop,
+  IN EFI_RESOURCE_ATTRIBUTE_TYPE  ResourceAttributes
+  )
+{
+  UINT64  HwDataASize;
+  UINT64  HwDataBSize;
+  UINT64  GlobalsSize;
+  UINT64  HwDataABase;
+  UINT64  HwDataBBase;
+  UINT64  GlobalsBase;
+
+  HwDataASize = ALIGN_VALUE (NTASI_GPU_HWCAL_A_PAYLOAD_SIZE, SIZE_16KB);
+  HwDataBSize = ALIGN_VALUE (NTASI_GPU_HWCAL_B_PAYLOAD_SIZE, SIZE_16KB);
+  GlobalsSize = ALIGN_VALUE (NTASI_GPU_GLOBALS_PAYLOAD_SIZE, SIZE_16KB);
+
+  if ((SystemMemoryTop <= SystemMemoryBase) ||
+      ((SystemMemoryTop - SystemMemoryBase) < (HwDataASize + HwDataBSize + GlobalsSize)))
+  {
+    DEBUG ((
+      DEBUG_ERROR,
+      "AppleAgxGpu: hw_data_a/hw_data_b/globals (0x%lx total) do not fit under SystemMemoryTop 0x%lx; GPU degraded\n",
+      HwDataASize + HwDataBSize + GlobalsSize,
+      SystemMemoryTop
+      ));
+    return;
+  }
+
+  HwDataABase = SystemMemoryTop - HwDataASize;
+  HwDataBBase = HwDataABase - HwDataBSize;
+  GlobalsBase = HwDataBBase - GlobalsSize;
+
+  if ((HwDataASize > MAX_UINT32) ||
+      !ReserveAllocatedSystemMemoryRegion (HwDataABase, (UINT32)HwDataASize, ResourceAttributes))
+  {
+    DEBUG ((DEBUG_ERROR, "AppleAgxGpu: hw_data_a: could not reserve 0x%lx/+0x%lx; GPU degraded\n", HwDataABase, HwDataASize));
+  } else {
+    DEBUG ((DEBUG_INFO, "AppleAgxGpu: hw_data_a: reserved 0x%lx/+0x%lx (SystemMemoryTop - 0x%lx)\n", HwDataABase, HwDataASize, HwDataASize));
+  }
+
+  if ((HwDataBSize > MAX_UINT32) ||
+      !ReserveAllocatedSystemMemoryRegion (HwDataBBase, (UINT32)HwDataBSize, ResourceAttributes))
+  {
+    DEBUG ((DEBUG_ERROR, "AppleAgxGpu: hw_data_b: could not reserve 0x%lx/+0x%lx; GPU degraded\n", HwDataBBase, HwDataBSize));
+  } else {
+    DEBUG ((DEBUG_INFO, "AppleAgxGpu: hw_data_b: reserved 0x%lx/+0x%lx\n", HwDataBBase, HwDataBSize));
+  }
+
+  if ((GlobalsSize > MAX_UINT32) ||
+      !ReserveAllocatedSystemMemoryRegion (GlobalsBase, (UINT32)GlobalsSize, ResourceAttributes))
+  {
+    DEBUG ((DEBUG_ERROR, "AppleAgxGpu: globals: could not reserve 0x%lx/+0x%lx; GPU degraded\n", GlobalsBase, GlobalsSize));
+  } else {
+    DEBUG ((DEBUG_INFO, "AppleAgxGpu: globals: reserved 0x%lx/+0x%lx\n", GlobalsBase, GlobalsSize));
+  }
+}
+#endif // NTASI_J414S_GPU_RESOURCE_PROFILE
 
 //Borrowed from ArmPlatformPkg
 EFI_STATUS EFIAPI MemoryPeim(IN EFI_PHYSICAL_ADDRESS UefiMemoryBase, IN UINT64 UefiMemorySize)
@@ -493,18 +689,31 @@ EFI_STATUS EFIAPI MemoryPeim(IN EFI_PHYSICAL_ADDRESS UefiMemoryBase, IN UINT64 U
 #endif // NTASI_ENABLE_WIRELESS_DART_HANDOFF
 
 #if NTASI_J414S_GPU_RESOURCE_PROFILE
-  // Generated AppleAgxGpu preboot reservations. Keep these exact
-  // addresses in lockstep with GPU.asl and the m1n1 handoff manifest.
-  if (
-      !ReserveAllocatedSystemMemoryRegion (0x103FFFB8000ULL, 0x4000, ResourceAttributes) ||
-      !ReserveAllocatedSystemMemoryRegion (0x103FFF78000ULL, 0x40000, ResourceAttributes) ||
-      !ReserveAllocatedSystemMemoryRegion (0x103FFF70000ULL, 0x4000, ResourceAttributes) ||
-      !ReserveAllocatedSystemMemoryRegion (0x103DB294000ULL, 0x8000, ResourceAttributes) ||
-      !ReserveAllocatedSystemMemoryRegion (0x103DB290000ULL, 0x4000, ResourceAttributes) ||
-      !ReserveAllocatedSystemMemoryRegion (0x103DB278000ULL, 0x18000, ResourceAttributes)
-     ) {
-    DEBUG ((DEBUG_ERROR, "AppleAgxGpu: preboot reservation is outside system memory\n"));
-    return EFI_DEVICE_ERROR;
+  //
+  // AppleAgxGpu preboot reservations, derived live from the ADT and from
+  // Mu's own observed memory geometry -- the way Asahi/m1n1 derive them --
+  // instead of a hardcoded snapshot of one boot's addresses that goes
+  // stale the moment the memory layout shifts. See NtasiReserveGpuAdtCarveout()
+  // and NtasiReserveGpuHandoffData() above for the derivation and its
+  // rationale. Every failure path there logs loudly and simply leaves that
+  // one region unreserved; nothing here can return EFI_DEVICE_ERROR, because
+  // PEI cannot recover or debug that (no console exists yet at this point
+  // in boot) and a degraded GPU is infinitely better than a machine that
+  // will not boot.
+  //
+  {
+    dt_node_t  *SgxNode;
+
+    SgxNode = dt_get ("sgx");
+    if (SgxNode == NULL) {
+      DEBUG ((DEBUG_ERROR, "AppleAgxGpu: \"sgx\" ADT node not found; all GPU preboot reservations skipped, GPU degraded\n"));
+    } else {
+      NtasiReserveGpuAdtCarveout (SgxNode, "gpu-region", "uat_ttbs", PcdGet64 (PcdSystemMemoryBase), SystemMemoryTop, ResourceAttributes);
+      NtasiReserveGpuAdtCarveout (SgxNode, "gfx-shared-region", "uat_pagetables", PcdGet64 (PcdSystemMemoryBase), SystemMemoryTop, ResourceAttributes);
+      NtasiReserveGpuAdtCarveout (SgxNode, "gfx-handoff", "uat_handoff", PcdGet64 (PcdSystemMemoryBase), SystemMemoryTop, ResourceAttributes);
+    }
+
+    NtasiReserveGpuHandoffData (PcdGet64 (PcdSystemMemoryBase), SystemMemoryTop, ResourceAttributes);
   }
 #endif // NTASI_J414S_GPU_RESOURCE_PROFILE
   //reserve secondary stacks carveouts passed into cpm-impl-reg 
