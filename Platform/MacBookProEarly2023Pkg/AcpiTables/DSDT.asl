@@ -120,54 +120,70 @@
                 Return (FixedPcdGet64 (PcdPciExpressBaseAddress))
             }
             //
-            // One identity-mapped (TRA = 0), 32-bit, non-prefetchable
-            // producer window at bus == CPU 0xC0000000..0xCFFFFFFF.
+            // Both producer windows are a literal transcription of the
+            // hardware's own description.  Decoded 2026-07-30 from the pinned
+            // live J414s ADT capture (j414s-adt.bin, sha256
+            // 93d96b4a3ea736288278606b723f263361c6ae6c3d5c4f24f08f6f7a73f4b66e),
+            // node /arm-io/apcie, property "ranges" -- 2 entries x 7 cells:
             //
-            // WHY THIS SHAPE (2026-07-30, code-12 root-cause work):
+            //   phys.hi 0x02000000  bus 0x0_C0000000 -> parent 0x5C0000000
+            //                       size 0x40000000   (32-bit, NON-prefetchable)
+            //   phys.hi 0x43000000  bus 0x5_A0000000 -> parent 0x5A0000000
+            //                       size 0x20000000   (64-bit, prefetchable)
             //
-            //  * Every resource Windows' PnP arbiters have ever granted on
-            //    this machine is below 4 GiB (XHC1/XHC2 aliases, MTP, ANS,
-            //    DISP, UART); the one _CRS consumer ever published above the
-            //    proven range (native XHC1 at 0xB02280000) was refused by the
-            //    root memory arbiter and had to be aliased to 0x60000000.
-            //    The previous translated window (bus 0xC0000000 -> CPU
-            //    0x5C0000000, TRA 0x500000000) put every BAR grant in exactly
-            //    that unproven-high class, and additionally relied on the
-            //    arbiter honouring a producer-side _TRA -- while ledger row
-            //    "HV: Unmapped IPA 0x1800000" proves this Windows build maps
-            //    the RAW base of consumer descriptors, so producer _TRA was
-            //    the only untested translation path left in the boot.
-            //  * m1n1 (tools/m1n1-windows-debug.py in the drivers repo) now
-            //    installs a stage-2 alias guest 0xC0000000 -> host
-            //    0x5C0000000 (256 MiB) whenever post-HV PCIe init runs, so
-            //    guest-physical == PCI-bus address inside this window.  The
-            //    hardware window itself is unchanged: the apcie fabric still
-            //    forwards host 0x5C0000000+off as bus 0xC0000000+off (ADT
-            //    apcie "ranges", measured), and Mu's own PciHostBridgeDxe
-            //    still allocates BARs at bus 0xC0000000+ (translation-aware
-            //    via PcdPciMmio32Translation), so Mu's boot configuration
-            //    (WiFi BAR2=0xC0000000, BT BAR2=0xC1000000, SD
-            //    BAR0=0xC2100000, all measured 2026-07-30) sits inside this
-            //    window and stays valid for Windows to adopt.
-            //  * 256 MiB comfortably covers the 34 MiB Mu actually assigns
-            //    and stays far from the XHC1/XHC2 aliases at 0x60000000/
-            //    0x61000000 and the MTP staging alias at 0x1800000.
+            // phys.hi bit 30 is the prefetchable bit and bits 25:24 the space
+            // code, so 0x02000000 is 32-bit non-prefetchable and 0x43000000 is
+            // 64-bit prefetchable.  The same node gives bus-range <0 8>,
+            // #ports 4, msi-address 0xfffff000, #msi-vectors 32 and
+            // msi-vector-offset 1672.
             //
-            // The 64-bit prefetchable window (bus == CPU 0x5A0000000,
-            // 512 MiB) is deliberately NOT published: both BCM4388 functions
-            // expose only 64-bit NON-prefetchable BARs (low bits 0x4) and the
-            // GL9755 a 32-bit non-prefetchable BAR, so per PCI bridge rules
-            // nothing on this fabric can be placed in a prefetchable window.
-            // Publishing an unproven-high producer range Windows never needs
-            // only re-introduces the exact arbitration doubt this change
-            // removes.
+            // Hence: _TRA 0x500000000 on the non-prefetchable window (the
+            // apcie fabric forwards CPU 0x5C0000000+off as bus 0xC0000000+off,
+            // which is what must land in the BARs) and _TRA 0 on the
+            // prefetchable window, which the fabric maps identically.
+            //
+            // RESTORED 2026-07-30, reverting the DSDT hunk of 848b3b5.  That
+            // commit replaced this with a single identity-mapped 256 MiB
+            // window (bus 0xC0000000, _TRA 0) and deleted the prefetchable
+            // window.  Three things were wrong with it:
+            //
+            //  * It rested on m1n1 installing a stage-2 alias guest
+            //    0xC0000000 -> host 0x5C0000000.  No such alias exists.
+            //    tools/m1n1-windows-debug.py calls hv.map_hw() exactly three
+            //    times -- 0x60000000->0xB02280000 (XHC1), 0x61000000->
+            //    0xF02280000 (XHC2) and 0x1800000->0x10020000000 (MTP
+            //    staging).  With _TRA 0 and no alias, every BAR Windows
+            //    granted would have been mapped at a guest-physical address
+            //    nothing backs.
+            //  * Its premise -- "Windows' root memory arbiter refuses this
+            //    machine's high addresses, as shown by native XHC1 at
+            //    0xB02280000" -- is falsified by this project's own A/B.  The
+            //    only CM_PROB_NORMAL_CONFLICT ever measured here was on
+            //    ACPI\PNP0D15\1, and removing the *Interrupt* descriptor (GSIV
+            //    1274) from its _CRS cleared it to problem=0 with resources
+            //    assigned.  That code 12 was interrupt arbitration, not
+            //    memory; no memory descriptor has ever been refused.
+            //  * It withheld 1 GiB of genuine non-prefetchable space and left
+            //    only 256 MiB, while deleting the prefetchable window the
+            //    fabric really does decode.
+            //
+            // Sizing, for the record: the ADT's non-prefetchable window is
+            // 1 GiB and every BAR on this fabric is non-prefetchable (both
+            // BCM4388 functions expose 64-bit non-prefetchable BAR0 64 KiB +
+            // BAR2 16 MiB; the GL9755 a 32-bit non-prefetchable BAR0), so the
+            // ~34 MiB actually needed has 30x headroom.  The prefetchable
+            // window is published because the hardware provides it, not
+            // because anything needs it.
             //
             Name (_CRS, ResourceTemplate () {
                 WordBusNumber (ResourceProducer, MinFixed, MaxFixed, PosDecode,
                     0, 0, 4, 0, 5)
                 QWordMemory (ResourceProducer, PosDecode, MinFixed, MaxFixed,
                     NonCacheable, ReadWrite, 0,
-                    0xc0000000, 0xcfffffff, 0, 0x10000000)
+                    0xc0000000, 0xffffffff, 0x500000000, 0x40000000)
+                QWordMemory (ResourceProducer, PosDecode, MinFixed, MaxFixed,
+                    Prefetchable, ReadWrite, 0,
+                    0x00000005a0000000, 0x00000005bfffffff, 0, 0x20000000)
             })
             Method (_STA) { Return (0x0f) }
         }
