@@ -40,27 +40,22 @@
   # option for it.  Windows does not need it: the NTAS200x device comes from
   # the runtime SSDT, which reads the live ADT directly.
   gAppleSiliconPkgTokenSpaceGuid.PcdAppleAnsPublishBlockIo|FALSE|BOOLEAN|0x0000471C
-  # Exact four-byte PMGR power-state registers exported only to NTAS2003.
-  # Windows owns the complete Asahi-pinned dependency chain during ANS start.
+  # Exact four-byte PMGR power-state registers, exported to NTAS2003's ACPI
+  # _CRS. RETRACTED 2026-07-30: earlier comments here and on Mu's own ANS
+  # bring-up code claimed touching ANS/SART/mailbox MMIO before this PMGR
+  # sequence runs "stalls the AMBA bus transaction" and that this sequence
+  # is "Windows' job, not Mu's". Both claims were measured false on hardware
+  # the same night: ANS2/APCIE_ST/APCIE_ST_SYS/APCIE_ST1_SYS were already
+  # ACTIVE (iBoot leaves them on; nothing powers them down before Mu runs),
+  # and a direct read of live ANS MMIO returned sane data with no stall.
+  # There was and is no PMGR dependency chain for anyone to own here.
+  # AppleNANDStorageDxe now performs its bring-up unconditionally; these
+  # four PCDs remain published to ACPI for whatever the OS side wants to do
+  # with them, not because Mu needs them sequenced first.
   gAppleSiliconPkgTokenSpaceGuid.PcdAppleAnsPmgrResetBase|0|UINT64|0x0000471D
   gAppleSiliconPkgTokenSpaceGuid.PcdAppleAnsPmgrApcieStBase|0|UINT64|0x0000471E
   gAppleSiliconPkgTokenSpaceGuid.PcdAppleAnsPmgrApcieStSysBase|0|UINT64|0x0000471F
   gAppleSiliconPkgTokenSpaceGuid.PcdAppleAnsPmgrApcieSt1SysBase|0|UINT64|0x00004720
-  # Perform the DXE-time RTKit/ASC coprocessor bring-up in AppleNANDStorageDxe.
-  # Default FALSE. Confirmed on hardware 2026-07-29/30: touching the ANS/
-  # SART/mailbox MMIO registers before the ps_apcie_st -> ps_ans2 ->
-  # ps_apcie_st_sys -> ps_apcie_st1_sys PMGR sequence above has run does not
-  # time out in software -- it stalls the AMBA bus transaction itself, an
-  # unbounded hardware wait no firmware poll-loop timeout can catch, and
-  # hangs the whole machine before the serial console is even live. That
-  # PMGR sequence is deliberately not implemented in Mu: per the comment on
-  # PcdAppleAnsPmgr*Base above, Windows owns the complete dependency chain
-  # once it binds to the NTAS200x ACPI device (see drivers/AppleNvme in the
-  # asnt-ans-offline tree, which already implements it correctly, mirroring
-  # Linux's apple_pmgr_ps_set()). ACPI publication
-  # (PcdAppleAnsPublishAcpiDevice) therefore does not need this to be TRUE;
-  # flip it only for an isolated, single-purpose bring-up validation build.
-  gAppleSiliconPkgTokenSpaceGuid.PcdAppleAnsBringUpController|FALSE|BOOLEAN|0x00004721
 
   # Stack stuff (128k stack by default)
   #Fallback stack base in case ModuleEntryPoint setup won't work.

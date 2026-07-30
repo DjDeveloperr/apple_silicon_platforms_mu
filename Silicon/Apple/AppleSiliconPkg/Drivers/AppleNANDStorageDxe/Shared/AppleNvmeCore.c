@@ -23,8 +23,16 @@ uint32_t ntasi_ans_aqa(uint32_t slots)
 
 uint32_t ntasi_ans_max_pend_cmds(uint32_t slots)
 {
-    /* Linux apple.c:1157-1160: register takes the actual depth, not depth-1. */
-    return (slots << 16) | slots;
+    /*
+     * nvme.c:353-354: write32(nvme_base + NVME_MAX_PEND_CMDS_CTRL,
+     * ((NVME_QUEUE_SIZE - 1) << 16) | (NVME_QUEUE_SIZE - 1)) -- corrected
+     * 2026-07-30: this used to be (slots << 16) | slots, sourced from Linux
+     * apple.c:1157-1160 instead of m1n1's own nvme.c. m1n1's nvme.c -- proven
+     * working on this exact hardware the same night -- uses the same
+     * depth-minus-one convention here as ntasi_ans_aqa()/ntasi_ans_nvmmu_num(),
+     * not the raw depth Linux's apple.c uses for this register.
+     */
+    return ((slots - 1u) << 16) | (slots - 1u);
 }
 
 uint32_t ntasi_ans_nvmmu_num(uint32_t slots)

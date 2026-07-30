@@ -850,48 +850,43 @@ AppleNANDStorageDxeInitialize (
   CONST struct ntasi_sart_params   *SartParams;
   EFI_STATUS                       Status;
   int                              Result;
+  CONST CHAR8                      *Stage;
 
   (VOID)ImageHandle;
   (VOID)SystemTable;
 
-#if !defined (APPLE_ANS_QEMU_TEST)
   //
-  // On real J414s hardware the ANS/SART/mailbox MMIO block is gated behind
-  // a four-domain PMGR power sequence (ps_apcie_st -> ps_ans2 ->
-  // ps_apcie_st_sys -> ps_apcie_st1_sys, see PcdAppleAnsPmgr*Base) that
-  // this driver does not perform. Touching those registers first does not
-  // time out: it stalls the AMBA bus transaction itself, an unbounded
-  // hardware wait no software poll-loop timeout can catch, hanging the
-  // whole machine before the serial console is even live. Confirmed on
-  // hardware 2026-07-29/30. Windows performs that PMGR sequence itself
-  // once it binds to the NTAS200x ACPI device that AcpiPlatformDxe already
-  // publishes independently of this driver (see drivers/AppleNvme in the
-  // asnt-ans-offline tree for the reference implementation), so the DXE
-  // bring-up below is neither required for Windows to boot nor safe to run
-  // by default. See PcdAppleAnsBringUpController in AppleSiliconPkg.dec.
+  // Named-stage breadcrumbs, logged *before* each risky call as well as on
+  // failure: on 2026-07-30 this driver's DXE-time bring-up produced zero
+  // console output on a hang, indistinguishable from a driver that never
+  // even started. If it hangs again, whichever DEBUG_INFO line below is the
+  // last one that reached the log names the exact stage; if a call instead
+  // faults, that same line pins down the last place execution was known to
+  // be before the exception. Every wait this stage sequence drives is
+  // already bounded by APPLE_ANS_POLL_LIMIT (see Shared/*.c) -- this only
+  // adds visibility, it does not change what is bounded.
   //
-  if (!FixedPcdGetBool (PcdAppleAnsBringUpController)) {
-    ANS_DEBUG ((
-      DEBUG_INFO,
-      "AppleANS: DXE hardware bring-up withheld by PcdAppleAnsBringUpController; "
-      "Windows performs PMGR sequencing and RTKit boot itself via the NTAS200x ACPI node\n"
-      ));
-    return EFI_UNSUPPORTED;
-  }
-#endif
+  Stage = "start";
+  ANS_DEBUG ((DEBUG_INFO, "AppleANS: bring-up starting\n"));
 
   Device = AllocateZeroPool (sizeof (*Device));
   if (Device == NULL) {
+    ANS_DEBUG ((DEBUG_ERROR, "AppleANS: bring-up failed at stage \"allocate-device\": out of resources\n"));
     return EFI_OUT_OF_RESOURCES;
   }
 
   mAns = Device;
+
+  Stage = "discover-hardware";
+  ANS_DEBUG ((DEBUG_INFO, "AppleANS: stage \"%a\"\n", Stage));
   Status = DiscoverHardware (Device, &AscHw, &SartParams);
   if (EFI_ERROR (Status)) {
     goto Fail;
   }
 
 #if defined (APPLE_ANS_QEMU_TEST)
+  Stage = "map-qemu-hardware";
+  ANS_DEBUG ((DEBUG_INFO, "AppleANS: stage \"%a\"\n", Stage));
   Status = MapQemuHardware (
              Device->CpuBase,
              Device->NvmeBase,
@@ -902,12 +897,16 @@ AppleNANDStorageDxeInitialize (
   }
 #endif
 
+  Stage = "sart-init";
+  ANS_DEBUG ((DEBUG_INFO, "AppleANS: stage \"%a\"\n", Stage));
   Result = ntasi_sart_runtime_init (&Device->Sart, SartParams, &SartOps, Device);
   if (Result != 0) {
     Status = EFI_DEVICE_ERROR;
     goto Fail;
   }
 
+  Stage = "asc-init";
+  ANS_DEBUG ((DEBUG_INFO, "AppleANS: stage \"%a\"\n", Stage));
   Result = ntasi_asc_init_variant (
              &Device->Asc,
              &AscOps,
@@ -920,12 +919,16 @@ AppleNANDStorageDxeInitialize (
     goto Fail;
   }
 
+  Stage = "asc-cold-stop-check";
+  ANS_DEBUG ((DEBUG_INFO, "AppleANS: stage \"%a\" (bounded at %u polls)\n", Stage, (UINT32)APPLE_ANS_POLL_LIMIT));
   if (ntasi_asc_cpu_running (&Device->Asc)) {
     ANS_DEBUG ((DEBUG_WARN, "AppleANS: coprocessor was left running; stopping before boot\n"));
     ntasi_asc_cpu_stop (&Device->Asc);
     MicroSecondDelay (1000);
   }
 
+  Stage = "rtkit-init";
+  ANS_DEBUG ((DEBUG_INFO, "AppleANS: stage \"%a\"\n", Stage));
   Result = ntasi_rtkit_runtime_init (
              &Device->Rtkit,
              &Device->Asc,
@@ -938,18 +941,24 @@ AppleNANDStorageDxeInitialize (
     goto Fail;
   }
 
+  Stage = "allocate-controller-memory";
+  ANS_DEBUG ((DEBUG_INFO, "AppleANS: stage \"%a\"\n", Stage));
   Status = AllocateControllerMemory (Device);
   if (EFI_ERROR (Status)) {
     goto Fail;
   }
 
+  Stage = "rtkit-boot";
+  ANS_DEBUG ((DEBUG_INFO, "AppleANS: stage \"%a\" (bounded at %u polls per wait)\n", Stage, (UINT32)APPLE_ANS_POLL_LIMIT));
   Result = ntasi_rtkit_runtime_boot (&Device->Rtkit);
   if (Result != 0) {
-    ANS_DEBUG ((DEBUG_ERROR, "AppleANS: RTKit boot failed: %d\n", Result));
+    ANS_DEBUG ((DEBUG_ERROR, "AppleANS: stage \"%a\" failed: %d\n", Stage, Result));
     Status = EFI_DEVICE_ERROR;
     goto Fail;
   }
 
+  Stage = "controller-start";
+  ANS_DEBUG ((DEBUG_INFO, "AppleANS: stage \"%a\" (bounded at %u polls per wait)\n", Stage, (UINT32)APPLE_ANS_POLL_LIMIT));
   Result = ntasi_ans_controller_start_variant (
              &Device->Controller,
              &ControllerOps,
@@ -961,11 +970,13 @@ AppleNANDStorageDxeInitialize (
              &Device->IoMemory
              );
   if (Result != 0) {
-    ANS_DEBUG ((DEBUG_ERROR, "AppleANS: controller start failed: %d\n", Result));
+    ANS_DEBUG ((DEBUG_ERROR, "AppleANS: stage \"%a\" failed: %d\n", Stage, Result));
     Status = EFI_DEVICE_ERROR;
     goto Fail;
   }
 
+  Stage = "block-device-init-and-identify";
+  ANS_DEBUG ((DEBUG_INFO, "AppleANS: stage \"%a\" (read-only: no write/format/TRIM path exists in this driver)\n", Stage));
   Result = ntasi_ans_block_device_init (
              &Device->BlockDevice,
              BlockExecute,
@@ -981,7 +992,7 @@ AppleNANDStorageDxeInitialize (
                );
   }
   if (Result != 0) {
-    ANS_DEBUG ((DEBUG_ERROR, "AppleANS: namespace identify failed: %d\n", Result));
+    ANS_DEBUG ((DEBUG_ERROR, "AppleANS: stage \"%a\" failed: %d\n", Stage, Result));
     Status = EFI_DEVICE_ERROR;
     goto Fail;
   }
@@ -1027,6 +1038,8 @@ AppleNANDStorageDxeInitialize (
     },
   };
 
+  Stage = "register-exit-boot-services-event";
+  ANS_DEBUG ((DEBUG_INFO, "AppleANS: stage \"%a\"\n", Stage));
   Status = gBS->CreateEventEx (
                   EVT_NOTIFY_SIGNAL,
                   TPL_NOTIFY,
@@ -1047,8 +1060,13 @@ AppleNANDStorageDxeInitialize (
   // Windows never needs this protocol: it finds the controller through the
   // NTAS200x runtime SSDT, which reads the live ADT.  Everything above still
   // runs, including stopping the coprocessor before boot, so the controller is
-  // left in the state the Windows driver expects.
+  // left in the state the Windows driver expects. This is also the only
+  // Block I/O this driver ever installs -- WriteBlocks always returns
+  // EFI_WRITE_PROTECTED (see AnsWriteBlocks above) regardless of this PCD,
+  // so there is no write/format/TRIM path here to gate at all.
   //
+  Stage = "publish-block-io";
+  ANS_DEBUG ((DEBUG_INFO, "AppleANS: stage \"%a\"\n", Stage));
   if (FixedPcdGetBool (PcdAppleAnsPublishBlockIo)) {
     Status = gBS->InstallMultipleProtocolInterfaces (
                     &Device->Handle,
@@ -1070,13 +1088,14 @@ AppleNANDStorageDxeInitialize (
 
   ANS_DEBUG ((
     DEBUG_INFO,
-    "AppleANS: namespace 1 ready: %Lu blocks x %u bytes\n",
+    "AppleANS: bring-up completed all stages; namespace 1 ready: %Lu blocks x %u bytes\n",
     Device->BlockDevice.media.block_count,
     Device->BlockDevice.media.block_size
     ));
   return EFI_SUCCESS;
 
 Fail:
+  ANS_DEBUG ((DEBUG_ERROR, "AppleANS: bring-up failed at stage \"%a\": %r\n", Stage, Status));
   if (Device->ExitBootServicesEvent != NULL) {
     gBS->CloseEvent (Device->ExitBootServicesEvent);
   }

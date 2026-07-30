@@ -68,8 +68,7 @@
   gEfiEventExitBootServicesGuid
 
 [Pcd]
-  gAppleSiliconPkgTokenSpaceGuid.PcdAppleAnsPublishBlockIo      ## CONSUMES
-  gAppleSiliconPkgTokenSpaceGuid.PcdAppleAnsBringUpController   ## CONSUMES
+  gAppleSiliconPkgTokenSpaceGuid.PcdAppleAnsPublishBlockIo    ## CONSUMES
 
 [Depex]
   TRUE

@@ -98,7 +98,22 @@
 #define NTASI_ANS_REG_NVMMU_ASQ_BASE  0x28108u /* nvme.c:53, written nvme.c:356 */
 #define NTASI_ANS_REG_NVMMU_IOSQ_BASE 0x28110u /* nvme.c:54, written nvme.c:357 */
 #define NTASI_ANS_REG_NVMMU_TCB_INVAL 0x28118u /* nvme.c:55, written nvme.c:259 */
-#define NTASI_ANS_REG_NVMMU_TCB_STAT 0x28120u /* apple.c:61, read after invalidation */
+#define NTASI_ANS_REG_NVMMU_TCB_STAT 0x29120u /* nvme.c:56, read nvme.c:260 -- corrected
+                                                * 2026-07-30: this was 0x28120u, sourced from
+                                                * Linux apple.c:61 instead of m1n1's own nvme.c.
+                                                * m1n1's nvme.c -- proven working on this exact
+                                                * hardware the same night, RTKit boot + SART v3 +
+                                                * controller init + real block reads all
+                                                * succeeded -- uses 0x29120u for this register.
+                                                * A wrong offset here does not hang: it makes
+                                                * ntasi_ans_controller_execute() read whatever
+                                                * unrelated register happens to live at 0x28120,
+                                                * and treat a nonzero result as
+                                                * NTASI_ANS_CONTROLLER_ERR_TCB_INVALIDATE on the
+                                                * very first admin command (queue creation during
+                                                * controller start), which is a clean, bounded
+                                                * failure -- but it is still wrong and must not
+                                                * ship. */
 
 /* Admin command opcodes (nvme.c:58-62). */
 #define NTASI_ANS_ADMIN_CMD_DELETE_SQ 0x00u

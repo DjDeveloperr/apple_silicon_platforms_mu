@@ -151,10 +151,6 @@ FvNameGuid         = 02e6c12f-69f7-4626-b5de-e3cfd6c0dc56
   INF MdeModulePkg/Bus/Pci/NonDiscoverablePciDeviceDxe/NonDiscoverablePciDeviceDxe.inf
 
   #NVMe Support
-!if $(NTASI_ENABLE_ANS) == TRUE
-  # Opt-in read-only ANS validation on the otherwise unchanged full baseline.
-  INF AppleSiliconPkg/Drivers/AppleNANDStorageDxe/AppleNANDStorageDxe.inf
-!endif
   #INF MdeModulePkg/Bus/Pci/NvmExpressDxe/NvmExpressDxe.inf
 
   #
@@ -235,6 +231,21 @@ FvNameGuid         = 02e6c12f-69f7-4626-b5de-e3cfd6c0dc56
   #
   INF AppleSiliconPkg/Drivers/SmbiosInfoDxe/SmbiosInfoDxe.inf
   INF MdeModulePkg/Universal/SmbiosDxe/SmbiosDxe.inf
+
+  #NVMe Support
+!if $(NTASI_ENABLE_ANS) == TRUE
+  # Deliberately dispatched late (after PCI/USB/FAT/ACPI/SMBIOS, not
+  # alongside the rest of "PCIe Support" above): on 2026-07-30 a hang in
+  # this driver produced zero console output, indistinguishable from a
+  # driver that never started at all. Everything above it -- including
+  # console-capable drivers, ACPI table installation (with its own
+  # DEBUG_ERROR-heavy AcpiPlatformDxe), and SMBIOS -- gets a chance to run
+  # and to have emitted its own diagnostics first, so a future hang here is
+  # bounded to a much smaller window of "what ran since the last visible
+  # log line" than tonight's whole-boot ambiguity. See AppleNANDStorageDxe.c
+  # for the named-stage breadcrumbs this driver now logs at every step.
+  INF AppleSiliconPkg/Drivers/AppleNANDStorageDxe/AppleNANDStorageDxe.inf
+!endif
 
   #
   # UEFI applications
