@@ -497,6 +497,11 @@ DumpSartState (
   IN APPLE_ANS_DEVICE  *Device,
   IN CONST CHAR8       *When
   );
+
+STATIC VOID
+ReportAnsPmgrDomains (
+  VOID
+  );
 #endif
 
 STATIC CONST EFI_GUID  mAppleAnsDevicePathGuid = {
