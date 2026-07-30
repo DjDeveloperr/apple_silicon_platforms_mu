@@ -200,7 +200,7 @@
             })
 
             Method (_STA) {
-                Return (0xF)
+                Return (0x0)
             }
         }
 
