@@ -750,7 +750,8 @@ NtasiInstallWirelessDartTable (
   AML_ROOT_NODE_HANDLE         RootNode;
   AML_OBJECT_NODE_HANDLE       ScopeNode;
   AML_OBJECT_NODE_HANDLE       DeviceNode;
-  AML_OBJECT_NODE_HANDLE       CrsNode;
+  // No CrsNode: DRT0 deliberately publishes no _CRS at all. See the comment
+  // at the DRTB/DRTL/RSVB/RSVS methods below.
   EFI_ACPI_DESCRIPTION_HEADER  *Table;
   UINTN                        TableHandle;
   UINT64                       ReservationBase;
