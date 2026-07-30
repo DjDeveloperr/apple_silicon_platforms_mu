@@ -74,7 +74,24 @@
 #define APPLE_CORE_SYSTEM_MMIO_RANGE_16_BASE 0x5100000000
 #define APPLE_CORE_SYSTEM_MMIO_RANGE_16_SIZE SIZE_2MB
 
-
+//
+// ADDED 2026-07-30 (hardware-confirmed): [0x2C0000000, 0x380000000) -- the
+// 3GB gap between the end of RANGE_1 (0x280000000 + 1GB) and the start of
+// RANGE_2 (0x380000000) -- was never mapped at all. /arm-io/ans (ASC
+// aperture 0x347400000, SART aperture 0x34bc50000, NVMe controller
+// aperture 0x34bcc0000, all confirmed correct against the live ADT) sits
+// squarely inside that gap. Nothing had ever touched an address in this
+// gap before ANS's real bring-up ran for the first time on 2026-07-30 --
+// ANS was always gated off previously -- so the missing mapping had never
+// been exercised. The first real MMIO read in ntasi_sart_runtime_init()
+// hitting this unmapped range is what produced the "sart-init" crash
+// (translation fault, PC landing inside ArmCpuDxe's own exception
+// dispatch code, which then recursed while trying to dump the faulting
+// context). This one range plugs exactly that gap; it does not touch or
+// resize RANGE_1/RANGE_2 on either side of it.
+//
+#define APPLE_CORE_SYSTEM_MMIO_RANGE_17_BASE 0x340000000
+#define APPLE_CORE_SYSTEM_MMIO_RANGE_17_SIZE SIZE_1GB
 
 //PCIe MMIO (mappings need to be nGnRE)
 #define APPLE_PCIE_MMIO_RANGE_1_BASE 0x5A0000000

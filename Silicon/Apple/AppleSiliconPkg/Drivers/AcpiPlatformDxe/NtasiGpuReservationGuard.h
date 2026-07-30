@@ -3,26 +3,33 @@
   reservations.
 
   This header has ZERO dependencies -- no EDK2 headers, no <stdint.h>, no
-  <stdbool.h> -- on purpose. EDK2 PEI builds are typically -nostdinc, so a
-  standard-library include here would not resolve the same way (or at all)
-  in every context that needs this logic. Using only built-in C types means
-  the exact same text compiles unmodified both into MemoryInitPeiLib.c
-  (under the EDK2/Clang AArch64 PEI toolchain) and into
-  Tests/test_gpu_reservation_guard.c (compiled directly with the host cc,
-  no EDK2 involved at all). There is exactly one copy of this logic; it is
-  never reimplemented or duplicated by hand.
+  <stdbool.h> -- on purpose, so the exact same text compiles unmodified
+  both into AcpiPlatform.c (under the EDK2/Clang AArch64 DXE toolchain)
+  and into Tests/test_gpu_reservation_guard.c (compiled directly with the
+  host cc, no EDK2 involved at all). There is exactly one copy of this
+  logic; it is never reimplemented or duplicated by hand.
 
-  WHY THIS EXISTS: on 2026-07-30, a GPU preboot reservation computed from
-  Mu's own PcdSystemMemoryBase+PcdSystemMemorySize placed "hw_data_a"
-  directly on top of Mu's live PEI stack (SystemMemoryTop=0x103db29c000,
-  computed hw_data_a=[0x103db2953cc, 0x103db29c000), live SP_EL1 observed
-  at 0x103db29ba10 -- squarely inside that range) and crashed the machine
-  before a vector table even existed (ESR 0x82000007, ELR=FAR=0x200). A
-  wrong GPU reservation must degrade the GPU, never touch memory Mu itself
-  depends on. These two checks are the hard backstop for that: every
-  candidate region must be run through them before it is ever reserved,
-  regardless of where its address came from (ADT, a hardcoded constant, or
-  anything else).
+  WHY THIS EXISTS, AND WHY IT MOVED FROM PEI TO DXE: on 2026-07-30, a GPU
+  preboot reservation computed from Mu's own PcdSystemMemoryBase+
+  PcdSystemMemorySize placed "hw_data_a" directly on top of Mu's live PEI
+  stack (SystemMemoryTop=0x103db29c000, computed hw_data_a=
+  [0x103db2953cc, 0x103db29c000), live SP_EL1 observed at 0x103db29ba10 --
+  squarely inside that range) and crashed the machine before a vector
+  table even existed (ESR 0x82000007, ELR=FAR=0x200). That specific bug
+  was fixed (hw_data_a/b/globals are no longer computed at all -- see
+  NtasiResolveAndReserveGpuCarveouts() in AcpiPlatform.c), but a *second*
+  independent hardware boot with the fix in place crashed again, in early
+  PEI, at the *same* SP_EL1 value, with zero UART output either time --
+  PEI has no exception vector table and no reliable way to report a fault
+  no matter how carefully guarded the reservation logic is. So the GPU
+  carveout resolution this header supports moved out of PEI entirely and
+  now runs from AcpiPlatformDxe, late in DXE dispatch (after console,
+  AIC2, and CpuDxe's exception vectors are all up) -- mirroring the same
+  move that turned ANS's unreported hang into a one-line stage diagnosis.
+  These two checks remain the hard backstop regardless of where the
+  candidate address came from (ADT, a hardcoded constant, or anything
+  else): a wrong GPU reservation must degrade the GPU, never touch memory
+  Mu itself depends on.
 
   SPDX-License-Identifier: MIT
 **/

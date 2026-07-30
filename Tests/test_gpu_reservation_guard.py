@@ -4,9 +4,10 @@
 This wraps Tests/test_gpu_reservation_guard.c -- a standalone, EDK2-free C
 program that exercises the exact safety-invariant logic
 (NtasiRangeContainsPoint / NtasiRangesOverlap) compiled into
-Silicon/Apple/T602XFamilyPkg/Library/MemoryInitPeiLib/MemoryInitPeiLib.c --
-so it runs through the same `python3 -m unittest` entry point as the rest
-of Tests/, with no EDK2 build and no hardware involved.
+Silicon/Apple/AppleSiliconPkg/Drivers/AcpiPlatformDxe/AcpiPlatform.c (moved
+there from PEI's MemoryInitPeiLib.c on 2026-07-30) -- so it runs through
+the same `python3 -m unittest` entry point as the rest of Tests/, with no
+EDK2 build and no hardware involved.
 
 It specifically reproduces the 2026-07-30 hardware crash (a GPU
 "hw_data_a" preboot reservation computed from Mu's own SystemMemoryTop
@@ -29,9 +30,9 @@ GUARD_HEADER = (
     REPO
     / "Silicon"
     / "Apple"
-    / "T602XFamilyPkg"
-    / "Library"
-    / "MemoryInitPeiLib"
+    / "AppleSiliconPkg"
+    / "Drivers"
+    / "AcpiPlatformDxe"
     / "NtasiGpuReservationGuard.h"
 )
 

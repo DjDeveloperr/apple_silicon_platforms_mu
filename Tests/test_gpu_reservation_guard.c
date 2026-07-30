@@ -1,12 +1,13 @@
 /*
  * Host-side, hardware-free regression test for the GPU preboot reservation
  * safety invariants in
- * Silicon/Apple/T602XFamilyPkg/Library/MemoryInitPeiLib/NtasiGpuReservationGuard.h.
+ * Silicon/Apple/AppleSiliconPkg/Drivers/AcpiPlatformDxe/NtasiGpuReservationGuard.h.
  *
  * This file #includes that header directly (the exact same text compiled
- * into MemoryInitPeiLib.c under the EDK2/Clang AArch64 PEI toolchain) and
- * compiles standalone with a plain host C compiler -- no EDK2, no
- * cross-toolchain, no hardware, no proxy. Run it with:
+ * into AcpiPlatform.c under the EDK2/Clang AArch64 DXE toolchain -- moved
+ * there from PEI's MemoryInitPeiLib.c on 2026-07-30, see the header's own
+ * comment for why) and compiles standalone with a plain host C compiler --
+ * no EDK2, no cross-toolchain, no hardware, no proxy. Run it with:
  *
  *   cc -std=c99 -Wall -Wextra -o /tmp/test_gpu_reservation_guard \
  *      Tests/test_gpu_reservation_guard.c && /tmp/test_gpu_reservation_guard
@@ -28,7 +29,7 @@
 #include <stddef.h>
 #include <stdio.h>
 
-#include "../Silicon/Apple/T602XFamilyPkg/Library/MemoryInitPeiLib/NtasiGpuReservationGuard.h"
+#include "../Silicon/Apple/AppleSiliconPkg/Drivers/AcpiPlatformDxe/NtasiGpuReservationGuard.h"
 
 static int gFailures = 0;
 

@@ -18,7 +18,6 @@
 
 [Sources]
   MemoryInitPeiLib.c
-  NtasiGpuReservationGuard.h
 
 
 [Packages]

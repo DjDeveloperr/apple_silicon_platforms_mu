@@ -290,9 +290,30 @@ static int dt_node_parent_cb(void *a, dt_node_t *node, int depth)
     {
         if(depth < 1)
         {
-            DEBUG((DEBUG_INFO, "DeviceTree parent depth underflow: %d\n", depth));
+            // The ADT root has no parent. Reading path[depth - 1] here (depth
+            // == 0 for the root, since dt_parse starts the whole tree at
+            // depth 0) used to compute path[-1] -- an out-of-bounds read one
+            // element before this callback's own dt_node_parent_cb_t::path
+            // array, undefined behavior that happened to return unused
+            // garbage on every path this code has actually exercised so far
+            // (every caller's ancestor chain bottoms out at a node with no
+            // "ranges" property, so the garbage pointer this produced was
+            // computed and then discarded, never dereferenced -- see
+            // dt_node_reg()'s "while (parent) { ...; ranges = ...; if
+            // (!ranges) break; }" loop). Found 2026-07-30 while investigating
+            // repeated "DeviceTree parent depth underflow: 0" / "Missing
+            // DeviceTree prop: ranges" log lines during AppleNANDStorageDxe's
+            // ADT walk. Confirmed not the cause of that boot's crash (the
+            // garbage value is provably unused on this ADT's shape), but it
+            // is undefined behavior regardless of luck, so return the
+            // correct, well-defined answer instead: the root has no parent.
+            DEBUG((DEBUG_INFO, "DeviceTree parent depth underflow: %d (root has no parent)\n", depth));
+            arg->parent = NULL;
         }
-        arg->parent = arg->path[depth - 1];
+        else
+        {
+            arg->parent = arg->path[depth - 1];
+        }
         return 1;
     }
     if(depth < 0 || depth >= 8)
@@ -420,8 +441,20 @@ int dt_node_reg(dt_node_t *node, uint32_t idx, uint64_t *paddr, uint64_t *psize)
         cur = parent;
         parent = dt_node_parent(cur);
 
+        // A node with no "ranges" property is the expected, valid way this
+        // walk terminates (it means `cur` needs no further address
+        // translation to reach the CPU-visible physical address space --
+        // every node up to and including the ADT root eventually hits
+        // this). Call the non-logging dt_prop() directly instead of the
+        // dt_node_prop() wrapper other callers use: the wrapper's "Missing
+        // DeviceTree prop" log is meant for genuine lookup failures, and
+        // logging one on every dt_node_reg() call's ordinary loop exit
+        // (investigated 2026-07-30 after "Missing DeviceTree prop: ranges"
+        // showed up 3 times during one AppleNANDStorageDxe boot -- once per
+        // dt_node_reg() call, each hitting this exact, expected exit) was
+        // just noise, not a diagnostic.
         size_t ranges_len;
-        const uint32_t *ranges = dt_node_prop(cur, "ranges", &ranges_len);
+        const uint32_t *ranges = dt_prop(cur, "ranges", &ranges_len);
         if (!ranges)
             break;
 
