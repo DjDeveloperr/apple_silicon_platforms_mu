@@ -213,7 +213,7 @@ class PlatformBuilder( UefiBuilder, BuildSettingsManager):
         # supplies BLD_*_NTASI_T6020_J414S_HOMOGENEOUS_EFFICIENCY=1.
         self.env.SetValue(
             "BLD_*_NTASI_T6020_J414S_HOMOGENEOUS_EFFICIENCY",
-            "0",
+            "1",
             "Default",
         )
         self.env.SetValue(
