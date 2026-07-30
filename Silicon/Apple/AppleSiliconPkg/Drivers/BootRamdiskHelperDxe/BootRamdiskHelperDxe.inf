@@ -50,7 +50,9 @@
   gEfiVirtualCdGuid            ## SOMETIMES_CONSUMES ## GUID
   gEfiVirtualDiskGuid          ## SOMETIMES_CONSUMES ## GUID
   gAppleSiliconPkgEmbeddedRamdiskGuid
-  gEfiFileInfoGuid             ## CONSUMES ## GUID  (evidence-file echo)
+  # Only referenced when the build defines NTASI_DEPLOY_EVIDENCE_ECHO=1; with the
+  # gate off the AutoGen definition is unreferenced and the linker drops it.
+  gEfiFileInfoGuid             ## SOMETIMES_CONSUMES ## GUID  (deploy-evidence echo)
 
 [Pcd.common]
   gAppleSiliconPkgTokenSpaceGuid.PcdInitializeRamdisk

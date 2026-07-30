@@ -50,6 +50,15 @@ if test -n "$(git -C "$source_root" status --porcelain=v1 --untracked-files=all 
     exit 1
 fi
 
+# WinPE deploy-verdict echo. Orthogonal to the profile, OFF unless asked for, and
+# recorded in the sealed manifest's build defines so a boot can always be told
+# apart from one produced without it. See MacBookProEarly2023.dsc.
+evidence_echo=${NTASI_DEPLOY_EVIDENCE_ECHO:-0}
+case "$evidence_echo" in
+    0|1) ;;
+    *) echo "error: NTASI_DEPLOY_EVIDENCE_ECHO must be 0 or 1" >&2; exit 2 ;;
+esac
+
 image=${NTASI_MU_BUILD_IMAGE:-ntasi-m2-pro-mu-builder-fast:ubuntu-24.04-arm64-v1-d3e92152f8d175df}
 output_root=${NTASI_MU_OUTPUT_ROOT:-$source_parent/apple_silicon_nt_drivers/build/m2-pro}
 output_dir=$output_root/$profile/$commit
@@ -80,6 +89,7 @@ docker run --rm --platform linux/arm64 \
     -e GIT_CONFIG_KEY_1=diff.ignoreSubmodules \
     -e GIT_CONFIG_VALUE_1=all \
     -e NTASI_MU_PROFILE="$profile" \
+    -e NTASI_DEPLOY_EVIDENCE_ECHO="$evidence_echo" \
     -e NTASI_M2_PRO_MU_REFRESH=never \
     -e NTASI_M2_PRO_MU_RECIPE_IMAGE="$image" \
     -v "$source_root:/work:ro" \
@@ -99,7 +109,8 @@ python3 "$source_root/Tools/j414s_mu_profile_manifest.py" seal \
     --profile "$profile" \
     --image-ref "$image" \
     --image-id "$image_id" \
-    --image-repo-digests-json "$image_repo_digests_json"
+    --image-repo-digests-json "$image_repo_digests_json" \
+    --evidence-echo "$evidence_echo"
 
 if command -v sha256sum >/dev/null 2>&1; then
     fd_sha=$(sha256sum "$artifact" | awk '{print $1}')
@@ -111,6 +122,7 @@ fi
 
 echo "READY_TO_TEST $profile"
 echo "source=$commit"
+echo "evidence_echo=$evidence_echo"
 echo "fd=$artifact"
 echo "sha256=$fd_sha"
 echo "manifest=$manifest"

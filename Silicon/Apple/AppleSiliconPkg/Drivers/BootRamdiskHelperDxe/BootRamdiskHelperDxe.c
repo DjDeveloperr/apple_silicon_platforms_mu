@@ -6,22 +6,49 @@
 
 #include <PiDxe.h>
 #include <Guid/GlobalVariable.h>
-#include <Guid/FileInfo.h>
 #include <Protocol/BlockIo.h>
 #include <Protocol/SimpleFileSystem.h>
 #include <Library/BaseMemoryLib.h>
 #include <Library/HobLib.h>
 #include <Library/UefiBootManagerLib.h>
-#include <Library/UefiLib.h>
 #include <Library/UefiRuntimeServicesTableLib.h>
+
+//
+// NTASI_DEPLOY_EVIDENCE_ECHO gates the WinPE deploy-verdict echo. It is OFF by
+// default and is supplied by MacBookProEarly2023.dsc from the DSC define of the
+// same name; see EchoEvidenceFile() for what it does and DEPLOY-EVIDENCE-ECHO
+// in Docs/ for why it is opt-in rather than always-on.
+//
+// The gate is a preprocessor gate, not a runtime `if`, deliberately: with it off
+// this driver must compile to the exact bytes it did before the diagnostic
+// existed, so that a boot regression can never be attributed to a diagnostic
+// that is not in the image. That property is checked by rebuilding with the gate
+// off and comparing this module's FFS digest against the pre-diagnostic build.
+//
+#ifndef NTASI_DEPLOY_EVIDENCE_ECHO
+#define NTASI_DEPLOY_EVIDENCE_ECHO  0
+#endif
+
+#if NTASI_DEPLOY_EVIDENCE_ECHO
+  #include <Guid/FileInfo.h>
+  #include <Library/UefiLib.h>
 
 //
 // Path the WinPE offline-deploy lane writes its verdict to, and the cap on how
 // much of it we are willing to push through a 115200-baud console on the boot
 // path. See EchoEvidenceFile() for the full rationale.
 //
-#define NTASI_EVIDENCE_ECHO_PATH       L"\\NTASI\\last-deploy.txt"
-#define NTASI_EVIDENCE_ECHO_MAX_BYTES  (16u * 1024u)
+  #define NTASI_EVIDENCE_ECHO_PATH       L"\\NTASI\\last-deploy.txt"
+  #define NTASI_EVIDENCE_ECHO_MAX_BYTES  (16u * 1024u)
+
+//
+// Upper bound on how many SimpleFileSystem volumes we are willing to open on the
+// boot path. On this machine the boot disk is a USB 2.0 High-Speed device, so
+// every OpenVolume is real bus traffic issued microseconds before Windows takes
+// the controller over; an unbounded scan is not something a diagnostic gets to do.
+//
+  #define NTASI_EVIDENCE_ECHO_MAX_VOLUMES  16u
+#endif
 
 #include "BootRamdiskHelperDxe.h"
 #define NTASI_APPENDED_RAMDISK_INCLUDE_FAT_VALIDATOR  1
@@ -331,6 +358,8 @@ RegisterAppendedRamdisk (
   return RegisterRamdisk ((UINTN)Image, ImageSize, TRUE);
 }
 
+#if NTASI_DEPLOY_EVIDENCE_ECHO
+
 /**
   Echo a WinPE evidence file from any attached filesystem to the SERIAL console.
 
@@ -355,6 +384,13 @@ RegisterAppendedRamdisk (
   delete fails the file is still echoed, but the failure is logged loudly -- a
   verdict that reprints every boot means the volume is not writable, which is
   itself worth knowing.
+
+  BOUNDED ON PURPOSE. This runs microseconds before the OS loader is started, on a
+  machine whose boot disk is a USB 2.0 High-Speed device, in a DEBUG build where
+  any ASSERT anywhere deadloops the firmware. So it stops at the first volume that
+  actually carries the file, never examines more than
+  NTASI_EVIDENCE_ECHO_MAX_VOLUMES volumes, and only ever attempts a write on a
+  handle it successfully opened for writing.
 **/
 STATIC
 VOID
@@ -377,6 +413,7 @@ EchoEvidenceFile (
   CHAR8                            *Buffer;
   UINT64                           FileSize;
   UINTN                            Echoed;
+  BOOLEAN                          Writable;
 
   Handles     = NULL;
   HandleCount = 0;
@@ -391,6 +428,16 @@ EchoEvidenceFile (
                   );
   if (EFI_ERROR (Status) || (Handles == NULL)) {
     return;
+  }
+
+  if (HandleCount > NTASI_EVIDENCE_ECHO_MAX_VOLUMES) {
+    DEBUG ((
+      DEBUG_WARN,
+      "NTASI evidence: %u filesystem volumes attached; only scanning the first %u\n",
+      (UINT32)HandleCount,
+      (UINT32)NTASI_EVIDENCE_ECHO_MAX_VOLUMES
+      ));
+    HandleCount = NTASI_EVIDENCE_ECHO_MAX_VOLUMES;
   }
 
   for (Index = 0; Index < HandleCount; Index++) {
@@ -409,20 +456,22 @@ EchoEvidenceFile (
       continue;
     }
 
-    File   = NULL;
-    Status = Root->Open (
-                     Root,
-                     &File,
-                     NTASI_EVIDENCE_ECHO_PATH,
-                     EFI_FILE_MODE_READ | EFI_FILE_MODE_WRITE,
-                     0
-                     );
+    Writable = TRUE;
+    File     = NULL;
+    Status   = Root->Open (
+                       Root,
+                       &File,
+                       NTASI_EVIDENCE_ECHO_PATH,
+                       EFI_FILE_MODE_READ | EFI_FILE_MODE_WRITE,
+                       0
+                       );
     if (EFI_ERROR (Status) || (File == NULL)) {
       //
       // Retry read-only: on a volume Mu cannot write we still want the text.
       //
-      File   = NULL;
-      Status = Root->Open (Root, &File, NTASI_EVIDENCE_ECHO_PATH, EFI_FILE_MODE_READ, 0);
+      Writable = FALSE;
+      File     = NULL;
+      Status   = Root->Open (Root, &File, NTASI_EVIDENCE_ECHO_PATH, EFI_FILE_MODE_READ, 0);
       if (EFI_ERROR (Status) || (File == NULL)) {
         Root->Close (Root);
         continue;
@@ -517,20 +566,47 @@ EchoEvidenceFile (
     FreePool (Buffer);
 
     //
-    // Print once, then remove. Delete() closes the handle either way.
+    // Print once, then remove. Delete() closes the handle whether or not the
+    // removal itself succeeded, so the handle must not be closed again here.
     //
-    Status = File->Delete (File);
-    if (EFI_ERROR (Status)) {
+    // Only attempted on a handle we actually opened for writing: calling
+    // Delete() on a read-only handle is a guaranteed EFI_WARN_DELETE_FAILURE
+    // that still burns the handle, and it would make an unwritable volume look
+    // like a failed delete rather than what it is.
+    //
+    // EFI_WARN_DELETE_FAILURE is a WARNING, so EFI_ERROR() is FALSE for it. The
+    // check is against EFI_SUCCESS, which is the only outcome that means the
+    // evidence is really gone.
+    //
+    if (Writable) {
+      Status = File->Delete (File);
+      if (Status != EFI_SUCCESS) {
+        DEBUG ((
+          DEBUG_ERROR,
+          "NTASI evidence: could NOT delete %s (%r) -- it will reprint every boot; "
+          "treat a repeated verdict as stale and the volume as unwritable\n",
+          NTASI_EVIDENCE_ECHO_PATH,
+          Status
+          ));
+      }
+    } else {
       DEBUG ((
         DEBUG_ERROR,
-        "NTASI evidence: could NOT delete %s (%r) -- it will reprint every boot; "
-        "treat a repeated verdict as stale and the volume as unwritable\n",
-        NTASI_EVIDENCE_ECHO_PATH,
-        Status
+        "NTASI evidence: %s was opened read-only and is NOT being deleted -- it "
+        "will reprint every boot; treat a repeated verdict as stale\n",
+        NTASI_EVIDENCE_ECHO_PATH
         ));
+      File->Close (File);
     }
 
     Root->Close (Root);
+
+    //
+    // One verdict per boot. The deploy lane writes exactly one file, so once it
+    // has been echoed there is nothing left to look for, and every further
+    // OpenVolume is boot-path USB traffic spent for nothing.
+    //
+    break;
   }
 
   FreePool (Handles);
@@ -557,6 +633,8 @@ OnReadyToBootEchoEvidence (
   EchoEvidenceFile ();
 }
 
+#endif // NTASI_DEPLOY_EVIDENCE_ECHO
+
 EFI_STATUS
 EFIAPI
 BootRamdiskHelperDxeInitialize (
@@ -568,24 +646,35 @@ BootRamdiskHelperDxeInitialize (
   VOID        *OriginalRamDiskPtr;
   UINTN       RamDiskSize;
   EFI_STATUS  Status;
-  EFI_EVENT   ReadyToBootEvent;
+ #if NTASI_DEPLOY_EVIDENCE_ECHO
+  EFI_EVENT  ReadyToBootEvent;
+ #endif
 
   DEBUG ((DEBUG_INFO, "BootRamdiskHelperDxe started\n"));
 
+ #if NTASI_DEPLOY_EVIDENCE_ECHO
   //
   // Registered before any early-return below: the evidence echo is independent
   // of whether this boot uses an appended ramdisk, an FV ramdisk, or neither.
   //
+  // Announced unconditionally so that a boot log makes it obvious this build
+  // carries an extra ReadyToBoot participant. A build produced without
+  // NTASI_DEPLOY_EVIDENCE_ECHO prints nothing here and registers nothing.
+  //
   ReadyToBootEvent = NULL;
-  Status = EfiCreateEventReadyToBootEx (
-             TPL_CALLBACK,
-             OnReadyToBootEchoEvidence,
-             NULL,
-             &ReadyToBootEvent
-             );
+  Status           = EfiCreateEventReadyToBootEx (
+                       TPL_CALLBACK,
+                       OnReadyToBootEchoEvidence,
+                       NULL,
+                       &ReadyToBootEvent
+                       );
   if (EFI_ERROR (Status)) {
     DEBUG ((DEBUG_ERROR, "BootRamdiskHelperDxe: evidence echo not armed: %r\n", Status));
+  } else {
+    DEBUG ((DEBUG_ERROR, "BootRamdiskHelperDxe: WinPE deploy-evidence echo ARMED at ReadyToBoot\n"));
   }
+
+ #endif
 
   Status = RegisterAppendedRamdisk ();
   if (Status != EFI_NOT_FOUND) {

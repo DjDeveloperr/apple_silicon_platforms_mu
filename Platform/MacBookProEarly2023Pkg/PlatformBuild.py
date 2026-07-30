@@ -224,6 +224,26 @@ class PlatformBuilder( UefiBuilder, BuildSettingsManager):
             "0",
             "Default",
         )
+        # WinPE deploy-verdict echo. OFF unless the operator asks for it, and
+        # deliberately NOT keyed to a profile: it is orthogonal to which devices
+        # the firmware describes, and a boot whose purpose is to attribute a
+        # Windows-side regression must not silently carry an extra ReadyToBoot
+        # participant that opens every FAT volume on the way out of firmware.
+        evidence_echo = os.environ.get("NTASI_DEPLOY_EVIDENCE_ECHO", "0").strip()
+        if evidence_echo not in ("0", "1"):
+            raise ValueError(
+                "NTASI_DEPLOY_EVIDENCE_ECHO must be 0 or 1, got: " + repr(evidence_echo)
+            )
+        if evidence_echo == "1":
+            logging.info(
+                "NTASI_DEPLOY_EVIDENCE_ECHO=1: this build echoes "
+                "\\NTASI\\last-deploy.txt over serial at ReadyToBoot"
+            )
+        self.env.SetValue(
+            "BLD_*_NTASI_DEPLOY_EVIDENCE_ECHO",
+            evidence_echo,
+            "Selected by NTASI_DEPLOY_EVIDENCE_ECHO",
+        )
         self.env.SetValue(
             "BLD_*_NTASI_ENABLE_ANS",
             profile_values[profile]["ans"],

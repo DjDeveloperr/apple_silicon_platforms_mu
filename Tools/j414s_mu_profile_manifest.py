@@ -615,6 +615,7 @@ def generate_manifest(args: argparse.Namespace) -> dict[str, Any]:
         "NTASI_ANS_PUBLISH_ACPI": "TRUE" if PROFILES[profile]["ans_acpi"] else "FALSE",
         "NTASI_J414S_GPU_RESOURCE_PROFILE": "1" if PROFILES[profile]["gpu"] else "0",
         "NTASI_ENABLE_WIRELESS_DART_HANDOFF": "1" if PROFILES[profile]["wireless"] else "0",
+        "NTASI_DEPLOY_EVIDENCE_ECHO": getattr(args, "evidence_echo", "0"),
     }
     for name, value in expected_defines.items():
         if defines.get(name) != value:
@@ -869,6 +870,11 @@ def parse_args() -> argparse.Namespace:
     seal.add_argument("--image-ref", required=True)
     seal.add_argument("--image-id", required=True)
     seal.add_argument("--image-repo-digests-json", required=True)
+    # The WinPE deploy-evidence echo is orthogonal to the profile, so the
+    # manifest -- not the profile table -- is what proves whether a given FD
+    # carries it. Sealing it here means a boot can never be attributed to a
+    # "clean" firmware that in fact had an extra ReadyToBoot participant.
+    seal.add_argument("--evidence-echo", choices=("0", "1"), default="0")
     verify = subparsers.add_parser("verify", help="Verify without modifying any artifact")
     verify.add_argument("--manifest", type=Path, required=True)
     verify.add_argument("--source-root", type=Path)
