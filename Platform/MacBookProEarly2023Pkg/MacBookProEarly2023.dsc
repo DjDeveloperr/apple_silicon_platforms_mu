@@ -21,6 +21,15 @@
   DEFINE NTASI_J414S_GPU_RESOURCE_PROFILE = 0
   DEFINE NTASI_ANS_DXE_BRINGUP = FALSE
   DEFINE NTASI_ANS_PUBLISH_ACPI = FALSE
+  # Media profile: publish MCA0 (NTAS0080), AOPA (NTAS0081) and ISP0
+  # (NTAS0090) from AcpiPlatformDxe. OFF by default, and off means
+  # preprocessor-excluded, so a profile without it produces byte-identical
+  # firmware rather than merely equivalent firmware. Adds no FFS module and no
+  # ACPI table to the FV (the SSDTs are generated at DXE runtime, like ANS0 and
+  # DRT0), so expected_ffs_count and the 94-image count are unchanged. Publishes
+  # ZERO interrupt resources and touches no CSRT byte -- see
+  # NtasiInstallMediaTables() in AcpiPlatform.c.
+  DEFINE NTASI_ENABLE_MEDIA_PUBLICATION = 0
   # WinPE deploy-verdict echo (BootRamdiskHelperDxe). OFF by default: it adds a
   # participant to the ReadyToBoot event group and opens every attached FAT
   # volume microseconds before the OS loader starts, on a machine whose boot disk
@@ -47,7 +56,7 @@
 
 [BuildOptions.common]
   GCC:*_*_AARCH64_CC_FLAGS = -DSILICON_PLATFORM=6020
-  *_*_*_CC_FLAGS = -D DISABLE_NEW_DEPRECATED_INTERFACES -D HAS_MEMCPY_INTRINSICS -DNTASI_T6020_J414S_HOMOGENEOUS_EFFICIENCY=$(NTASI_T6020_J414S_HOMOGENEOUS_EFFICIENCY) -DNTASI_ENABLE_WIRELESS_DART_HANDOFF=$(NTASI_ENABLE_WIRELESS_DART_HANDOFF) -DNTASI_J414S_GPU_RESOURCE_PROFILE=$(NTASI_J414S_GPU_RESOURCE_PROFILE) -DNTASI_DEPLOY_EVIDENCE_ECHO=$(NTASI_DEPLOY_EVIDENCE_ECHO)
+  *_*_*_CC_FLAGS = -D DISABLE_NEW_DEPRECATED_INTERFACES -D HAS_MEMCPY_INTRINSICS -DNTASI_T6020_J414S_HOMOGENEOUS_EFFICIENCY=$(NTASI_T6020_J414S_HOMOGENEOUS_EFFICIENCY) -DNTASI_ENABLE_WIRELESS_DART_HANDOFF=$(NTASI_ENABLE_WIRELESS_DART_HANDOFF) -DNTASI_J414S_GPU_RESOURCE_PROFILE=$(NTASI_J414S_GPU_RESOURCE_PROFILE) -DNTASI_ENABLE_MEDIA_PUBLICATION=$(NTASI_ENABLE_MEDIA_PUBLICATION) -DNTASI_DEPLOY_EVIDENCE_ECHO=$(NTASI_DEPLOY_EVIDENCE_ECHO)
 
 
 

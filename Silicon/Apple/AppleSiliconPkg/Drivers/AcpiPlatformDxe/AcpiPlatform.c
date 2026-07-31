@@ -1043,6 +1043,630 @@ Exit:
 }
 #endif // NTASI_ENABLE_WIRELESS_DART_HANDOFF
 
+#if NTASI_ENABLE_MEDIA_PUBLICATION
+//
+// ===========================================================================
+// J414s MEDIA PROFILE -- MCA0 (NTAS0080), AOPA (NTAS0081), ISP0 (NTAS0090)
+// ===========================================================================
+//
+// Publishes the three ACPI devices the J414s media drivers bind to: the MCA
+// I2S/TDM audio complex (speakers and headset jack), the AOP internal PDM
+// microphone array, and the FaceTime camera ISP coprocessor.
+//
+// GATING.  The whole block is preprocessor-excluded unless
+// NTASI_ENABLE_MEDIA_PUBLICATION is 1, exactly like the GPU carveout and
+// wireless DART blocks above.  A profile without the flag therefore compiles
+// byte-identical firmware -- not merely "behaviourally identical" -- and this
+// is why the tables are generated at runtime with AmlLib instead of being
+// static ASL sources: a static .aml would land in the firmware volume of EVERY
+// profile, including the baseline that boots today.  ANS0 and DRT0 use the
+// same technique for the same reason.
+//
+// INTERRUPTS.  Seven descriptors' worth of vectors across the three devices,
+// each list appended AFTER that device's memory windows:
+//
+//   MCA0  40, 41, 42, 43, 45   PUBLISHED GSIVs; the real lines (1218, 1211,
+//                              1213, 1221, 1231) are above the GIC carrier's
+//                              1019 limit and are illegal as GSIVs, so the
+//                              CSRT ALI2 tail translates them.
+//   AOPA  631                  real AIC line, below 1019, identity-mapped.
+//   ISP0  569                  real AIC line, below 1019, identity-mapped.
+//
+// Because MCA0 needs translations, the media profile MUST build the
+// "m2-pro-media" CSRT (8 aliases, 296 bytes,
+// sha256 a082eb6c95a12a29...) instead of the ordinary "m2-pro" (3 aliases, 256
+// bytes, sha256 cdee0da81d9c54c1...).  CSRT.aslc selects it on this same
+// NTASI_ENABLE_MEDIA_PUBLICATION flag, so the two cannot get out of step, and
+// it #errors at compile time if the GPU profile is selected alongside --
+// published GSIV 40 means the AGX mailbox there and admac-sio here.
+//
+// Every non-media profile's CSRT is byte-for-byte unchanged; the media table
+// is a strict SUPERSET, so the boot USB controller's 37 -> 1274 alias is
+// bit-identical in both.
+//
+// NOT 44 anywhere: AIC 44 is claimed by /arm-io/i2c0/hpmBusManager.
+//
+// MEASURED, and the reason these are an investment rather than a fix: of the
+// three drivers only AppleIsp consumes an interrupt resource at all.
+// AppleMcaAudio and AppleAopAudio contain no CmResourceTypeInterrupt handling
+// and no WdfInterrupt object, so six of the seven vectors are inert for the
+// shipped binaries, whose bring-up is wholly polled.  They are published so
+// the streaming path's resources are already arbitrated and so a grant now is
+// evidence of a grant later -- at the cost that every one of them must be
+// satisfiable for its devnode to start.  See
+// apple_silicon_nt_drivers/docs/j414s-media-gsiv-allocation.md.
+//
+// _CRS ORDER IS A CONTRACT.  All three drivers match memory descriptors
+// POSITIONALLY by index and fail closed only on a SHORT list -- a REORDERED
+// list is not detected.  For AppleIsp a reorder would put a DART TTBR write
+// into a coprocessor control register.  The window tables below are therefore
+// the whole specification; nothing may be inserted, removed or reordered
+// without changing the matching NTASI_*_RES_* indices in the drivers.
+//   MCA0: 9 windows.  AppleMcaMapResources() accepts exactly 8, 9 or 12 and
+//         refuses anything between, because a partial capture set would
+//         silently shift every later index.  Nine is the "no capture
+//         resources" shape; the three capture windows (i2c2, pinctrl_nub,
+//         sio_dart) are added all-three-or-none, and are withheld for first
+//         light because they arm code that mutates hardware -- a CS42L84 GPIO
+//         reset and a sio_dart stream programming.
+//   ISP0: 8 windows.  Window 4's length is 0x4034 EXACTLY, not page-rounded:
+//         that is what isp0's own `reg` index 1 publishes in the live ADT and
+//         it is one byte past ps_isp_clr at offset 0x4030.
+//   AOPA: 4 windows.  The AOP mailbox is deliberately NOT a fifth window -- it
+//         is ASC + 0x8000, already inside window 0, and the driver derives it.
+//
+// NOTHING HERE CAN MAKE A SOUND.  ntasp,mca-allow-render is intentionally
+// absent.  The MCA render path is gated by an ACPI opt-in AND a registry
+// opt-in AND a compile-time authorisation constant that is 0; all three stay
+// closed, and adding that property here would open the first of them.
+//
+// KNOWN RESOURCE OVERLAP, STATED RATHER THAN HIDDEN.  MCA0 window 4 is
+// [0x290280000, 0x290280FFF] and ISP0 window 4 is [0x290280000, 0x290284033].
+// KBL0 (NTAS0051) already claims that page exclusively (KBL.asl).  This is the
+// same defect class as the NTAS2003-vs-KBL0 pmgr_east collision fixed on
+// 2026-07-30 -- see "THE FOUR PMGR WORDS ARE NO LONGER _CRS RESOURCES" below
+// -- and the same fix applies: publish the base as _DSD data, not as a
+// resource claim.  It is NOT applied here because it is not firmware's to
+// make: both drivers index _CRS positionally, so removing window 4 shifts
+// every later window and breaks the contract above.  Expect
+// CM_PROB_NORMAL_CONFLICT (Code 12) on one of KBL0 / MCA0 / ISP0 while the
+// media profile is selected.  No other profile is affected: with the flag off,
+// none of these three devices exists.
+//
+// The specification these tables implement is
+// Platform/MacBookProEarly2023Pkg/AcpiTables/Media/{MCA,AOPA,ISP}.asl, which
+// the build does not compile.  Tests/test_j414s_media_acpi_contract.py pins
+// the two against each other so they cannot drift.
+//
+// Only the STRING-valued _DSD properties of those files are omitted: this
+// AmlLib has AmlAddNameIntegerPackage() but no string equivalent.  No driver
+// reads _DSD at all, so the omission is documentary rather than functional.
+//
+
+typedef struct {
+  UINT64    Base;
+  UINT64    Length;
+} NTASI_MEDIA_WINDOW;
+
+typedef struct {
+  CONST CHAR8    *Name;
+  UINT64         Value;
+} NTASI_MEDIA_PROPERTY;
+
+//
+// The largest published interrupt list of any media device (MCA0's five).
+// A fixed bound lets the emitter copy into a stack buffer, which is what keeps
+// the tables below CONST: AmlCodeGenRdInterrupt() takes a non-const UINT32 *.
+//
+#define NTASI_MEDIA_MAX_INTERRUPTS  5u
+
+typedef struct {
+  CONST CHAR8                   *DeviceName;
+  CONST CHAR8                   *HardwareId;
+  CONST CHAR8                   *OemTableId;
+  CONST NTASI_MEDIA_WINDOW      *Windows;
+  UINTN                         WindowCount;
+  CONST UINT32                  *Interrupts;
+  UINTN                         InterruptCount;
+  CONST NTASI_MEDIA_PROPERTY    *Properties;
+  UINTN                         PropertyCount;
+} NTASI_MEDIA_DEVICE;
+
+//
+// MCA0 -- NTAS0080, speakers and headset jack.  Order per MCA.asl.
+//
+STATIC CONST NTASI_MEDIA_WINDOW  mNtasiMcaWindows[] = {
+  { 0x39B600000ULL, 0x10000ULL },  // 0: MCA cluster registers (4 x 0x4000)
+  { 0x39B500000ULL, 0x20000ULL },  // 1: MCA switch / DMA glue
+  { 0x39B400000ULL, 0x34000ULL },  // 2: ADMAC (audio DMA)
+  { 0x28E03C000ULL, 0x14000ULL },  // 3: NCO clock generator (5 x 0x4000)
+  { 0x290280000ULL, 0x1000ULL  },  // 4: pmgr_east PS page (overlaps KBL0)
+  { 0x39B044000ULL, 0x4000ULL  },  // 5: i2c1 -- left amps
+  { 0x39B04C000ULL, 0x4000ULL  },  // 6: i2c3 -- right amps
+  { 0x39B028000ULL, 0x4000ULL  },  // 7: pinctrl_ap -- speaker SDZ is pin 57
+  { 0x28E03807CULL, 0x18ULL    },  // 8: mca-switch clock mux, sub-page by design
+};
+
+//
+// MCA0's PUBLISHED GSIVs -- not its physical AIC lines.  Every line in this
+// subsystem (1211-1231) is above the GIC carrier's 1019 limit and is illegal
+// as a GSIV, so the CSRT's ALI2 tail translates them:
+//
+//   40 -> 1218 admac-sio   41 -> 1211 mca0   42 -> 1213 mca2
+//   43 -> 1221 i2c2        45 -> 1231 dart-sio
+//
+// This is exactly why the media profile must build the "m2-pro-media" CSRT
+// (8 aliases, 296 bytes) rather than the ordinary "m2-pro" (3 aliases, 256
+// bytes); CSRT.aslc selects it on the same NTASI_ENABLE_MEDIA_PUBLICATION flag
+// and #errors if the GPU profile -- which gives 40 a different meaning -- is
+// selected alongside.
+//
+// NOT 44: AIC 44 belongs to /arm-io/i2c0/hpmBusManager in the live ADT.
+//
+STATIC CONST UINT32  mNtasiMcaInterrupts[] = { 40, 41, 42, 43, 45 };
+
+STATIC CONST NTASI_MEDIA_PROPERTY  mNtasiMcaProperties[] = {
+  { "ntasp,mca-cluster-count",              4          },
+  { "ntasp,mca-speaker-cluster-left",       0          },
+  { "ntasp,mca-speaker-cluster-right",      1          },
+  { "ntasp,mca-jack-cluster",               2          },
+  { "ntasp,nco-ref-hz",                     1068000000 },
+  { "ntasp,mca-slot-width",                 32         },
+  { "ntasp,mca-bclk-ratio-speakers",        256        },
+  { "ntasp,mca-bclk-ratio-jack",            64         },
+  { "ntasp,admac-irq-output-index",         1          },
+  { "ntasp,speaker-amp-count",              6          },
+  { "ntasp,speaker-sdz-gpio",               57         },
+  { "ntasp,speaker-irq-gpio",               58         },
+  { "ntasp,jack-irq-gpio",                  59         },
+  { "ntasp,speaker-safe-dvc-floor",         40         },
+  { "ntasp,speaker-resting-dvc",            200        },
+  { "ntasp,speaker-amp-gain-ceiling",       15         },
+  { "ntasp,preboot-handoff-required",       0          },
+  { "ntasp,clk-mux-window-published",       1          },
+  { "ntasp,clk-mux-register-count",         6          },
+  { "ntasp,mca-interrupts-published",       5          },
+  { "ntasp,mca-csrt-ali2-required",         1          },
+  { "ntasp,mca-capture-windows-published",  0          },
+  { "ntasp,mca-clusters-instantiated",      3          },
+  { "ntasp,adt-speaker-cluster",            0          },
+  { "ntasp,adt-loopback-cluster",           1          },
+  { "ntasp,admac-channel-jack-capture",     11         },
+  { "ntasp,admac-channel-speaker-play",     0          },
+};
+
+//
+// AOPA -- NTAS0081, internal PDM microphone array.  Order per AOPA.asl.
+//
+STATIC CONST NTASI_MEDIA_WINDOW  mNtasiAopWindows[] = {
+  { 0x2A6400000ULL, 0x6C000ULL  },  // 0: aop ASC control (mailbox at +0x8000)
+  { 0x2A6C00000ULL, 0x250000ULL },  // 1: aop SRAM / mmio window
+  { 0x2A6808000ULL, 0x4000ULL   },  // 2: aop_dart (T8110)
+  { 0x2A6980000ULL, 0x34000ULL  },  // 3: aop_admac
+};
+
+//
+// AIC 631 (admac-aop-audio).  Below 1019, so identity-mapped with no ALI2
+// entry.  613/614/615/616 (mailbox) and 628 (dart-aop) are equally legal and
+// deliberately not published: each is another descriptor the arbiter must
+// satisfy for a devnode that reads none of them.
+//
+STATIC CONST UINT32  mNtasiAopInterrupts[] = { 631 };
+
+STATIC CONST NTASI_MEDIA_PROPERTY  mNtasiAopProperties[] = {
+  { "ntasp,aop-mic-rate-hz",              48000     },
+  { "ntasp,aop-mic-channels",             3         },
+  { "ntasp,aop-mic-sample-bits",          32        },
+  { "ntasp,aop-mic-period-bytes-min",     256       },
+  { "ntasp,aop-mic-period-bytes-max",     16384     },
+  { "ntasp,aop-admac-channel",            1         },
+  { "ntasp,aop-admac-irq-output-index",   2         },
+  { "ntasp,aop-dart-stream-aop",          0         },
+  { "ntasp,aop-dart-stream-admac",        10        },
+  { "ntasp,aop-dart-page-size",           16384     },
+  { "ntasp,aop-aic-mailbox-0",            613       },
+  { "ntasp,aop-aic-mailbox-1",            614       },
+  { "ntasp,aop-aic-mailbox-2",            615       },
+  { "ntasp,aop-aic-mailbox-3",            616       },
+  { "ntasp,aop-aic-dart",                 628       },
+  { "ntasp,aop-aic-admac",                631       },
+  { "ntasp,aop-interrupts-published",     1         },
+  { "ntasp,aop-csrt-ali2-required",       0         },
+  { "ntasp,aop-mailbox-offset",           0x8000    },
+  { "ntasp,aop-cpu-control-offset",       0x44      },
+  { "ntasp,aop-cpu-run-bit",              0x10      },
+  { "ntasp,aop-bootargs-ptr-offset",      0x22C     },
+  { "ntasp,aop-bootargs-size-offset",     0x230     },
+  { "ntasp,aop-firmware-preloaded",       1         },
+  { "ntasp,aop-pdm-frequency-hz",         2400000   },
+  { "ntasp,aop-pdmc-frequency-hz",        24000000  },
+  { "ntasp,aop-pdm-bytes-per-sample",     2         },
+  { "ntasp,aop-pdm-filter-lengths",       0x00542C47},
+  { "ntasp,aop-pdm-ratio1",               15        },
+  { "ntasp,aop-pdm-ratio2",               5         },
+  { "ntasp,aop-pdm-ratio3",               2         },
+  { "ntasp,aop-decimator-latency",        15        },
+  { "ntasp,aop-mic-turn-on-time-ms",      20        },
+  { "ntasp,aop-mic-settle-time-ms",       50        },
+  { "ntasp,aop-pdm-coefficient-taps",     100       },
+  { "ntasp,aop-pdm-coefficient-slots",    120       },
+};
+
+//
+// ISP0 -- NTAS0090, FaceTime camera.  Order per ISP.asl.
+//
+STATIC CONST NTASI_MEDIA_WINDOW  mNtasiIspWindows[] = {
+  { 0x384000000ULL, 0x2000000ULL },  // 0: ISP coprocessor
+  { 0x386104000ULL, 0x100ULL     },  // 1: ISP mailbox
+  { 0x386104170ULL, 0x100ULL     },  // 2: ISP scratch words ("gpio", not GPIO)
+  { 0x3861043F0ULL, 0x100ULL     },  // 3: ISP mailbox 2
+  { 0x290280000ULL, 0x4034ULL    },  // 4: pmgr_east, length verbatim, overlaps KBL0
+  { 0x3860E8000ULL, 0x4000ULL    },  // 5: dart-isp0 DARTLLT
+  { 0x3860F4000ULL, 0x4000ULL    },  // 6: dart-isp0 DARTBULK
+  { 0x3860FC000ULL, 0x4000ULL    },  // 7: dart-isp0 DARTRT
+};
+
+//
+// AIC 569.  Below 1019, identity-mapped, no ALI2 entry.  The ADT also lists
+// 570/571/572; Linux wires only 569.  Do not add them without changing the
+// driver: AppleIsp ASSIGNS Device->Gsiv per descriptor rather than
+// accumulating, so it keeps the last one it sees.
+//
+STATIC CONST UINT32  mNtasiIspInterrupts[] = { 569 };
+
+STATIC CONST NTASI_MEDIA_PROPERTY  mNtasiIspProperties[] = {
+  { "ntasp,isp-camera-config-index",        0             },
+  { "ntasp,isp-camera-config-index-pinned", 1             },
+  { "ntasp,isp-platform-id",                7             },
+  { "ntasp,isp-sensor-native-dim",          1920          },
+  { "ntasp,isp-mode-count",                 10            },
+  { "ntasp,isp-published-mode-count",       5             },
+  { "ntasp,isp-stride-alignment",           64            },
+  { "ntasp,isp-frame-rate-max",             30            },
+  { "ntasp,isp-frame-rate-min",             15            },
+  { "ntasp,isp-firmware-preloaded",         1             },
+  { "ntasp,isp-firmware-carveout-base",     0x100009FC000 },
+  { "ntasp,isp-firmware-carveout-size",     0x1284000     },
+  { "ntasp,isp-firmware-text-iova",         0x0           },
+  { "ntasp,isp-firmware-data-iova",         0x934000      },
+  { "ntasp,isp-firmware-iova-span",         0xC48000      },
+  { "ntasp,isp-dart-node-count",            1             },
+  { "ntasp,isp-dart-window-count",          6             },
+  { "ntasp,isp-dart-translation-count",     3             },
+  { "ntasp,isp-dart-windows-published",     3             },
+  { "ntasp,isp-dart-sid",                   0             },
+  { "ntasp,isp-dart-page-shift",            14            },
+  { "ntasp,isp-dart-pa-width",              42            },
+  { "ntasp,isp-dart-vm-size",               0xA0000000    },
+  { "ntasp,isp-dart-adopt-inherited-table", 1             },
+  { "ntasp,isp-gsiv",                       569           },
+  { "ntasp,isp-gsiv-needs-ali2",            0             },
+  { "ntasp,isp-interrupts-published",       1             },
+  { "ntasp,isp-adt-irq-count",              4             },
+  { "ntasp,isp-bringup-is-polled",          1             },
+  { "ntasp,isp-delivers-frames",            0             },
+  { "ntasp,isp-power-domain-count",         7             },
+};
+
+//
+// One SSDT per device, matching the three DefinitionBlocks in the ASL specs.
+// OEM ID and OEM table ID are byte-identical to what iasl emits for those
+// files (both fields are NUL-padded by iasl, and CopyMem() copies the same
+// 6 and 8 bytes from these literals).
+//
+STATIC CONST NTASI_MEDIA_DEVICE  mNtasiMediaDevices[] = {
+  {
+    "MCA0", "NTAS0080", "J414MCA",
+    mNtasiMcaWindows, ARRAY_SIZE (mNtasiMcaWindows),
+    mNtasiMcaInterrupts, ARRAY_SIZE (mNtasiMcaInterrupts),
+    mNtasiMcaProperties, ARRAY_SIZE (mNtasiMcaProperties)
+  },
+  {
+    "AOPA", "NTAS0081", "J414AOPA",
+    mNtasiAopWindows, ARRAY_SIZE (mNtasiAopWindows),
+    mNtasiAopInterrupts, ARRAY_SIZE (mNtasiAopInterrupts),
+    mNtasiAopProperties, ARRAY_SIZE (mNtasiAopProperties)
+  },
+  {
+    "ISP0", "NTAS0090", "J414ISP",
+    mNtasiIspWindows, ARRAY_SIZE (mNtasiIspWindows),
+    mNtasiIspInterrupts, ARRAY_SIZE (mNtasiIspInterrupts),
+    mNtasiIspProperties, ARRAY_SIZE (mNtasiIspProperties)
+  },
+};
+
+/**
+  Build and install one media device's SSDT.
+
+  Fails closed: any AmlLib error abandons the whole device rather than
+  installing a table with a short or partial _CRS, because a short list is what
+  the drivers detect and a partial one is what they cannot.
+
+  @param[in] AcpiTable  The ACPI table protocol.
+  @param[in] Device     The device description to publish.
+
+  @retval EFI_SUCCESS   The SSDT was built and installed.
+  @retval other         Nothing was installed.
+**/
+STATIC
+EFI_STATUS
+NtasiInstallMediaDevice (
+  IN EFI_ACPI_TABLE_PROTOCOL      *AcpiTable,
+  IN CONST NTASI_MEDIA_DEVICE     *Device
+  )
+{
+  EFI_STATUS                   Status;
+  EFI_STATUS                   DeleteStatus;
+  AML_ROOT_NODE_HANDLE         RootNode;
+  AML_OBJECT_NODE_HANDLE       ScopeNode;
+  AML_OBJECT_NODE_HANDLE       DeviceNode;
+  AML_OBJECT_NODE_HANDLE       CrsNode;
+  AML_OBJECT_NODE_HANDLE       DsdNode;
+  AML_OBJECT_NODE_HANDLE       DsdPackageNode;
+  EFI_ACPI_DESCRIPTION_HEADER  *Table;
+  UINTN                        TableHandle;
+  UINTN                        Index;
+
+  RootNode = NULL;
+  Table    = NULL;
+
+  DEBUG ((
+    DEBUG_INFO,
+    "AppleMedia ACPI: stage \"build-ssdt\" device=%a hid=%a windows=%u properties=%u\n",
+    Device->DeviceName,
+    Device->HardwareId,
+    (UINT32)Device->WindowCount,
+    (UINT32)Device->PropertyCount
+    ));
+
+  Status = AmlCodeGenDefinitionBlock ("SSDT", "Apple", Device->OemTableId, 1, &RootNode);
+  if (EFI_ERROR (Status)) {
+    goto Exit;
+  }
+
+  Status = AmlCodeGenScope ("\\_SB_", RootNode, &ScopeNode);
+  if (EFI_ERROR (Status)) {
+    goto Exit;
+  }
+
+  Status = AmlCodeGenDevice (Device->DeviceName, ScopeNode, &DeviceNode);
+  if (EFI_ERROR (Status)) {
+    goto Exit;
+  }
+
+  Status = AmlCodeGenNameString ("_HID", Device->HardwareId, DeviceNode, NULL);
+  if (EFI_ERROR (Status)) {
+    goto Exit;
+  }
+
+  Status = AmlCodeGenNameInteger ("_UID", 0, DeviceNode, NULL);
+  if (EFI_ERROR (Status)) {
+    goto Exit;
+  }
+
+  //
+  // _CCA = 1 for all three.  Their DMA is coherent with the CPU caches, which
+  // is what lets the drivers map their IPC and frame surfaces MmCached and
+  // skip explicit flushes.  Changing this to Zero and changing the drivers'
+  // surface allocators to MmNonCached are one decision, not two.
+  //
+  Status = AmlCodeGenNameInteger ("_CCA", 1, DeviceNode, NULL);
+  if (EFI_ERROR (Status)) {
+    goto Exit;
+  }
+
+  Status = AmlCodeGenNameInteger ("_STA", 0x0F, DeviceNode, NULL);
+  if (EFI_ERROR (Status)) {
+    goto Exit;
+  }
+
+  Status = AmlCodeGenNameResourceTemplate ("_CRS", DeviceNode, &CrsNode);
+  if (EFI_ERROR (Status)) {
+    goto Exit;
+  }
+
+  //
+  // The windows go in strictly in table order, and the interrupt descriptor
+  // (if any) is appended only AFTER all of them -- see the loop below for why
+  // that ordering is load-bearing.  AppleAnsAddMemoryResource is reused
+  // verbatim: it is a plain QWordMemory ResourceConsumer/PosDecode/MinFixed/
+  // MaxFixed/NonCacheable/ReadWrite emitter with nothing ANS-specific in it,
+  // and duplicating it would create a second copy to keep in step.
+  //
+  for (Index = 0; Index < Device->WindowCount; Index++) {
+    Status = AppleAnsAddMemoryResource (
+               CrsNode,
+               Device->Windows[Index].Base,
+               Device->Windows[Index].Length
+               );
+    if (EFI_ERROR (Status)) {
+      DEBUG ((
+        DEBUG_ERROR,
+        "AppleMedia ACPI: %a window %u (0x%lx/+0x%lx) refused: %r; device withheld\n",
+        Device->DeviceName,
+        (UINT32)Index,
+        Device->Windows[Index].Base,
+        Device->Windows[Index].Length,
+        Status
+        ));
+      goto Exit;
+    }
+  }
+
+  //
+  // Interrupts LAST, after every memory window, as one descriptor carrying the
+  // whole vector list -- byte-for-byte the shape the ASL specs compile to.
+  //
+  // The ordering is not cosmetic.  All three drivers count memory descriptors
+  // in their own index space while handling interrupts in a separate branch,
+  // so an interrupt appended at the end cannot shift a window; an interrupt
+  // placed FIRST would still not shift a window, but it would put this
+  // generator out of step with the ASL that the contract test diffs it
+  // against, and there is no reason to invite that.
+  //
+  // Level-triggered, active-high, exclusive: AIC lines are level/active-high,
+  // and the translated descriptor -- not this one -- is what carries the
+  // synchronisation IRQL the drivers must use.
+  //
+  // MCA0's five are PUBLISHED GSIVs that only mean anything because the media
+  // CSRT translates them; AOPA's 631 and ISP0's 569 are real AIC lines below
+  // the carrier limit, published identity-mapped.
+  //
+  if (Device->InterruptCount != 0) {
+    UINT32  Irqs[NTASI_MEDIA_MAX_INTERRUPTS];
+
+    if (Device->InterruptCount > ARRAY_SIZE (Irqs)) {
+      //
+      // Fail closed rather than truncate.  A silently shortened interrupt list
+      // is exactly the class of bug the _CRS contract exists to prevent.
+      //
+      DEBUG ((
+        DEBUG_ERROR,
+        "AppleMedia ACPI: %a declares %u interrupts, max is %u; device withheld\n",
+        Device->DeviceName,
+        (UINT32)Device->InterruptCount,
+        (UINT32)ARRAY_SIZE (Irqs)
+        ));
+      Status = EFI_INVALID_PARAMETER;
+      goto Exit;
+    }
+
+    //
+    // Copied to a local because AmlCodeGenRdInterrupt() takes a non-const
+    // UINT32 *, and the tables above are deliberately CONST.
+    //
+    for (Index = 0; Index < Device->InterruptCount; Index++) {
+      Irqs[Index] = Device->Interrupts[Index];
+    }
+
+    Status = AmlCodeGenRdInterrupt (
+               TRUE,                                  // ResourceConsumer
+               FALSE,                                 // EdgeTriggered -> Level
+               FALSE,                                 // ActiveLow -> ActiveHigh
+               FALSE,                                 // Shared -> Exclusive
+               Irqs,
+               (UINT8)Device->InterruptCount,
+               CrsNode,
+               NULL
+               );
+    if (EFI_ERROR (Status)) {
+      DEBUG ((
+        DEBUG_ERROR,
+        "AppleMedia ACPI: %a interrupt list refused: %r; device withheld\n",
+        Device->DeviceName,
+        Status
+        ));
+      goto Exit;
+    }
+  }
+
+  //
+  // _DSD carries data, never a resource claim, so nothing below is visible to
+  // the OS resource arbiter.  ntasp,mca-allow-render is deliberately absent
+  // from every table: it is the ACPI half of the MCA render gate and the
+  // speakers have no thermal protection on Windows.
+  //
+  if (Device->PropertyCount != 0) {
+    DsdNode        = NULL;
+    DsdPackageNode = NULL;
+
+    Status = AmlCodeGenNamePackage ("_DSD", DeviceNode, &DsdNode);
+    if (EFI_ERROR (Status)) {
+      goto Exit;
+    }
+
+    Status = AmlAddDeviceDataDescriptorPackage (
+               &gAppleAnsDsdPropertiesGuid,
+               DsdNode,
+               &DsdPackageNode
+               );
+    if (EFI_ERROR (Status)) {
+      goto Exit;
+    }
+
+    for (Index = 0; Index < Device->PropertyCount; Index++) {
+      Status = AmlAddNameIntegerPackage (
+                 Device->Properties[Index].Name,
+                 Device->Properties[Index].Value,
+                 DsdPackageNode
+                 );
+      if (EFI_ERROR (Status)) {
+        goto Exit;
+      }
+    }
+  }
+
+  Status = AmlSerializeDefinitionBlock (RootNode, &Table);
+  if (EFI_ERROR (Status)) {
+    goto Exit;
+  }
+
+  TableHandle = 0;
+  Status      = AcpiTable->InstallAcpiTable (
+                             AcpiTable,
+                             Table,
+                             Table->Length,
+                             &TableHandle
+                             );
+  if (!EFI_ERROR (Status)) {
+    DEBUG ((
+      DEBUG_INFO,
+      "AppleMedia ACPI: %a (%a) published, %u memory windows, 0 interrupts, "
+      "%u _DSD properties, no render opt-in\n",
+      Device->DeviceName,
+      Device->HardwareId,
+      (UINT32)Device->WindowCount,
+      (UINT32)Device->PropertyCount
+      ));
+  }
+
+Exit:
+  if (Table != NULL) {
+    FreePool (Table);
+  }
+
+  if (RootNode != NULL) {
+    DeleteStatus = AmlDeleteTree (RootNode);
+    if (!EFI_ERROR (Status) && EFI_ERROR (DeleteStatus)) {
+      Status = DeleteStatus;
+    }
+  }
+
+  return Status;
+}
+
+/**
+  Publish every media device.  Each is independent: one failing does not
+  withhold the others, and none is fatal to the boot.  A machine that reaches
+  Windows with two of three media devices is strictly better than one that does
+  not reach Windows at all, and this whole feature is an experiment behind a
+  default-off profile flag.
+
+  @param[in] AcpiTable  The ACPI table protocol.
+**/
+STATIC
+VOID
+NtasiInstallMediaTables (
+  IN EFI_ACPI_TABLE_PROTOCOL  *AcpiTable
+  )
+{
+  EFI_STATUS  Status;
+  UINTN       Index;
+
+  for (Index = 0; Index < ARRAY_SIZE (mNtasiMediaDevices); Index++) {
+    Status = NtasiInstallMediaDevice (AcpiTable, &mNtasiMediaDevices[Index]);
+    if (EFI_ERROR (Status)) {
+      DEBUG ((
+        DEBUG_ERROR,
+        "AppleMedia ACPI: %a SSDT installation failed: %r\n",
+        mNtasiMediaDevices[Index].DeviceName,
+        Status
+        ));
+    }
+  }
+}
+#endif // NTASI_ENABLE_MEDIA_PUBLICATION
+
 /**
   Publish the native Apple ANS controller to Windows.  Addresses and the
   hardware profile are derived from the live Apple Device Tree so one firmware
@@ -2368,6 +2992,17 @@ AcpiPlatformEntryPoint (
     DEBUG ((DEBUG_ERROR, "WirelessDART ACPI: SSDT installation failed: %r\n", Status));
   }
 
+#endif
+
+#if NTASI_ENABLE_MEDIA_PUBLICATION
+  //
+  // Publish MCA0/AOPA/ISP0 for the media profile.  Non-fatal by construction:
+  // NtasiInstallMediaTables() logs and continues, consistent with "never let a
+  // firmware bug here take down a boot that would otherwise reach Windows" for
+  // everything after the mandatory ANS table.  The matching CSRT ALI2 entries
+  // for MCA0's published GSIVs come from CSRT.aslc, gated on the same flag.
+  //
+  NtasiInstallMediaTables (AcpiTable);
 #endif
 
   //

@@ -3,7 +3,7 @@
 set -eu
 
 usage() {
-    echo "usage: $0 baseline|ans|gpu|ans-gpu|wireless|gpu-wireless|ans-gpu-wireless" >&2
+    echo "usage: $0 baseline|ans|ans-noacpi|gpu|ans-gpu|wireless|gpu-wireless|ans-gpu-wireless|media" >&2
     exit 2
 }
 
@@ -27,6 +27,11 @@ case "$profile" in
     wireless) ;;
     gpu-wireless) ;;
     ans-gpu-wireless) ;;
+    # Publishes MCA0 (NTAS0080), AOPA (NTAS0081) and ISP0 (NTAS0090) on top of
+    # baseline, and nothing else: no FFS module, no static ACPI table, no
+    # interrupt resource, no CSRT change. Single variable on top of the
+    # configuration that is known to boot.
+    media) ;;
     *) usage ;;
 esac
 

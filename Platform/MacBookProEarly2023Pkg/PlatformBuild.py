@@ -179,6 +179,14 @@ class PlatformBuilder( UefiBuilder, BuildSettingsManager):
     def SetPlatformEnv(self):
         logging.debug("PlatformBuilder SetPlatformEnv")
         profile = os.environ.get("NTASI_MU_PROFILE", "baseline").strip().lower()
+        # "media" is the only profile that sets media=1. It publishes MCA0
+        # (NTAS0080), AOPA (NTAS0081) and ISP0 (NTAS0090) from AcpiPlatformDxe
+        # at DXE runtime and changes nothing else: no FFS module (so
+        # expected_ffs_count equals baseline's), no static ACPI table, no
+        # interrupt resource, and not one CSRT byte. Deliberately NOT combined
+        # with ans/gpu/wireless: baseline is the only configuration currently
+        # known to boot and stay up, so the media experiment is run as a single
+        # variable on top of it.
         profile_values = {
             "baseline": {"ans_acpi": "FALSE", "ans": "FALSE", "gpu": "0", "wireless": "0"},
             "ans": {"ans": "TRUE", "gpu": "0", "wireless": "0", "ans_acpi": "TRUE"},
@@ -193,12 +201,18 @@ class PlatformBuilder( UefiBuilder, BuildSettingsManager):
             "wireless": {"ans_acpi": "FALSE", "ans": "FALSE", "gpu": "0", "wireless": "1"},
             "gpu-wireless": {"ans_acpi": "FALSE", "ans": "FALSE", "gpu": "1", "wireless": "1"},
             "ans-gpu-wireless": {"ans": "TRUE", "gpu": "1", "wireless": "1", "ans_acpi": "TRUE"},
+            "media": {"ans_acpi": "FALSE", "ans": "FALSE", "gpu": "0", "wireless": "0", "media": "1"},
         }
+        # Every profile that does not name media leaves it off. Written as a
+        # default rather than repeated in nine dicts so a profile added later
+        # cannot silently inherit an enabled media publication by omission.
+        for values in profile_values.values():
+            values.setdefault("media", "0")
         if profile not in profile_values:
             raise ValueError(
                 "NTASI_MU_PROFILE must be one of: "
                 "baseline, ans, ans-noacpi, gpu, ans-gpu, wireless, "
-                "gpu-wireless, ans-gpu-wireless"
+                "gpu-wireless, ans-gpu-wireless, media"
             )
         logging.info("Building the J414s Windows Mu profile: %s", profile)
 
@@ -277,6 +291,15 @@ class PlatformBuilder( UefiBuilder, BuildSettingsManager):
         self.env.SetValue(
             "BLD_*_NTASI_ENABLE_WIRELESS_DART_HANDOFF",
             profile_values[profile]["wireless"],
+            "Selected by NTASI_MU_PROFILE",
+        )
+        # Media publication (MCA0/AOPA/ISP0). Like gpu and wireless this is a
+        # pure source-flag decision: the whole generator is inside
+        # "#if NTASI_ENABLE_MEDIA_PUBLICATION" in AcpiPlatform.c, so 0 produces
+        # byte-identical firmware to a tree without this feature at all.
+        self.env.SetValue(
+            "BLD_*_NTASI_ENABLE_MEDIA_PUBLICATION",
+            profile_values[profile]["media"],
             "Selected by NTASI_MU_PROFILE",
         )
 

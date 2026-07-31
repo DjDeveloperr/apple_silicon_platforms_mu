@@ -118,9 +118,42 @@ PROFILES = {
         "wireless": True,
         "expected_ffs_count": 88,
     },
+    # Media publication: MCA0 (NTAS0080, speakers + headset jack), AOPA
+    # (NTAS0081, internal PDM mic array) and ISP0 (NTAS0090, FaceTime camera).
+    #
+    # Selecting "media" changes exactly one thing a static build can prove: the
+    # NTASI_ENABLE_MEDIA_PUBLICATION compiler define, which gates the whole
+    # NtasiInstallMediaTables() block in AcpiPlatformDxe. Like gpu and wireless
+    # it adds NO FFS module -- the three SSDTs are built with AmlLib at DXE
+    # runtime, so this static inventory can no more see them than it can see
+    # ANS0 or DRT0 -- and its expected_ffs_count therefore equals baseline's.
+    #
+    # ZERO INTERRUPTS. Not one Interrupt() descriptor is published for any of
+    # the three devices and not one CSRT byte changes: the CSRT emitted for
+    # m2-pro is byte-for-byte what it is today, with the same three ALI2
+    # entries (37->1274 XHC1, 38->1832 ANS, 39->1292 XHC2), because that table
+    # is built unconditionally and no profile flag reaches it. All three
+    # drivers reach first light by polling, by design. See
+    # apple_silicon_nt_drivers/docs/j414s-media-gsiv-allocation.md section 3.
+    #
+    # Deliberately NOT combined with ans/gpu/wireless. Measured on hardware
+    # 2026-07-30, baseline and gpu are the configurations that boot Windows and
+    # stay up; media is run as a single variable on top of baseline so a result
+    # is attributable.
+    "media": {
+        "profile_abi": "ntasi.j414s.windows.media-publication.v1",
+        "ans": False,
+        "gpu": False,
+        "media": True,
+        "expected_ffs_count": 87,
+    },
 }
 for _profile in PROFILES.values():
     _profile.setdefault("wireless", False)
+    # Media publication is opt-in per profile. Defaulted here rather than
+    # written into every entry so a profile added later cannot inherit an
+    # enabled media publication by omission.
+    _profile.setdefault("media", False)
     # NTAS2003 publication defaults to tracking driver presence; only the
     # ans-noacpi control decouples them.
     _profile.setdefault("ans_acpi", _profile["ans"])
@@ -482,6 +515,53 @@ def profile_policy(profile: str) -> dict[str, Any]:
             "wireless_dart_handoff": selected["wireless"],
             "drt0_publication": selected["wireless"],
             "wifi_profile_available": selected["wireless"],
+            # The media profile publishes three ACPI devices from
+            # AcpiPlatformDxe at DXE runtime. Recorded as four separate facts
+            # so the artifact STATES its posture instead of leaving it to be
+            # inferred from one flag:
+            #   media_publication          -- the gate itself
+            #   media_acpi_devices         -- what it publishes, by _HID
+            #   media_interrupt_count      -- how many interrupt resources it
+            #                                 adds, which is zero, which is why
+            #                                 it cannot cause a GSIV collision
+            #   media_speaker_render_enabled -- the render gate's ACPI half.
+            #     False in every profile. Opening it needs ntasp,mca-allow-render
+            #     in _DSD *and* an AllowSpeakerRender registry value *and* a
+            #     compile-time constant in AppleMcaAudio that is 0. The speakers
+            #     have no thermal protection on Windows.
+            "media_publication": selected["media"],
+            "media_acpi_devices": (
+                ["NTAS0080", "NTAS0081", "NTAS0090"] if selected["media"] else []
+            ),
+            # Published GSIVs, in device order MCA0 / AOPA / ISP0. MCA0's five
+            # are translated by the CSRT ALI2 tail (40->1218, 41->1211,
+            # 42->1213, 43->1221, 45->1231); AOPA's 631 and ISP0's 569 are real
+            # AIC lines below the carrier's 1019 limit, published identity
+            # mapped. Recorded as the exact list rather than a count so a
+            # launcher can refuse a wrong NUMBER and a wrong SET.
+            "media_published_gsivs": (
+                [40, 41, 42, 43, 45, 631, 569] if selected["media"] else []
+            ),
+            # Which CSRT the FD carries, and how many ALI2 aliases it has.
+            # Three cases, because the GPU profile also extends the table:
+            #   media    m2-pro-media, 8 aliases (3 fixed + MCA0's 5)
+            #   gpu      m2-pro-gpu,   4 aliases (3 fixed + AGX 40->1146)
+            #   other    m2-pro,       3 aliases, byte-for-byte unchanged
+            # "m2-pro" and "m2-pro-media" are emit_aic2_csrt.c fixture names;
+            # "m2-pro-gpu" is Mu-local and has no emitter fixture.
+            # Every variant is a strict superset of the fixed three, so the
+            # boot USB controller's 37->1274 alias is bit-identical in all of
+            # them. Note media and gpu both claim published GSIV 40 for
+            # different lines -- CSRT.aslc #errors if both are selected.
+            "csrt_variant": (
+                "m2-pro-media" if selected["media"]
+                else "m2-pro-gpu" if selected["gpu"]
+                else "m2-pro"
+            ),
+            "csrt_ali2_alias_count": (
+                8 if selected["media"] else 4 if selected["gpu"] else 3
+            ),
+            "media_speaker_render_enabled": False,
         },
     }
 
@@ -615,6 +695,10 @@ def generate_manifest(args: argparse.Namespace) -> dict[str, Any]:
         "NTASI_ANS_PUBLISH_ACPI": "TRUE" if PROFILES[profile]["ans_acpi"] else "FALSE",
         "NTASI_J414S_GPU_RESOURCE_PROFILE": "1" if PROFILES[profile]["gpu"] else "0",
         "NTASI_ENABLE_WIRELESS_DART_HANDOFF": "1" if PROFILES[profile]["wireless"] else "0",
+        # The only build-time proof that the media SSDT generator compiled in:
+        # it adds no FFS and no static table, so this define is to media what
+        # NTASI_ENABLE_WIRELESS_DART_HANDOFF is to wireless.
+        "NTASI_ENABLE_MEDIA_PUBLICATION": "1" if PROFILES[profile]["media"] else "0",
         "NTASI_DEPLOY_EVIDENCE_ECHO": getattr(args, "evidence_echo", "0"),
     }
     for name, value in expected_defines.items():

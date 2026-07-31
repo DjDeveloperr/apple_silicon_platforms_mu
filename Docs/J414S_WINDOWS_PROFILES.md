@@ -53,8 +53,9 @@ Tools/verify-j414s-windows-profile.py verify \
   --source-root .
 ```
 
-`NTASI_MU_PROFILE` accepts `baseline`, `ans`, `gpu`, `ans-gpu`, `wireless`, or
-`ans-gpu-wireless`. ANS, GPU, and wireless publication can each be enabled
+`NTASI_MU_PROFILE` accepts `baseline`, `ans`, `ans-noacpi`, `gpu`, `ans-gpu`,
+`wireless`, `gpu-wireless`, `ans-gpu-wireless`, or `media`.
+ANS, GPU, and wireless publication can each be enabled
 independently, or combined -- `ans-gpu` sets both
 `PcdAppleAnsPublishAcpiDevice` and `NTASI_J414S_GPU_RESOURCE_PROFILE` and
 therefore publishes `NTAS1000`/`NTAS2002`/`NTAS2003` (whichever the live ADT
@@ -126,6 +127,110 @@ GPU-profile boot printed the DSC default window `[0x10000000000,
 0x103DB29C000)`, which made the GPU carveout guard reject all three live ADT
 carveouts. `AcpiPlatform.c` derives both windows from `boot_args` instead (see
 `NtasiDeriveBootArgsWindows()`) and logs a `DEBUG_WARN` when the PCDs disagree.
+
+## The `media` profile: MCA0, AOPA and ISP0, with zero interrupts
+
+`media` publishes the three ACPI devices the J414s media drivers bind to:
+
+| Device | `_HID` | `_CRS` windows | What binds to it |
+|---|---|---|---|
+| `MCA0` | `NTAS0080` | 9 | `AppleMcaAudio` -- MCA I2S/TDM complex, ADMAC, NCO, six TAS2764 amps |
+| `AOPA` | `NTAS0081` | 4 | `AppleAopAudio` -- AOP internal PDM microphone array |
+| `ISP0` | `NTAS0090` | 8 | `AppleIsp` -- FaceTime camera coprocessor |
+
+It changes exactly one thing a static build can prove: the
+`NTASI_ENABLE_MEDIA_PUBLICATION` compiler define. Like `gpu` and `wireless` it
+adds **no FFS module** -- `NtasiInstallMediaTables()` in `AcpiPlatformDxe`
+builds all three SSDTs with `AmlLib` at DXE runtime, the same technique `ANS0`
+and `DRT0` use -- so its `expected_ffs_count` equals baseline's and the
+94-image count is unchanged. `profile_abi` is
+`ntasi.j414s.windows.media-publication.v1`.
+
+**Default OFF means byte-identical, not merely equivalent.** The entire
+generator is inside `#if NTASI_ENABLE_MEDIA_PUBLICATION`, so a profile without
+the flag compiles the same bytes it compiled before this feature existed. A
+static ASL table was deliberately *not* used: it would land in the firmware
+volume of every profile including the baseline that boots.
+
+**Seven published GSIVs, and the media profile's own CSRT.** Each device's
+interrupt list is appended *after* its memory windows, so the positional memory
+contract is untouched:
+
+| Device | Published | Physical | Translated by CSRT? |
+|---|---|---|---|
+| `MCA0` | 40, 41, 42, 43, 45 | 1218, 1211, 1213, 1221, 1231 | **yes** -- all above the 1019 limit |
+| `AOPA` | 631 | 631 | no -- identity mapped |
+| `ISP0` | 569 | 569 | no -- identity mapped |
+
+Because MCA0's real lines are above Windows' GIC arbiter limit of 32..1019, the
+media profile builds the **`m2-pro-media`** CSRT (8 aliases, 296 bytes,
+sha256 `a082eb6c…`) instead of the ordinary **`m2-pro`** (3 aliases, 256 bytes,
+sha256 `cdee0da8…`). `CSRT.aslc` selects it on the same
+`NTASI_ENABLE_MEDIA_PUBLICATION` flag, so table and `_CRS` cannot get out of
+step. **Every non-media profile's CSRT is byte-for-byte unchanged**, and the
+media table is a strict *superset* -- the boot USB controller's `37 -> 1274`
+alias is bit-identical in both.
+
+**Never 44.** AIC 44 belongs to `/arm-io/i2c0/hpmBusManager` in the live ADT. An
+early draft proposed `44 -> 1231`; it was withdrawn. `run-m2-pro-mu.sh` refuses
+any manifest publishing it, by name.
+
+**`media` and `gpu` are mutually exclusive** and `CSRT.aslc` `#error`s if both
+are set: published GSIV 40 is the AGX mailbox (`40 -> 1146`) in the GPU table
+and `admac-sio` (`40 -> 1218`) here. No shipped profile selects both.
+
+**Measured caveat — six of the seven vectors are inert today.** Only `AppleIsp`
+consumes an interrupt resource. `AppleMcaAudio` and `AppleAopAudio` contain no
+`CmResourceTypeInterrupt` handling and no `WdfInterrupt` object at all
+(`AppleMcaMapResources()` skips every non-memory descriptor), so their
+bring-up remains wholly polled and those descriptors do nothing for the shipped
+binaries. They are published so the streaming path's resources are already
+arbitrated and so a grant now is evidence of a grant later — at the cost that
+every one of them must be satisfiable for its devnode to start.
+
+**Nothing can make a sound.** `ntasp,mca-allow-render` is absent from every
+table. The MCA render path needs that ACPI property *and* an
+`AllowSpeakerRender` registry value *and* a compile-time constant in
+`AppleMcaAudio` that is `0`; all three stay shut, and the manifest records
+`media_speaker_render_enabled: false`, which the launcher also enforces. The
+internal speakers have no thermal protection on Windows and the amplifiers
+power on at maximum analog gain.
+
+**The `_CRS` order is a contract.** All three drivers match memory descriptors
+positionally and fail closed only on a *short* list; a *reordered* list is not
+detected, and for `AppleIsp` it would put a DART TTBR write into a coprocessor
+control register. `MCA0` publishes nine windows because
+`AppleMcaMapResources()` accepts exactly 8, 9 or 12 and refuses anything
+between -- the three capture windows (`i2c2`, `pinctrl_nub`, `sio_dart`) are
+all-or-nothing and are withheld for first light because they arm code that
+mutates hardware. `ISP0` window 4 is `0x4034` long *exactly*, not page-rounded.
+`Platform/MacBookProEarly2023Pkg/AcpiTables/Media/{MCA,AOPA,ISP}.asl` is the
+readable specification (the build does not compile it) and
+`Tests/test_j414s_media_acpi_contract.py` pins it against the C tables.
+
+**Known, unfixed-in-firmware: a pmgr_east resource overlap.** `MCA0` window 4
+is `[0x290280000, 0x290280FFF]` and `ISP0` window 4 is
+`[0x290280000, 0x290284033]`. `KBL0` (`NTAS0051`) already claims that page
+exclusively in `KBL.asl`. Same defect class as the NTAS2003-vs-KBL0 collision
+fixed on 2026-07-30.
+
+Splitting the window to straddle KBL0's page was considered and **rejected as
+impossible without a driver change**, for two independent reasons:
+
+1. Both drivers need registers *inside* KBL0's page — ISP0 needs `ps_isp_sys`
+   at `+0x1c8`, and every one of MCA0's ten power words (`ps_sio` `0x1C0`
+   through `ps_mca3` `0x3B0`) is below `+0x1000`. There is no split that avoids
+   the overlap; only one that reduces it.
+2. A split turns one descriptor into two, changing ISP0's count from 8 to 9 and
+   shifting `DARTLLT`/`DARTBULK`/`DARTRT` from indices 5/6/7 to 6/7/8 — exactly
+   the reorder that would put a DART TTBR write into a coprocessor register.
+
+So it stays, documented. **Expect `CM_PROB_NORMAL_CONFLICT` (Code 12) on `MCA0`
+and `ISP0`**: `KBL0` is enumerated from a table installed before the runtime
+SSDTs and is the likely winner of the page. `AOPA` has no pmgr window and no
+overlap, so it is the one new device expected to start. The real fix is
+driver-side and is the one ANS already took: read the pmgr_east base from
+`_DSD` and drop the window.
 
 ## `NTAS0023` (GPU) is deliberately NOT published
 
