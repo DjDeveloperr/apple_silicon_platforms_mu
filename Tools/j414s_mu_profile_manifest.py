@@ -116,20 +116,6 @@ PROFILES = {
         "ans": True,
         "gpu": True,
         "wireless": True,
-        # Explicitly OFF rather than inherited from "gpu".
-        #
-        # 2026-07-31: build 3450262 turned NTAS0023 publication on for the
-        # first time AND restored XHC2 _STA in the same image. That image went
-        # silent -- Mu emitted nothing at all on the secondary UART -- so
-        # neither change could be attributed. dd49d61, the last image that
-        # booted, had gpu_acpi False.
-        #
-        # Keeping publication off isolates the XHC2 restore as the single
-        # variable. The GPU carveout reservation and the
-        # NTASI_J414S_GPU_RESOURCE_PROFILE code are unaffected: this switch
-        # only decides whether the ACPI device is published, which is exactly
-        # the separation the gpu-noacpi control profile exists to test.
-        "gpu_acpi": False,
         "expected_ffs_count": 88,
     },
     # Media publication: MCA0 (NTAS0080, speakers + headset jack), AOPA
@@ -161,34 +147,6 @@ PROFILES = {
         "media": True,
         "expected_ffs_count": 87,
     },
-    # Media AND GPU together. This combination was IMPOSSIBLE before
-    # 2026-07-31: CSRT.aslc #errored because the AGX mailbox and admac-sio both
-    # claimed published GSIV 40. The AGX mailbox moved to 46 (proven free
-    # against the pinned live ADT on all five allocation rules), so the two
-    # alias sets are now disjoint on both sides and the 9-alias
-    # "m2-pro-media-gpu" CSRT exists. Carried here so the combination is a
-    # real, testable profile rather than a claim.
-    "media-gpu": {
-        "profile_abi": "ntasi.j414s.windows.media-gpu-combined.v1",
-        "ans": False,
-        "gpu": True,
-        "media": True,
-        "expected_ffs_count": 87,
-    },
-    # Single-variable control for NTAS0023, exactly like ans-noacpi is for
-    # NTAS2003: the GPU carveouts are still reserved in the GCD and the
-    # NTASI_J414S_GPU_RESOURCE_PROFILE code is still compiled in, but the ACPI
-    # device is never published, so Windows never builds a devnode for it and
-    # its PnP arbiter never allocates the eight memory ranges or GSIV 46.
-    # This is what isolates "the ACPI device and its resources" from "the GPU
-    # carveout reservation" if a GPU-profile boot regresses.
-    "gpu-noacpi": {
-        "profile_abi": "ntasi.j414s.windows.gpu-resource-no-acpi-control.v1",
-        "ans": False,
-        "gpu": True,
-        "gpu_acpi": False,
-        "expected_ffs_count": 87,
-    },
 }
 for _profile in PROFILES.values():
     _profile.setdefault("wireless", False)
@@ -199,11 +157,6 @@ for _profile in PROFILES.values():
     # NTAS2003 publication defaults to tracking driver presence; only the
     # ans-noacpi control decouples them.
     _profile.setdefault("ans_acpi", _profile["ans"])
-    # NTAS0023 publication defaults to tracking the GPU carveout profile; only
-    # the gpu-noacpi control decouples them. Defaulted rather than written into
-    # every entry so a profile added later cannot inherit an enabled GPU
-    # publication by omission.
-    _profile.setdefault("gpu_acpi", _profile["gpu"])
 REQUIRED_FFS = {
     "168D1A6E-F4A5-448A-9E95-795661BB3067": "ArmPciCpuIo2Dxe",
     "128FB770-5E79-4176-9E51-9BB268A17DD1": "PciHostBridgeDxe",
@@ -500,13 +453,8 @@ def acpi_inventory(
         "dsdt_drt0_absent": "Device (DRT0)" not in dsdt,
         "dsdt_ntas0011_absent": "NTAS0011" not in dsdt,
         "disp_ntas0070": "NTAS0070" in disp,
-        # No STATIC GPU table exists in any profile, and none may ever again.
-        # This assertion is about the firmware volume, not about whether the
-        # device is published: since 2026-07-31 NTAS0023 IS published, but by
-        # NtasiInstallGpuTable() with AmlLib at DXE runtime -- from that boot's
-        # own live ADT -- exactly like ANS0 and DRT0, and exactly so that the
-        # addresses cannot be baked into a build artifact again. A GPU.aml
-        # reappearing here would mean the hardcoded-_CRS bug had returned.
+        # No static GPU table exists in any profile; NTAS0023 is deliberately
+        # not published (see NtasiReportGpuPublicationDecision()).
         "gpu_ntas0023": False,
     }
 
@@ -563,31 +511,7 @@ def profile_policy(profile: str) -> dict[str, Any]:
             # as two separate facts so the artifact manifest states the
             # decision instead of leaving it to be inferred.
             "gpu_carveout_reservation": selected["gpu"],
-            # CHANGED 2026-07-31: NTAS0023 is published again, but nothing
-            # about it is hardcoded any more. The three UAT carveouts come from
-            # the live ADT and are bounded against real DRAM; the two MMIO
-            # windows are driver-ABI constants that are PROVEN against the live
-            # ADT before publication; and hw_data_a/hw_data_b/globals -- which
-            # have no live source on this boot path -- are backed by a
-            # firmware-owned EfiReservedMemoryType allocation instead of the
-            # old GPU.asl addresses that sat inside OS RAM on top of Mu's PEI
-            # stack. See NtasiPublishGpu() in AcpiPlatform.c.
-            "gpu_acpi_ntas0023_publication": selected["gpu_acpi"],
-            # Published GSIVs for the GPU device. Exactly one: the AGX ASC
-            # mailbox doorbell, translated 46 -> 1146 by the CSRT ALI2 tail.
-            # Recorded as the exact list rather than a count so a launcher can
-            # refuse a wrong NUMBER and a wrong SET -- and specifically so a
-            # regression back to 40 (which would collide with the media
-            # profile's admac-sio) is refused rather than booted.
-            "gpu_published_gsivs": [46] if selected["gpu_acpi"] else [],
-            # Whether the published hw_data_a/hw_data_b/globals are real m1n1
-            # calibration data or firmware-owned zeroed placeholders. This
-            # CANNOT be determined at build time -- it depends on whether that
-            # boot's live ADT carries hw-data-a-base and friends -- so the
-            # static manifest records what the firmware is CAPABLE of, and the
-            # runtime _DSD property ntasp,preboot-handoff-present carries the
-            # per-boot truth. Today no boot path produces the real data.
-            "gpu_preboot_handoff_placeholder_capable": selected["gpu_acpi"],
+            "gpu_acpi_ntas0023_publication": False,
             "wireless_dart_handoff": selected["wireless"],
             "drt0_publication": selected["wireless"],
             "wifi_profile_available": selected["wireless"],
@@ -619,29 +543,23 @@ def profile_policy(profile: str) -> dict[str, Any]:
                 [40, 41, 42, 43, 45, 631, 569] if selected["media"] else []
             ),
             # Which CSRT the FD carries, and how many ALI2 aliases it has.
-            # FOUR cases as of 2026-07-31, because media and gpu are no longer
-            # mutually exclusive:
-            #   media+gpu  m2-pro-media-gpu, 9 aliases (3 fixed + 5 MCA + AGX)
-            #   media      m2-pro-media,     8 aliases (3 fixed + MCA0's 5)
-            #   gpu        m2-pro-gpu,       4 aliases (3 fixed + AGX 46->1146)
-            #   other      m2-pro,           3 aliases, byte-for-byte unchanged
-            # All four are now emit_aic2_csrt.c fixture names -- "m2-pro-gpu"
-            # used to be Mu-local with no emitter fixture, which is exactly how
-            # its alias drifted onto the media profile's number unnoticed.
+            # Three cases, because the GPU profile also extends the table:
+            #   media    m2-pro-media, 8 aliases (3 fixed + MCA0's 5)
+            #   gpu      m2-pro-gpu,   4 aliases (3 fixed + AGX 40->1146)
+            #   other    m2-pro,       3 aliases, byte-for-byte unchanged
+            # "m2-pro" and "m2-pro-media" are emit_aic2_csrt.c fixture names;
+            # "m2-pro-gpu" is Mu-local and has no emitter fixture.
             # Every variant is a strict superset of the fixed three, so the
-            # boot USB controller's 37->1274 alias is bit-identical and still
-            # first in all of them.
+            # boot USB controller's 37->1274 alias is bit-identical in all of
+            # them. Note media and gpu both claim published GSIV 40 for
+            # different lines -- CSRT.aslc #errors if both are selected.
             "csrt_variant": (
-                "m2-pro-media-gpu" if (selected["media"] and selected["gpu"])
-                else "m2-pro-media" if selected["media"]
+                "m2-pro-media" if selected["media"]
                 else "m2-pro-gpu" if selected["gpu"]
                 else "m2-pro"
             ),
             "csrt_ali2_alias_count": (
-                9 if (selected["media"] and selected["gpu"])
-                else 8 if selected["media"]
-                else 4 if selected["gpu"]
-                else 3
+                8 if selected["media"] else 4 if selected["gpu"] else 3
             ),
             "media_speaker_render_enabled": False,
         },

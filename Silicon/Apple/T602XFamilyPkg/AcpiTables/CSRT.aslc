@@ -40,167 +40,18 @@
 // compares against the emitter, so neither arm can drift from the driver-side
 // ABI without a test failure.
 //
-//
-// EVERY published GSIV this SoC's firmware can emit, named once. The tables
-// below are transcribed bytes, so these constants are not what builds them --
-// they exist so the collision rule can be CHECKED at compile time instead of
-// being asserted in a comment. Keep them in step with
-// drivers/AppleAic/aic2_platform.h, which is what actually emits the bytes;
-// Tests/test_j414s_gpu_acpi_contract.py pins the two against each other.
-//
-#define NTASI_CSRT_GSIV_XHC1        37   // -> 1274, boot USB
-#define NTASI_CSRT_GSIV_ANS         38   // -> 1832
-#define NTASI_CSRT_GSIV_XHC2        39   // -> 1292
-#define NTASI_CSRT_GSIV_MCA_ADMAC   40   // -> 1218, media
-#define NTASI_CSRT_GSIV_MCA_CL0     41   // -> 1211, media
-#define NTASI_CSRT_GSIV_MCA_CL2     42   // -> 1213, media
-#define NTASI_CSRT_GSIV_MCA_I2C2    43   // -> 1221, media
-#define NTASI_CSRT_GSIV_SIO_DART    45   // -> 1231, media
-#define NTASI_CSRT_GSIV_AGX_MAILBOX 46   // -> 1146, GPU
-
-//
-// WHY THERE IS NO LONGER AN #error HERE, AND WHAT REPLACED IT.
-//
-// Until 2026-07-31 this file refused at compile time to build the media and
-// GPU features together, because both claimed published GSIV 40: the AGX ASC
-// mailbox (40 -> 1146) and admac-sio (40 -> 1218). One number cannot mean two
-// physical lines.
-//
-// The collision is now GONE rather than merely refused: the AGX mailbox moved
-// to published GSIV 46. The GPU alias moved rather than the audio one because
-// media's 40..45 block is a shipped, documented allocation with pinned CSRT
-// bytes and a driver-side _DSD, while the GPU alias had never been booted and
-// is not read by AppleAgxGpu at all (it takes its GSIV from the _CRS interrupt
-// descriptor). 46 was proven free against the pinned live ADT on all five
-// allocation rules -- in particular it is claimed by NO ADT node, unlike 44
-// (/arm-io/i2c0/hpmBusManager). See docs/j414s-media-gsiv-allocation.md.
-//
-// The #error is replaced by something STRICTER, not weaker. It only ever
-// caught the one 40-vs-40 case, and only by assumption; the assertions below
-// check that no two published GSIVs collide at all, pairwise, across every
-// feature combination -- so a future edit that reintroduces ANY collision
-// fails the build rather than silently emitting a table in which one published
-// number means two lines. drivers/AppleAic/aic2_platform.c enforces the same
-// invariant a second, independent time at emission
-// (ntasi_aic2_t6020_aliases_are_wellformed() over the combined set), and the
-// emitter refuses to write a table if it does not hold.
-//
-STATIC_ASSERT (
-  NTASI_CSRT_GSIV_XHC1 != NTASI_CSRT_GSIV_ANS &&
-  NTASI_CSRT_GSIV_XHC1 != NTASI_CSRT_GSIV_XHC2 &&
-  NTASI_CSRT_GSIV_XHC1 != NTASI_CSRT_GSIV_MCA_ADMAC &&
-  NTASI_CSRT_GSIV_XHC1 != NTASI_CSRT_GSIV_MCA_CL0 &&
-  NTASI_CSRT_GSIV_XHC1 != NTASI_CSRT_GSIV_MCA_CL2 &&
-  NTASI_CSRT_GSIV_XHC1 != NTASI_CSRT_GSIV_MCA_I2C2 &&
-  NTASI_CSRT_GSIV_XHC1 != NTASI_CSRT_GSIV_SIO_DART &&
-  NTASI_CSRT_GSIV_XHC1 != NTASI_CSRT_GSIV_AGX_MAILBOX &&
-  NTASI_CSRT_GSIV_ANS != NTASI_CSRT_GSIV_XHC2 &&
-  NTASI_CSRT_GSIV_ANS != NTASI_CSRT_GSIV_MCA_ADMAC &&
-  NTASI_CSRT_GSIV_ANS != NTASI_CSRT_GSIV_MCA_CL0 &&
-  NTASI_CSRT_GSIV_ANS != NTASI_CSRT_GSIV_MCA_CL2 &&
-  NTASI_CSRT_GSIV_ANS != NTASI_CSRT_GSIV_MCA_I2C2 &&
-  NTASI_CSRT_GSIV_ANS != NTASI_CSRT_GSIV_SIO_DART &&
-  NTASI_CSRT_GSIV_ANS != NTASI_CSRT_GSIV_AGX_MAILBOX &&
-  NTASI_CSRT_GSIV_XHC2 != NTASI_CSRT_GSIV_MCA_ADMAC &&
-  NTASI_CSRT_GSIV_XHC2 != NTASI_CSRT_GSIV_MCA_CL0 &&
-  NTASI_CSRT_GSIV_XHC2 != NTASI_CSRT_GSIV_MCA_CL2 &&
-  NTASI_CSRT_GSIV_XHC2 != NTASI_CSRT_GSIV_MCA_I2C2 &&
-  NTASI_CSRT_GSIV_XHC2 != NTASI_CSRT_GSIV_SIO_DART &&
-  NTASI_CSRT_GSIV_XHC2 != NTASI_CSRT_GSIV_AGX_MAILBOX &&
-  NTASI_CSRT_GSIV_MCA_ADMAC != NTASI_CSRT_GSIV_MCA_CL0 &&
-  NTASI_CSRT_GSIV_MCA_ADMAC != NTASI_CSRT_GSIV_MCA_CL2 &&
-  NTASI_CSRT_GSIV_MCA_ADMAC != NTASI_CSRT_GSIV_MCA_I2C2 &&
-  NTASI_CSRT_GSIV_MCA_ADMAC != NTASI_CSRT_GSIV_SIO_DART &&
-  NTASI_CSRT_GSIV_MCA_ADMAC != NTASI_CSRT_GSIV_AGX_MAILBOX &&
-  NTASI_CSRT_GSIV_MCA_CL0 != NTASI_CSRT_GSIV_MCA_CL2 &&
-  NTASI_CSRT_GSIV_MCA_CL0 != NTASI_CSRT_GSIV_MCA_I2C2 &&
-  NTASI_CSRT_GSIV_MCA_CL0 != NTASI_CSRT_GSIV_SIO_DART &&
-  NTASI_CSRT_GSIV_MCA_CL0 != NTASI_CSRT_GSIV_AGX_MAILBOX &&
-  NTASI_CSRT_GSIV_MCA_CL2 != NTASI_CSRT_GSIV_MCA_I2C2 &&
-  NTASI_CSRT_GSIV_MCA_CL2 != NTASI_CSRT_GSIV_SIO_DART &&
-  NTASI_CSRT_GSIV_MCA_CL2 != NTASI_CSRT_GSIV_AGX_MAILBOX &&
-  NTASI_CSRT_GSIV_MCA_I2C2 != NTASI_CSRT_GSIV_SIO_DART &&
-  NTASI_CSRT_GSIV_MCA_I2C2 != NTASI_CSRT_GSIV_AGX_MAILBOX &&
-  NTASI_CSRT_GSIV_SIO_DART != NTASI_CSRT_GSIV_AGX_MAILBOX,
-  "two published GSIVs collide; one number would mean two physical AIC lines"
-  );
-
-//
-// AIC 44 is a real line owned by /arm-io/i2c0/hpmBusManager in the live ADT.
-// An early draft of the audio work proposed 44 -> 1231 and the allocation
-// validator rejected it. Nothing may publish it, ever.
-//
-STATIC_ASSERT (
-  NTASI_CSRT_GSIV_MCA_ADMAC != 44 && NTASI_CSRT_GSIV_MCA_CL0 != 44 &&
-  NTASI_CSRT_GSIV_MCA_CL2 != 44 && NTASI_CSRT_GSIV_MCA_I2C2 != 44 &&
-  NTASI_CSRT_GSIV_SIO_DART != 44 && NTASI_CSRT_GSIV_AGX_MAILBOX != 44 &&
-  NTASI_CSRT_GSIV_XHC1 != 44 && NTASI_CSRT_GSIV_ANS != 44 &&
-  NTASI_CSRT_GSIV_XHC2 != 44,
-  "published GSIV 44 is a real AIC line owned by /arm-io/i2c0/hpmBusManager"
-  );
-
 #if NTASI_ENABLE_MEDIA_PUBLICATION && NTASI_J414S_GPU_RESOURCE_PROFILE
 //
-// Media AND GPU: nine ALI2 aliases -- the eight media entries above plus the
-// AGX mailbox (46 -> 1146). This is the table a baseline carrying ANS,
-// wireless, media and GPU together needs, and it could not exist while the AGX
-// mailbox and admac-sio both claimed published GSIV 40.
+// Fail closed at compile time. Published GSIV 40 means the AGX mailbox
+// (40 -> 1146) in the GPU table and admac-sio (40 -> 1218) in the media
+// table. One number cannot mean two lines, so the two features must never be
+// selected together until somebody reallocates them. No shipped profile does:
+// PROFILES["media"] sets gpu False and there is no gpu-media profile.
 //
-// Transcribed as ONE whole block rather than as #ifs interleaved into the
-// media byte stream, for the reason stated above: a 304-byte table whose
-// length, checksum and three nested sub-lengths all move together is far safer
-// as one block than as five correlated edits. Bytes generated by
-// drivers/AppleAic/emit_aic2_csrt.c "m2-pro-media-gpu" and transcribed
-// verbatim; sha256
-// 9bacd0d00e07af808374990eaaf954f657d2c44976bf2b7341531b85cf8b3759.
-//
-// A strict superset of the media table, which is itself a strict superset of
-// the ordinary one, so the boot USB controller's 37 -> 1274 alias is
-// bit-identical and still first in all four variants.
-//
-UINT8 Csrt[] = {
-  0x43, 0x53, 0x52, 0x54, 0x30, 0x01, 0x00, 0x00,
-  0x00, 0x13, 0x4e, 0x54, 0x41, 0x53, 0x49, 0x20,
-  0x54, 0x36, 0x30, 0x32, 0x41, 0x49, 0x43, 0x32,
-  0x01, 0x00, 0x00, 0x00, 0x4e, 0x54, 0x41, 0x53,
-  0x01, 0x00, 0x00, 0x00, 0x0c, 0x01, 0x00, 0x00,
-  0x41, 0x50, 0x50, 0x4c, 0x4e, 0x54, 0x41, 0x53,
-  0x08, 0x00, 0x01, 0x00, 0x01, 0x00, 0x00, 0x00,
-  0x00, 0x00, 0x00, 0x00, 0xf4, 0x00, 0x00, 0x00,
-  0x01, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00,
-  0x41, 0x49, 0x43, 0x32, 0x90, 0x00, 0x00, 0x00,
-  0x01, 0x00, 0x00, 0x00, 0x02, 0x00, 0x00, 0x00,
-  0x07, 0x00, 0x00, 0x00, 0x20, 0x60, 0x00, 0x00,
-  0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-  0x00, 0x00, 0x10, 0x8e, 0x02, 0x00, 0x00, 0x00,
-  0x00, 0xc0, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-  0x00, 0xc0, 0x10, 0x8e, 0x02, 0x00, 0x00, 0x00,
-  0x00, 0x10, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-  0x00, 0x00, 0x00, 0x00, 0x04, 0x00, 0x00, 0x00,
-  0x0c, 0x00, 0x00, 0x00, 0x00, 0x20, 0x00, 0x00,
-  0x14, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00,
-  0xa9, 0x07, 0x00, 0x00, 0x00, 0x10, 0x00, 0x00,
-  0x01, 0x00, 0x00, 0x00, 0x08, 0x00, 0x00, 0x00,
-  0x00, 0x4a, 0x00, 0x00, 0x00, 0x4a, 0x00, 0x00,
-  0x00, 0x4a, 0x00, 0x00, 0x00, 0x4a, 0x00, 0x00,
-  0x0c, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-  0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-  0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-  0x41, 0x4c, 0x49, 0x32, 0x01, 0x00, 0x00, 0x00,
-  0x09, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-  0x25, 0x00, 0x00, 0x00, 0xfa, 0x04, 0x00, 0x00,
-  0x26, 0x00, 0x00, 0x00, 0x28, 0x07, 0x00, 0x00,
-  0x27, 0x00, 0x00, 0x00, 0x0c, 0x05, 0x00, 0x00,
-  0x28, 0x00, 0x00, 0x00, 0xc2, 0x04, 0x00, 0x00,
-  0x29, 0x00, 0x00, 0x00, 0xbb, 0x04, 0x00, 0x00,
-  0x2a, 0x00, 0x00, 0x00, 0xbd, 0x04, 0x00, 0x00,
-  0x2b, 0x00, 0x00, 0x00, 0xc5, 0x04, 0x00, 0x00,
-  0x2d, 0x00, 0x00, 0x00, 0xcf, 0x04, 0x00, 0x00,
-  0x2e, 0x00, 0x00, 0x00, 0x7a, 0x04, 0x00, 0x00,
-};
+#error "NTASI_ENABLE_MEDIA_PUBLICATION and NTASI_J414S_GPU_RESOURCE_PROFILE both claim published GSIV 40"
+#endif
 
-STATIC_ASSERT (sizeof (Csrt) == 304, "T6020 media+GPU CSRT size");
-#elif NTASI_ENABLE_MEDIA_PUBLICATION
+#if NTASI_ENABLE_MEDIA_PUBLICATION
 UINT8 Csrt[] = {
   //
   // Eight ALI2 aliases: the three fixed entries every profile carries
@@ -265,7 +116,7 @@ STATIC_ASSERT (sizeof (Csrt) == 296, "T6020 media CSRT size");
 UINT8 Csrt[] = {
 #if NTASI_J414S_GPU_RESOURCE_PROFILE
   0x43, 0x53, 0x52, 0x54, 0x08, 0x01, 0x00, 0x00,
-  0x00, 0x46, 0x4e, 0x54, 0x41, 0x53, 0x49, 0x20,
+  0x00, 0x4c, 0x4e, 0x54, 0x41, 0x53, 0x49, 0x20,
 #else
   0x43, 0x53, 0x52, 0x54, 0x00, 0x01, 0x00, 0x00,
   0x00, 0x0b, 0x4e, 0x54, 0x41, 0x53, 0x49, 0x20,
@@ -313,9 +164,7 @@ UINT8 Csrt[] = {
   0x26, 0x00, 0x00, 0x00, 0x28, 0x07, 0x00, 0x00,
   0x27, 0x00, 0x00, 0x00, 0x0c, 0x05, 0x00, 0x00,
 #if NTASI_J414S_GPU_RESOURCE_PROFILE
-  // AGX ASC mailbox: published GSIV 46 (0x2e) -> physical AIC line 1146
-  // (0x47a). Was 40 until 2026-07-31; see the header comment for why it moved.
-  0x2e, 0x00, 0x00, 0x00, 0x7a, 0x04, 0x00, 0x00,
+  0x28, 0x00, 0x00, 0x00, 0x7a, 0x04, 0x00, 0x00,
 #endif
 };
 

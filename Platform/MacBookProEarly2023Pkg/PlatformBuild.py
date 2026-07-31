@@ -200,16 +200,7 @@ class PlatformBuilder( UefiBuilder, BuildSettingsManager):
             "ans-gpu": {"ans": "TRUE", "gpu": "1", "wireless": "0", "ans_acpi": "TRUE"},
             "wireless": {"ans_acpi": "FALSE", "ans": "FALSE", "gpu": "0", "wireless": "1"},
             "gpu-wireless": {"ans_acpi": "FALSE", "ans": "FALSE", "gpu": "1", "wireless": "1"},
-            # gpu_acpi is named EXPLICITLY here, and must stay in step with the
-            # same key in Tools/j414s_mu_profile_manifest.py PROFILES. Those
-            # are two independent dicts: this one drives the compiler define,
-            # that one drives what the sealed manifest REPORTS. On 2026-07-31
-            # only the manifest copy was changed, so the manifest said
-            # gpu_acpi_ntas0023_publication=False while the firmware was built
-            # with NTASI_ENABLE_GPU_ACPI_PUBLICATION=1 -- byte-identical FD,
-            # publication still compiled in, and a manifest that disagreed with
-            # the binary it described.
-            "ans-gpu-wireless": {"ans": "TRUE", "gpu": "1", "wireless": "1", "ans_acpi": "TRUE", "gpu_acpi": "0"},
+            "ans-gpu-wireless": {"ans": "TRUE", "gpu": "1", "wireless": "1", "ans_acpi": "TRUE"},
             "media": {"ans_acpi": "FALSE", "ans": "FALSE", "gpu": "0", "wireless": "0", "media": "1"},
         }
         # Every profile that does not name media leaves it off. Written as a
@@ -217,12 +208,6 @@ class PlatformBuilder( UefiBuilder, BuildSettingsManager):
         # cannot silently inherit an enabled media publication by omission.
         for values in profile_values.values():
             values.setdefault("media", "0")
-            # NTAS0023 publication tracks the gpu flag unless a profile says
-            # otherwise, mirroring ans_acpi/ans. Defaulted rather than repeated
-            # so a profile added later cannot inherit a publication by
-            # omission -- and so a future "gpu-noacpi" control can decouple the
-            # two by naming gpu_acpi explicitly, exactly as ans-noacpi does.
-            values.setdefault("gpu_acpi", values["gpu"])
         if profile not in profile_values:
             raise ValueError(
                 "NTASI_MU_PROFILE must be one of: "
@@ -286,16 +271,6 @@ class PlatformBuilder( UefiBuilder, BuildSettingsManager):
         self.env.SetValue(
             "BLD_*_NTASI_J414S_GPU_RESOURCE_PROFILE",
             profile_values[profile]["gpu"],
-            "Selected by NTASI_MU_PROFILE",
-        )
-        # NTAS0023 publication. Tracks the gpu flag by default (see
-        # PROFILES' gpu_acpi setdefault in Tools/j414s_mu_profile_manifest.py)
-        # but is a separate switch so "reserve the carveouts" and "publish the
-        # ACPI device" can be isolated from each other on hardware, exactly as
-        # ans/ans_acpi can.
-        self.env.SetValue(
-            "BLD_*_NTASI_ENABLE_GPU_ACPI_PUBLICATION",
-            profile_values[profile]["gpu_acpi"],
             "Selected by NTASI_MU_PROFILE",
         )
         # CORRECTED 2026-07-30: wireless used to require a same-instance,

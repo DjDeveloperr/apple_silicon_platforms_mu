@@ -23,7 +23,6 @@ from __future__ import annotations
 
 import hashlib
 import importlib.util
-import os
 import re
 import shutil
 import struct
@@ -255,11 +254,7 @@ class MediaInterruptFootprint(unittest.TestCase):
                 features = M.profile_policy(profile)["experimental_features"]
                 self.assertEqual(
                     features["media_published_gsivs"],
-                    # Every profile NAMED for media, not just "media" itself:
-                    # media-gpu publishes the same three devices and the same
-                    # seven GSIVs. Keyed off the manifest's own media flag so a
-                    # profile added later cannot be missed here.
-                    expected if M.PROFILES[profile]["media"] else [],
+                    expected if profile == "media" else [],
                 )
 
 
@@ -333,100 +328,18 @@ class MediaCsrt(unittest.TestCase):
         # 44 must appear as neither a published GSIV nor a physical line.
         self.assertNotIn(struct.pack("<I", FORBIDDEN_GSIV), media[-64:])
 
-    def test_media_and_gpu_together_now_build_a_9_alias_table(self):
-        """CHANGED 2026-07-31, and this is a policy change, not a relaxation.
-
-        This test used to assert that media+gpu was refused at compile time by
-        an #error, because published GSIV 40 meant the AGX mailbox there and
-        admac-sio here.  The clash is now GONE rather than refused: the AGX
-        mailbox moved to 46.  So the combination must BUILD, and must produce
-        the 9-alias superset.
-
-        What replaced the #error is checked by
-        test_a_reintroduced_gsiv_collision_still_fails_the_build below -- the
-        guard is stricter now, not absent.
-        """
-        combined = self._csrt_bytes(media=1, gpu=1)
-        self.assertEqual(len(combined), 304)
-        media = self._csrt_bytes(media=1, gpu=0)
-        # Strict superset: every media alias survives unchanged, and the AGX
-        # entry is appended.
-        for published, physical in (
-            (40, 1218), (41, 1211), (42, 1213), (43, 1221), (45, 1231),
-            (37, 1274), (38, 1832), (39, 1292),
-        ):
-            with self.subTest(gsiv=published):
-                self.assertIn(struct.pack("<II", published, physical), media)
-                self.assertIn(struct.pack("<II", published, physical), combined)
-        self.assertIn(struct.pack("<II", 46, 1146), combined)
-        # ...and the AGX mailbox is NOT published as 40 anywhere.
-        self.assertNotIn(struct.pack("<II", 40, 1146), combined)
-
-    def test_a_reintroduced_gsiv_collision_still_fails_the_build(self):
-        """The replacement for the deleted #error, exercised.
-
-        CSRT.aslc names every published GSIV and STATIC_ASSERTs that no two
-        collide.  Regressing the AGX mailbox to 40 -- the exact historical bug
-        -- must fail the build, and so must a collision the old #error could
-        never have caught, such as one purely between two media aliases.
-        """
-        source = CSRT_ASLC.read_text(encoding="utf-8")
-        for name, mutation in (
-            (
-                "AGX regressed to 40 (collides with media admac-sio)",
-                ("#define NTASI_CSRT_GSIV_AGX_MAILBOX 46",
-                 "#define NTASI_CSRT_GSIV_AGX_MAILBOX 40"),
-            ),
-            (
-                "AGX moved to 44 (a real line owned by hpmBusManager)",
-                ("#define NTASI_CSRT_GSIV_AGX_MAILBOX 46",
-                 "#define NTASI_CSRT_GSIV_AGX_MAILBOX 44"),
-            ),
-            (
-                "media dart-sio collides with media i2c2 (the old #error missed this class)",
-                ("#define NTASI_CSRT_GSIV_SIO_DART    45",
-                 "#define NTASI_CSRT_GSIV_SIO_DART    43"),
-            ),
-        ):
-            with self.subTest(mutation=name):
-                mutated = source.replace(*mutation)
-                self.assertNotEqual(mutated, source, "mutation did not apply")
-                self.assertFalse(
-                    self._compiles(mutated, media=1, gpu=1),
-                    f"a collision was accepted: {name}",
-                )
-        # Control: unmutated must compile, or the test above proves nothing.
-        self.assertTrue(self._compiles(source, media=1, gpu=1))
-
-    def _compiles(self, source: str, media: int, gpu: int) -> bool:
-        for drop in ("#include <Base.h>", "#include <IndustryStandard/Acpi.h>"):
-            source = source.replace(drop, "")
-        source = (
-            source.replace("STATIC_ASSERT", "_Static_assert")
-            .replace("UINT8", "unsigned char")
-            .replace("VOID *CONST", "void *const")
-        )
-        with tempfile.TemporaryDirectory() as directory:
-            path = Path(directory) / "csrt.c"
-            path.write_text(source, encoding="utf-8")
-            return subprocess.run(
-                [
-                    _host_cc(), "-std=c11", "-c", "-o", os.devnull,
-                    f"-DNTASI_ENABLE_MEDIA_PUBLICATION={media}",
-                    f"-DNTASI_J414S_GPU_RESOURCE_PROFILE={gpu}",
-                    str(path),
-                ],
-                capture_output=True,
-            ).returncode == 0
+    def test_media_and_gpu_together_are_refused_at_compile_time(self):
+        # Published GSIV 40 is the AGX mailbox in the GPU table and admac-sio
+        # in the media table. One number cannot mean two lines.
+        with self.assertRaises(AssertionError):
+            self._csrt_bytes(media=1, gpu=1)
 
     def test_manifest_records_the_csrt_variant_for_every_profile(self):
         for profile in M.PROFILES:
             with self.subTest(profile=profile):
                 entry = M.PROFILES[profile]
                 features = M.profile_policy(profile)["experimental_features"]
-                if entry["media"] and entry["gpu"]:
-                    expected = ("m2-pro-media-gpu", 9)
-                elif entry["media"]:
+                if entry["media"]:
                     expected = ("m2-pro-media", 8)
                 elif entry["gpu"]:
                     expected = ("m2-pro-gpu", 4)
@@ -437,24 +350,10 @@ class MediaCsrt(unittest.TestCase):
                     expected,
                 )
 
-    def test_every_profiles_csrt_variant_is_the_bytes_it_names(self):
-        """The manifest's alias COUNT must equal the table the FD really has.
-
-        A profile that claims 9 aliases while its CSRT arm emits 4 would pass
-        every other check here and hand Windows a translation table that does
-        not describe what the SSDTs published.
-        """
+    def test_no_profile_selects_both_media_and_gpu(self):
         for profile, entry in M.PROFILES.items():
             with self.subTest(profile=profile):
-                features = M.profile_policy(profile)["experimental_features"]
-                table = self._csrt_bytes(
-                    media=1 if entry["media"] else 0,
-                    gpu=1 if entry["gpu"] else 0,
-                )
-                # ALI2 tail: 8-byte header then 8 bytes per alias entry.
-                index = table.index(b"ALI2")
-                count = struct.unpack_from("<I", table, index + 8)[0]
-                self.assertEqual(count, features["csrt_ali2_alias_count"])
+                self.assertFalse(entry["media"] and entry["gpu"])
 
 
 class MediaRenderGate(unittest.TestCase):
@@ -487,7 +386,7 @@ class MediaProfileGate(unittest.TestCase):
         for profile in M.PROFILES:
             with self.subTest(profile=profile):
                 features = M.profile_policy(profile)["experimental_features"]
-                expected = bool(M.PROFILES[profile]["media"])
+                expected = profile == "media"
                 self.assertIs(features["media_publication"], expected)
                 self.assertEqual(
                     features["media_acpi_devices"],

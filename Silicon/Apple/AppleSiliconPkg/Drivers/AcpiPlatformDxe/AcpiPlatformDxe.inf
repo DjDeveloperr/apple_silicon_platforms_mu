@@ -36,10 +36,6 @@
   UefiLib
   PcdLib
   DebugLib
-  # ZeroMem() for the GPU preboot-handoff placeholder block and the handoff
-  # struct. Added 2026-07-31 with NTAS0023 publication; nothing in this module
-  # needed BaseMemoryLib before that.
-  BaseMemoryLib
   UefiBootServicesTableLib
   UefiDriverEntryPoint
   AppleDTLib

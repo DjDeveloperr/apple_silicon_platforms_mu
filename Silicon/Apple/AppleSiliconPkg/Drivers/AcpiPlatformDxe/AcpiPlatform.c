@@ -22,7 +22,6 @@
 #include <Protocol/FirmwareVolume2.h>
 
 #include <Library/BaseLib.h>
-#include <Library/BaseMemoryLib.h>
 #include <Library/AppleDTLib.h>
 #include <Library/AmlLib/AmlLib.h>
 #include <Library/MemoryAllocationLib.h>
@@ -155,88 +154,6 @@ AppleAnsAddMemoryResource (
 
 #if NTASI_J414S_GPU_RESOURCE_PROFILE
 #include "NtasiGpuReservationGuard.h"
-
-//
-// AppleAgxGpu's _CRS is eight memory resources in a FIXED order, matched
-// POSITIONALLY by the driver (ntasi_agx_t6020_resources_validate() in
-// drivers/AppleAgxGpu/cores/agx-resource-core/agx_resource.c). Nothing may be
-// inserted, removed or reordered here without changing that function.
-//
-//   0 ASC   1 SGX   2 uat_ttbs   3 uat_pagetables
-//   4 uat_handoff   5 hw_data_a  6 hw_data_b      7 globals
-//
-#define NTASI_GPU_RES_ASC          0
-#define NTASI_GPU_RES_SGX          1
-#define NTASI_GPU_RES_TTBS         2
-#define NTASI_GPU_RES_PAGETABLES   3
-#define NTASI_GPU_RES_HANDOFF      4
-#define NTASI_GPU_RES_HWDATA_A     5
-#define NTASI_GPU_RES_HWDATA_B     6
-#define NTASI_GPU_RES_GLOBALS      7
-#define NTASI_GPU_RES_COUNT        8
-
-//
-// Resources 0 and 1 are MMIO, and the driver validates them against these
-// EXACT values -- start AND length -- returning ERR_FIXED for anything else.
-// They are therefore a driver ABI constant, not a free derivation: publishing
-// the live ADT's own window lengths (gfx-asc reg[0] is 0x6C000, sgx reg[0] is
-// 0x100000) would be more "truthful" and would be REFUSED by the driver.
-//
-// So they are hardcoded here, and then PROVEN against the live ADT before
-// anything is published -- NtasiGpuMmioWindowsAgreeWithAdt() below. That is
-// the difference between this and the GPU.asl these replaced: a constant that
-// is checked against the machine, rather than a constant that is trusted.
-//
-// SGX deliberately spans 16 MiB rather than sgx's own two reg windows: the
-// driver reaches the GPU PMGR page at SgxBase + 0xE80000 (= 0x404E80000,
-// /arm-io/pmgr reg[44]) through it, which is outside /arm-io/sgx's reg but
-// inside this span. That over-claim is why the check below is "contains the
-// real windows", not "equals" them.
-//
-#define NTASI_GPU_ASC_BASE   0x406400000ULL
-#define NTASI_GPU_ASC_SIZE   0x40000ULL
-#define NTASI_GPU_SGX_BASE   0x404000000ULL
-#define NTASI_GPU_SGX_SIZE   0x1000000ULL
-
-//
-// Sizes the driver pins for resources 5-7 (ERR_SIZE otherwise), and the 16 KiB
-// alignment it requires of resources 2-7 (ERR_ALIGN otherwise).
-//
-#define NTASI_GPU_HWDATA_A_SIZE  0x8000ULL
-#define NTASI_GPU_HWDATA_B_SIZE  0x4000ULL
-#define NTASI_GPU_GLOBALS_SIZE   0x18000ULL
-#define NTASI_GPU_PAGE_SIZE      0x4000ULL
-
-//
-// Published GSIV for the AGX ASC mailbox doorbell. The physical line is AIC
-// 1146 (/arm-io/gfx-asc interrupts[2]), which is above the GIC carrier's 1019
-// limit and is illegal as a GSIV, so the CSRT ALI2 tail translates 46 -> 1146.
-// CSRT.aslc carries that entry under this same NTASI_J414S_GPU_RESOURCE_PROFILE
-// flag, so the two cannot get out of step.
-//
-// 46, NOT 40: 40 is the media profile's admac-sio. See the CSRT.aslc header.
-//
-#define NTASI_GPU_PUBLISHED_GSIV  46
-#define NTASI_GPU_PHYSICAL_AIC    1146
-
-typedef struct {
-  UINT64     Base;
-  UINT64     Size;
-  BOOLEAN    Resolved;
-} NTASI_GPU_REGION;
-
-typedef struct {
-  //
-  // Indexed by NTASI_GPU_RES_*, so the publication loop cannot get the order
-  // wrong by construction. Entries 0 and 1 are filled from the constants
-  // above; 2-4 from the live ADT; 5-7 from the live ADT if it ever carries
-  // them, and otherwise from a firmware-owned allocation.
-  //
-  NTASI_GPU_REGION    Resources[NTASI_GPU_RES_COUNT];
-  UINTN               AdtResolvedCount;
-  BOOLEAN             PrebootHandoffPresent;
-  BOOLEAN             PlaceholdersAllocated;
-} NTASI_GPU_HANDOFF;
 
 //
 // GPU preboot carveout reservation. Runs from DXE, not PEI -- see
@@ -522,8 +439,7 @@ NtasiReserveGpuAdtCarveout (
   IN EFI_PHYSICAL_ADDRESS  SystemMemoryTop,
   IN UINT64                DramWindowBase,
   IN UINT64                DramWindowTop,
-  IN UINT64                CurrentStackPointer,
-  OUT NTASI_GPU_REGION     *Region OPTIONAL
+  IN UINT64                CurrentStackPointer
   )
 {
   CHAR8       PropName[40];
@@ -582,18 +498,6 @@ NtasiReserveGpuAdtCarveout (
   }
 
   DEBUG ((DEBUG_INFO, "AppleAgxGpu: %a: reserved 0x%lx/+0x%lx (out-of-window carveout, GCD)\n", Label, Base, Size));
-
-  //
-  // Only recorded for publication AFTER every safety check above passed and
-  // the GCD reservation succeeded. A region that failed any of them leaves
-  // Resolved FALSE and can never reach a _CRS.
-  //
-  if (Region != NULL) {
-    Region->Base     = Base;
-    Region->Size     = Size;
-    Region->Resolved = TRUE;
-  }
-
   return TRUE;
 }
 
@@ -628,50 +532,30 @@ NtasiReserveGpuAdtCarveout (
 // silently ignored. Both facts were accidents.
 //
 // They are now decisions. GPU.asl and GpuAcpiTables.inf are deleted, so no
-// build can ship those addresses again.
+// build can ship those addresses again, and this firmware DELIBERATELY DOES
+// NOT PUBLISH NTAS0023 while resources 5-7 cannot be sourced truthfully.
+// Publishing them would either hand AppleAgxGpu addresses inside memory
+// Windows owns, or -- if firmware allocated empty regions instead -- claim
+// pre-computed init data exists when it does not; the driver's carveout gate
+// would correctly refuse either way, so publication buys nothing and risks
+// real harm.
 //
-// HOW THIS IS RESOLVED, 2026-07-31. NTAS0023 is now published behind
-// NTASI_ENABLE_GPU_ACPI_PUBLICATION, and the three unsourceable resources are
-// no longer guessed OR omitted -- they are BACKED. See
-// NtasiGpuAllocatePlaceholderHandoff(): when the live ADT does not carry them,
-// firmware allocates one 16 KiB-aligned EfiReservedMemoryType block and carves
-// hw_data_a/hw_data_b/globals out of it, zero-filled.
-//
-// This corrects a factual error in the previous version of this comment, which
-// claimed firmware-allocated regions would be refused by "the driver's carveout
-// gate" and so "publication buys nothing". That is not what the gate does.
-// AgxkmdVerifyCarveoutsNotOsOwned() walks MmGetPhysicalMemoryRanges() and
-// refuses ranges Windows OWNS; EfiReservedMemoryType pages are excluded from
-// that list, so they are exactly the RESERVED verdict it accepts. The refusal
-// happens later and elsewhere -- in the calibration blob validator, which
-// detects an all-zero blob deliberately, because the DT reserves zero
-// placeholders before m1n1 fills them. So publication buys the machine getting
-// all the way to the ONE gate that names the missing thing, instead of the
-// device never existing. And the harm the old comment feared -- addresses
-// inside memory Windows owns -- is eliminated by construction, not mitigated.
-//
-// Nothing is claimed falsely: _DSD carries ntasp,preboot-handoff-present = 0
-// whenever the blobs are placeholders, and the payload sizes and CRC32s the
-// deleted GPU.asl asserted are NOT republished, because they described data
-// captured on a different boot.
-//
-// WHAT STILL UNBLOCKS THE REAL THING. This function probes all six regions
-// using one naming convention. The moment "/arm-io/sgx" carries
-// hw-data-a-base/-size, hw-data-b-base/-size and gpu-globals-base/-size -- i.e.
-// m1n1 publishes the preboot handoff its own _DSD contract already promises --
-// all six resolve, PrebootHandoffPresent becomes TRUE, the placeholder path is
-// skipped, and _DSD flips to 1 with no other change.
+// WHAT UNBLOCKS IT. This function already probes all six regions using one
+// naming convention. The moment "/arm-io/sgx" carries hw-data-a-base/-size,
+// hw-data-b-base/-size and gpu-globals-base/-size -- i.e. m1n1 publishes the
+// preboot handoff its own _DSD contract ("ntasp,preboot-owner" = "m1n1",
+// "ntasp,preboot-handoff-required" = One) already promises -- all six resolve,
+// this function says so in one log line, and generating NTAS0023 becomes a
+// mechanical follow-up using the same AmlLib path ANS0 and DRT0 already use.
 //
 // WORTH RAISING WITH THE AGX WORKSTREAM: in Asahi these three are not preboot
 // carveouts at all. HwDataA/HwDataB/Globals are AGX *initdata* structures the
 // GPU driver builds itself at runtime from the ADT's power/perf tables; m1n1
 // only forwards those tables (as DT properties), it never allocates a region
 // for them. If AppleAgxGpu built them the same way, resources 5-7 would not
-// need to exist at all and the placeholder path could be deleted outright.
-// That is a driver-side ABI question, not something firmware can decide
-// unilaterally, which is why the 8-resource contract is honoured here rather
-// than unilaterally shortened -- a 5-resource _CRS is refused by the driver's
-// own ERR_COUNT check and would publish a device that can never start.
+// need to exist and NTAS0023 could be published today from resources 0-4
+// alone. That is a driver-side ABI question, not something firmware can
+// decide unilaterally, which is why nothing here has been changed to force it.
 //
 STATIC
 VOID
@@ -680,37 +564,30 @@ NtasiReportGpuPublicationDecision (
   IN UINTN  TotalRegions
   )
 {
-  DEBUG ((
-    (ResolvedRegions == TotalRegions) ? DEBUG_INFO : DEBUG_WARN,
-    "AppleAgxGpu: %Lu of %Lu preboot regions resolved from the live ADT\n",
-    (UINT64)ResolvedRegions,
-    (UINT64)TotalRegions
-    ));
-
   if (ResolvedRegions == TotalRegions) {
     DEBUG ((
       DEBUG_WARN,
-      "AppleAgxGpu: the live ADT now carries hw-data-a/hw-data-b/gpu-globals -- the real "
-      "m1n1 preboot handoff is present and is what gets published. The firmware-owned "
-      "placeholder path is not taken this boot.\n"
+      "AppleAgxGpu: all %Lu preboot regions now resolve from the live ADT -- the "
+      "condition for publishing NTAS0023 is met. Firmware still does not publish it: "
+      "generating the SSDT is a deliberate follow-up (see the comment above "
+      "NtasiReportGpuPublicationDecision() in AcpiPlatform.c).\n",
+      (UINT64)TotalRegions
       ));
-  } else {
-    DEBUG ((
-      DEBUG_WARN,
-      "AppleAgxGpu: hw_data_a/hw_data_b/globals are absent from the live ADT, as expected on "
-      "this chainload/HV path (m1n1's dt_set_gpu() never runs, and /arm-io/sgx carries only "
-      "gpu-region, gfx-shared-region, gfx-handoff, ttbat-phys-addr-base and "
-      "rtkit-private-vm-region-*).\n"
-      ));
+    return;
   }
 
-#if !NTASI_ENABLE_GPU_ACPI_PUBLICATION
   DEBUG ((
     DEBUG_ERROR,
-    "AppleAgxGpu: NTAS0023 NOT PUBLISHED -- this build has NTASI_ENABLE_GPU_ACPI_PUBLICATION "
-    "off, so the GPU profile reserves carveouts only. GPU unavailable; boot unaffected.\n"
+    "AppleAgxGpu: NTAS0023 NOT PUBLISHED -- deliberate. %Lu of %Lu preboot regions "
+    "resolved from the live ADT; hw_data_a/hw_data_b/globals have no source on this "
+    "boot path, so the AppleAgxGpu _CRS cannot be built truthfully. This is a decision, "
+    "not an omission: GPU.asl (which hardcoded hw_data_a inside OS RAM, over Mu's own "
+    "PEI stack) was deleted, and no static GPU table is shipped. Publish becomes "
+    "possible when /arm-io/sgx carries hw-data-a-base/-size, hw-data-b-base/-size and "
+    "gpu-globals-base/-size. GPU unavailable; boot unaffected.\n",
+    (UINT64)ResolvedRegions,
+    (UINT64)TotalRegions
     ));
-#endif
 }
 
 /**
@@ -720,7 +597,7 @@ NtasiReportGpuPublicationDecision (
 STATIC
 VOID
 NtasiResolveAndReserveGpuCarveouts (
-  OUT NTASI_GPU_HANDOFF  *Handoff
+  VOID
   )
 {
   dt_node_t  *SgxNode;
@@ -734,8 +611,6 @@ NtasiResolveAndReserveGpuCarveouts (
 
   Resolved = 0;
   Total    = 6;
-
-  ZeroMem (Handoff, sizeof (*Handoff));
 
   DEBUG ((DEBUG_INFO, "AppleAgxGpu: bring-up starting\n"));
 
@@ -800,14 +675,13 @@ NtasiResolveAndReserveGpuCarveouts (
     STATIC CONST struct {
       CONST CHAR8    *Prefix;
       CONST CHAR8    *Label;
-      UINTN          ResourceIndex;
     } Regions[] = {
-      { "gpu-region",        "uat_ttbs",       NTASI_GPU_RES_TTBS       },
-      { "gfx-shared-region", "uat_pagetables", NTASI_GPU_RES_PAGETABLES },
-      { "gfx-handoff",       "uat_handoff",    NTASI_GPU_RES_HANDOFF    },
-      { "hw-data-a",         "hw_data_a",      NTASI_GPU_RES_HWDATA_A   },
-      { "hw-data-b",         "hw_data_b",      NTASI_GPU_RES_HWDATA_B   },
-      { "gpu-globals",       "globals",        NTASI_GPU_RES_GLOBALS    },
+      { "gpu-region",        "uat_ttbs"       },
+      { "gfx-shared-region", "uat_pagetables" },
+      { "gfx-handoff",       "uat_handoff"    },
+      { "hw-data-a",         "hw_data_a"      },
+      { "hw-data-b",         "hw_data_b"      },
+      { "gpu-globals",       "globals"        },
     };
     UINTN  Index;
 
@@ -820,8 +694,7 @@ NtasiResolveAndReserveGpuCarveouts (
             SystemMemoryTop,
             DramWindowBase,
             DramWindowTop,
-            CurrentSp,
-            &Handoff->Resources[Regions[Index].ResourceIndex]
+            CurrentSp
             ))
       {
         Resolved++;
@@ -831,616 +704,9 @@ NtasiResolveAndReserveGpuCarveouts (
     Total = ARRAY_SIZE (Regions);
   }
 
-  Handoff->AdtResolvedCount = Resolved;
-
-  //
-  // "The preboot handoff is present" means exactly one thing: all three of
-  // hw_data_a/hw_data_b/globals came from the live ADT and survived every
-  // safety check. It is NOT inferred from the count, because the count would
-  // also be satisfied by a different mix.
-  //
-  Handoff->PrebootHandoffPresent =
-    (BOOLEAN)(Handoff->Resources[NTASI_GPU_RES_HWDATA_A].Resolved &&
-              Handoff->Resources[NTASI_GPU_RES_HWDATA_B].Resolved &&
-              Handoff->Resources[NTASI_GPU_RES_GLOBALS].Resolved);
-
   NtasiReportGpuPublicationDecision (Resolved, Total);
   DEBUG ((DEBUG_INFO, "AppleAgxGpu: bring-up finished\n"));
 }
-
-#if NTASI_ENABLE_GPU_ACPI_PUBLICATION
-
-/**
-  Prove the two hardcoded MMIO windows against the live ADT before publishing.
-
-  Resources 0 and 1 cannot be derived, because AppleAgxGpu validates them
-  against exact constants and refuses anything else (ERR_FIXED). They can still
-  be CHECKED, and that is the whole difference between this and the GPU.asl it
-  replaced. Both checks are containment, not equality:
-
-    * ASC must lie entirely INSIDE /arm-io/gfx-asc reg[0]. The published window
-      is a 0x40000 prefix of a real 0x6C000 register block, so a subset is
-      correct and an equality check would wrongly fail.
-    * SGX must CONTAIN /arm-io/sgx reg[0] and reg[1], because the published
-      16 MiB span deliberately over-claims in order to reach the GPU PMGR page
-      the driver derives at SgxBase + 0xE80000.
-
-  If this machine's ADT ever disagrees, nothing is published at all.
-**/
-STATIC
-BOOLEAN
-NtasiGpuMmioWindowsAgreeWithAdt (
-  VOID
-  )
-{
-  dt_node_t  *AscNode;
-  dt_node_t  *SgxNode;
-  UINT64     AscBase;
-  UINT64     AscSize;
-  UINT64     SgxBase0;
-  UINT64     SgxSize0;
-  UINT64     SgxBase1;
-  UINT64     SgxSize1;
-
-  DEBUG ((DEBUG_INFO, "AppleAgxGpu: stage \"verify-mmio-against-adt\"\n"));
-
-  AscNode = dt_get ("/arm-io/gfx-asc");
-  SgxNode = dt_get ("/arm-io/sgx");
-  if ((AscNode == NULL) || (SgxNode == NULL)) {
-    DEBUG ((
-      DEBUG_ERROR,
-      "AppleAgxGpu: \"/arm-io/gfx-asc\" or \"/arm-io/sgx\" missing from the live ADT; "
-      "NTAS0023 withheld\n"
-      ));
-    return FALSE;
-  }
-
-  if ((dt_node_reg (AscNode, 0, &AscBase, &AscSize) != 0) ||
-      (dt_node_reg (SgxNode, 0, &SgxBase0, &SgxSize0) != 0) ||
-      (dt_node_reg (SgxNode, 1, &SgxBase1, &SgxSize1) != 0))
-  {
-    DEBUG ((DEBUG_ERROR, "AppleAgxGpu: could not read GPU \"reg\" windows from the live ADT; NTAS0023 withheld\n"));
-    return FALSE;
-  }
-
-  DEBUG ((
-    DEBUG_INFO,
-    "AppleAgxGpu: ADT gfx-asc reg[0]=0x%lx/+0x%lx sgx reg[0]=0x%lx/+0x%lx reg[1]=0x%lx/+0x%lx\n",
-    AscBase,
-    AscSize,
-    SgxBase0,
-    SgxSize0,
-    SgxBase1,
-    SgxSize1
-    ));
-
-  if (!NtasiRangeWithinWindow (
-         NTASI_GPU_ASC_BASE,
-         NTASI_GPU_ASC_SIZE,
-         AscBase,
-         AscBase + AscSize
-         ))
-  {
-    DEBUG ((
-      DEBUG_ERROR,
-      "AppleAgxGpu: published ASC window 0x%lx/+0x%lx is not inside the live ADT's gfx-asc "
-      "reg[0] [0x%lx, 0x%lx); NTAS0023 withheld\n",
-      NTASI_GPU_ASC_BASE,
-      NTASI_GPU_ASC_SIZE,
-      AscBase,
-      AscBase + AscSize
-      ));
-    return FALSE;
-  }
-
-  if (!NtasiRangeWithinWindow (
-         SgxBase0,
-         SgxSize0,
-         NTASI_GPU_SGX_BASE,
-         NTASI_GPU_SGX_BASE + NTASI_GPU_SGX_SIZE
-         ) ||
-      !NtasiRangeWithinWindow (
-         SgxBase1,
-         SgxSize1,
-         NTASI_GPU_SGX_BASE,
-         NTASI_GPU_SGX_BASE + NTASI_GPU_SGX_SIZE
-         ))
-  {
-    DEBUG ((
-      DEBUG_ERROR,
-      "AppleAgxGpu: published SGX window [0x%lx, 0x%lx) does not contain both live sgx reg "
-      "windows; NTAS0023 withheld\n",
-      NTASI_GPU_SGX_BASE,
-      NTASI_GPU_SGX_BASE + NTASI_GPU_SGX_SIZE
-      ));
-    return FALSE;
-  }
-
-  DEBUG ((DEBUG_INFO, "AppleAgxGpu: MMIO windows agree with the live ADT\n"));
-  return TRUE;
-}
-
-/**
-  Back hw_data_a/hw_data_b/globals with memory FIRMWARE owns.
-
-  THIS IS THE FIX FOR THE ORIGINAL BUG. GPU.asl published these three at
-  [0x103db278000, 0x103db29c000) -- addresses m1n1's dt_set_gpu() had allocated
-  with top_of_memory_alloc() during a DIFFERENT session, on the Linux boot path,
-  and which nothing shrinks on this project's chainload/HV path. Mu's own
-  boot_args therefore still covered them: they were inside OS RAM, ended exactly
-  at SystemMemoryTop, and hw_data_a contained the live PEI SP_EL1 0x103db29ba10.
-
-  There is no live ADT source for them (a full probe of /arm-io/sgx finds only
-  gpu-region, gfx-shared-region, gfx-handoff, ttbat-phys-addr-base and
-  rtkit-private-vm-region-*), and deriving them from Mu's own window is what
-  crashed the machine. So when the ADT does not carry them, firmware ALLOCATES
-  them instead of guessing: one 16 KiB-aligned EfiReservedMemoryType block,
-  zero-filled, carved into the three sizes the driver pins.
-
-  That makes the published addresses true by construction rather than by
-  assumption. EfiReservedMemoryType is excluded from the OS's usable RAM, so
-  these pages never appear in Windows' MmGetPhysicalMemoryRanges() and cannot
-  collide with anything Windows owns -- which is exactly what AppleAgxGpu's
-  carveout gate checks, and it will pass.
-
-  The blobs are ZERO, and that is stated rather than hidden: _DSD carries
-  ntasp,preboot-handoff-present = 0. The driver's own calibration validator
-  rejects an all-zero blob by design (it exists precisely because the DT
-  reserves zero placeholders before m1n1 fills them), so bring-up stops at a
-  named, non-destructive gate instead of the device never appearing at all.
-
-  @retval TRUE   All three are backed and recorded.
-  @retval FALSE  Nothing was allocated; the caller must withhold NTAS0023.
-**/
-STATIC
-BOOLEAN
-NtasiGpuAllocatePlaceholderHandoff (
-  IN OUT NTASI_GPU_HANDOFF  *Handoff,
-  IN     UINT64             CurrentStackPointer
-  )
-{
-  UINT64  Total;
-  VOID    *Block;
-  UINT64  Base;
-
-  Total = NTASI_GPU_HWDATA_A_SIZE + NTASI_GPU_HWDATA_B_SIZE + NTASI_GPU_GLOBALS_SIZE;
-
-  DEBUG ((DEBUG_INFO, "AppleAgxGpu: stage \"allocate-placeholder-handoff\"\n"));
-
-  //
-  // One contiguous block, 16 KiB aligned. Every sub-size is a multiple of
-  // 16 KiB, so carving it keeps all three individually aligned, which is what
-  // the driver requires (ERR_ALIGN otherwise), and non-overlapping by
-  // construction (ERR_OVERLAP otherwise).
-  //
-  Block = AllocateAlignedReservedPages (
-            EFI_SIZE_TO_PAGES ((UINTN)Total),
-            (UINTN)NTASI_GPU_PAGE_SIZE
-            );
-  if (Block == NULL) {
-    DEBUG ((
-      DEBUG_ERROR,
-      "AppleAgxGpu: could not allocate 0x%lx bytes of reserved memory for the preboot "
-      "handoff placeholders; NTAS0023 withheld\n",
-      Total
-      ));
-    return FALSE;
-  }
-
-  ZeroMem (Block, (UINTN)Total);
-  Base = (UINT64)(UINTN)Block;
-
-  //
-  // Paranoia, not ceremony: the 2026-07-30 incident was a GPU region landing on
-  // Mu's live stack. The allocator cannot return the stack, but this is the one
-  // invariant whose violation is unrecoverable, so it is checked rather than
-  // assumed -- the same reason NtasiGpuCarveoutIsSafe() checks it for the ADT
-  // path.
-  //
-  if (NtasiRangeContainsPoint (Base, Total, CurrentStackPointer)) {
-    DEBUG ((
-      DEBUG_ERROR,
-      "AppleAgxGpu: placeholder block 0x%lx/+0x%lx contains the live stack pointer 0x%lx; "
-      "NTAS0023 withheld\n",
-      Base,
-      Total,
-      CurrentStackPointer
-      ));
-    return FALSE;
-  }
-
-  Handoff->Resources[NTASI_GPU_RES_HWDATA_A].Base     = Base;
-  Handoff->Resources[NTASI_GPU_RES_HWDATA_A].Size     = NTASI_GPU_HWDATA_A_SIZE;
-  Handoff->Resources[NTASI_GPU_RES_HWDATA_A].Resolved = TRUE;
-
-  Handoff->Resources[NTASI_GPU_RES_HWDATA_B].Base     = Base + NTASI_GPU_HWDATA_A_SIZE;
-  Handoff->Resources[NTASI_GPU_RES_HWDATA_B].Size     = NTASI_GPU_HWDATA_B_SIZE;
-  Handoff->Resources[NTASI_GPU_RES_HWDATA_B].Resolved = TRUE;
-
-  Handoff->Resources[NTASI_GPU_RES_GLOBALS].Base =
-    Base + NTASI_GPU_HWDATA_A_SIZE + NTASI_GPU_HWDATA_B_SIZE;
-  Handoff->Resources[NTASI_GPU_RES_GLOBALS].Size     = NTASI_GPU_GLOBALS_SIZE;
-  Handoff->Resources[NTASI_GPU_RES_GLOBALS].Resolved = TRUE;
-
-  Handoff->PlaceholdersAllocated = TRUE;
-
-  DEBUG ((
-    DEBUG_WARN,
-    "AppleAgxGpu: preboot handoff is ABSENT from the live ADT; published hw_data_a/hw_data_b/"
-    "globals are firmware-owned EfiReservedMemoryType placeholders at 0x%lx/+0x%lx, zero-filled. "
-    "They are NOT calibration data: AppleAgxGpu's blob validator will reject them and stop, "
-    "which is the intended, non-destructive outcome. _DSD says so via "
-    "ntasp,preboot-handoff-present = 0.\n",
-    Base,
-    Total
-    ));
-
-  return TRUE;
-}
-
-/**
-  Publish NTAS0023 (AppleAgxGpu) as a runtime-generated SSDT.
-
-  Generated with AmlLib at DXE rather than compiled from a static .asl, for the
-  same reason ANS0 and DRT0 are: a static .aml lands in the firmware volume of
-  EVERY profile, so a default-off feature could not be default-off on disk. It
-  is also what lets the addresses come from this boot's own ADT instead of from
-  a constant captured on some other boot -- which is the bug that deleted
-  GPU.asl.
-
-  Fails closed everywhere: any missing resource, any failed check, or any AmlLib
-  error abandons the whole device. A short or reordered _CRS is worse than no
-  device at all, because the driver matches resources positionally.
-**/
-STATIC
-EFI_STATUS
-NtasiInstallGpuTable (
-  IN EFI_ACPI_TABLE_PROTOCOL  *AcpiTable,
-  IN NTASI_GPU_HANDOFF        *Handoff
-  )
-{
-  EFI_STATUS                   Status;
-  EFI_STATUS                   DeleteStatus;
-  AML_ROOT_NODE_HANDLE         RootNode;
-  AML_OBJECT_NODE_HANDLE       ScopeNode;
-  AML_OBJECT_NODE_HANDLE       DeviceNode;
-  AML_OBJECT_NODE_HANDLE       CrsNode;
-  AML_OBJECT_NODE_HANDLE       DsdNode;
-  AML_OBJECT_NODE_HANDLE       DsdPackageNode;
-  EFI_ACPI_DESCRIPTION_HEADER  *Table;
-  UINTN                        TableHandle;
-  UINTN                        Index;
-  UINT32                       Irq;
-
-  RootNode = NULL;
-  Table    = NULL;
-
-  //
-  // Resources 0 and 1 are the checked constants; 2-7 are already in Handoff.
-  //
-  Handoff->Resources[NTASI_GPU_RES_ASC].Base     = NTASI_GPU_ASC_BASE;
-  Handoff->Resources[NTASI_GPU_RES_ASC].Size     = NTASI_GPU_ASC_SIZE;
-  Handoff->Resources[NTASI_GPU_RES_ASC].Resolved = TRUE;
-  Handoff->Resources[NTASI_GPU_RES_SGX].Base     = NTASI_GPU_SGX_BASE;
-  Handoff->Resources[NTASI_GPU_RES_SGX].Size     = NTASI_GPU_SGX_SIZE;
-  Handoff->Resources[NTASI_GPU_RES_SGX].Resolved = TRUE;
-
-  //
-  // Every one of the eight, or none. The driver's contract is a fixed count in
-  // a fixed order; a gap cannot be expressed and must not be improvised.
-  //
-  for (Index = 0; Index < NTASI_GPU_RES_COUNT; Index++) {
-    if (!Handoff->Resources[Index].Resolved) {
-      DEBUG ((
-        DEBUG_ERROR,
-        "AppleAgxGpu: _CRS resource %u is unresolved; NTAS0023 withheld (the contract is "
-        "exactly %u resources in a fixed order and a short list cannot be published)\n",
-        (UINT32)Index,
-        (UINT32)NTASI_GPU_RES_COUNT
-        ));
-      return EFI_NOT_FOUND;
-    }
-  }
-
-  //
-  // Last line of defence, and deliberately independent of how each resource got
-  // here: no two published resources may overlap. The driver checks this too
-  // (ERR_OVERLAP), but a firmware that publishes an overlapping _CRS has
-  // already handed the arbiter a conflict, so it is caught here first.
-  //
-  for (Index = 0; Index < NTASI_GPU_RES_COUNT; Index++) {
-    UINTN  Other;
-
-    for (Other = Index + 1; Other < NTASI_GPU_RES_COUNT; Other++) {
-      if (NtasiRangesOverlap (
-            Handoff->Resources[Index].Base,
-            Handoff->Resources[Index].Size,
-            Handoff->Resources[Other].Base,
-            Handoff->Resources[Other].Size
-            ))
-      {
-        DEBUG ((
-          DEBUG_ERROR,
-          "AppleAgxGpu: _CRS resources %u (0x%lx/+0x%lx) and %u (0x%lx/+0x%lx) overlap; "
-          "NTAS0023 withheld\n",
-          (UINT32)Index,
-          Handoff->Resources[Index].Base,
-          Handoff->Resources[Index].Size,
-          (UINT32)Other,
-          Handoff->Resources[Other].Base,
-          Handoff->Resources[Other].Size
-          ));
-        return EFI_INVALID_PARAMETER;
-      }
-    }
-  }
-
-  DEBUG ((DEBUG_INFO, "AppleAgxGpu: stage \"build-ssdt\"\n"));
-
-  Status = AmlCodeGenDefinitionBlock ("SSDT", "Apple", "J414GPU", 1, &RootNode);
-  if (EFI_ERROR (Status)) {
-    goto Exit;
-  }
-
-  Status = AmlCodeGenScope ("\\_SB_", RootNode, &ScopeNode);
-  if (EFI_ERROR (Status)) {
-    goto Exit;
-  }
-
-  Status = AmlCodeGenDevice ("GPU0", ScopeNode, &DeviceNode);
-  if (EFI_ERROR (Status)) {
-    goto Exit;
-  }
-
-  Status = AmlCodeGenNameString ("_HID", "NTAS0023", DeviceNode, NULL);
-  if (EFI_ERROR (Status)) {
-    goto Exit;
-  }
-
-  Status = AmlCodeGenNameInteger ("_UID", 0, DeviceNode, NULL);
-  if (EFI_ERROR (Status)) {
-    goto Exit;
-  }
-
-  //
-  // _CCA = 1: AGX DMA is coherent with the CPU caches, which is what lets the
-  // driver map its ring and BO memory cached.
-  //
-  Status = AmlCodeGenNameInteger ("_CCA", 1, DeviceNode, NULL);
-  if (EFI_ERROR (Status)) {
-    goto Exit;
-  }
-
-  Status = AmlCodeGenNameInteger ("_STA", 0x0F, DeviceNode, NULL);
-  if (EFI_ERROR (Status)) {
-    goto Exit;
-  }
-
-  Status = AmlCodeGenNameResourceTemplate ("_CRS", DeviceNode, &CrsNode);
-  if (EFI_ERROR (Status)) {
-    goto Exit;
-  }
-
-  //
-  // The eight windows in index order, then the interrupt LAST -- the same shape
-  // the media generator emits and the same shape the deleted GPU.asl had.
-  //
-  for (Index = 0; Index < NTASI_GPU_RES_COUNT; Index++) {
-    Status = AppleAnsAddMemoryResource (
-               CrsNode,
-               Handoff->Resources[Index].Base,
-               Handoff->Resources[Index].Size
-               );
-    if (EFI_ERROR (Status)) {
-      DEBUG ((
-        DEBUG_ERROR,
-        "AppleAgxGpu: _CRS resource %u (0x%lx/+0x%lx) refused: %r; NTAS0023 withheld\n",
-        (UINT32)Index,
-        Handoff->Resources[Index].Base,
-        Handoff->Resources[Index].Size,
-        Status
-        ));
-      goto Exit;
-    }
-  }
-
-  //
-  // One level-triggered, active-high, exclusive vector: the AGX ASC mailbox
-  // "recv not empty" doorbell. Published as GSIV 46; the CSRT ALI2 tail
-  // translates it to physical AIC line 1146. AIC lines are level/active-high,
-  // and the ASC v4 mailbox has no ack register, so the driver drains it.
-  //
-  Irq    = NTASI_GPU_PUBLISHED_GSIV;
-  Status = AmlCodeGenRdInterrupt (
-             TRUE,                              // ResourceConsumer
-             FALSE,                             // EdgeTriggered -> Level
-             FALSE,                             // ActiveLow -> ActiveHigh
-             FALSE,                             // Shared -> Exclusive
-             &Irq,
-             1,
-             CrsNode,
-             NULL
-             );
-  if (EFI_ERROR (Status)) {
-    DEBUG ((DEBUG_ERROR, "AppleAgxGpu: interrupt descriptor refused: %r; NTAS0023 withheld\n", Status));
-    goto Exit;
-  }
-
-  //
-  // _DSD carries data, never a resource claim, so nothing below is visible to
-  // the OS resource arbiter. This is the same lesson as NTAS2003-vs-KBL0: a
-  // base address the driver merely needs to READ belongs here, not in _CRS.
-  //
-  Status = AmlCodeGenNamePackage ("_DSD", DeviceNode, &DsdNode);
-  if (EFI_ERROR (Status)) {
-    goto Exit;
-  }
-
-  Status = AmlAddDeviceDataDescriptorPackage (
-             &gAppleAnsDsdPropertiesGuid,
-             DsdNode,
-             &DsdPackageNode
-             );
-  if (EFI_ERROR (Status)) {
-    goto Exit;
-  }
-
-  {
-    //
-    // Integer-valued only: this AmlLib has AmlAddNameIntegerPackage() but no
-    // string equivalent, so the deleted GPU.asl's string properties
-    // ("ntasp,gpu-variant" = "G14X", "ntasp,preboot-owner" = "m1n1") are
-    // omitted. The driver reads none of them.
-    //
-    // The payload sizes and CRC32s that GPU.asl carried are omitted for a
-    // different and deliberate reason: they described calibration blobs
-    // captured on another boot. Publishing them next to placeholder memory
-    // would assert a checksum for data that does not exist.
-    //
-    STATIC CONST struct {
-      CONST CHAR8    *Name;
-      UINT64         Value;
-    } Properties[] = {
-      { "ntasp,gpu-chip-id",              0x6020  },
-      { "ntasp,gpu-generation",           14      },
-      { "ntasp,gpu-firmware-compat-major", 13     },
-      { "ntasp,gpu-firmware-compat-minor", 5      },
-      { "ntasp,gpu-max-frequency-khz",    1398000 },
-      { "ntasp,gpu-mailbox-aic-line",     NTASI_GPU_PHYSICAL_AIC   },
-      { "ntasp,gpu-mailbox-gsiv",         NTASI_GPU_PUBLISHED_GSIV },
-      { "ntasp,gpu-pmgr-gpx-offset",      0x0     },
-      { "ntasp,gpu-pmgr-afr-offset",      0x100   },
-      { "ntasp,gpu-pmgr-gfx-offset",      0x108   },
-      { "ntasp,gpu-pmgr-afr-min-state",   4       },
-      { "ntasp,gpu-pmgr-gpx-always-on",   1       },
-    };
-
-    for (Index = 0; Index < ARRAY_SIZE (Properties); Index++) {
-      Status = AmlAddNameIntegerPackage (
-                 Properties[Index].Name,
-                 Properties[Index].Value,
-                 DsdPackageNode
-                 );
-      if (EFI_ERROR (Status)) {
-        goto Exit;
-      }
-    }
-  }
-
-  //
-  // THE property that makes this publication honest. 1 means hw_data_a/
-  // hw_data_b/globals are real m1n1 calibration data resolved from the live
-  // ADT; 0 means they are firmware-owned zeroed placeholders and the driver
-  // must not treat their contents as calibration.
-  //
-  Status = AmlAddNameIntegerPackage (
-             "ntasp,preboot-handoff-present",
-             Handoff->PrebootHandoffPresent ? 1 : 0,
-             DsdPackageNode
-             );
-  if (EFI_ERROR (Status)) {
-    goto Exit;
-  }
-
-  Status = AmlAddNameIntegerPackage (
-             "ntasp,preboot-handoff-required",
-             1,
-             DsdPackageNode
-             );
-  if (EFI_ERROR (Status)) {
-    goto Exit;
-  }
-
-  Status = AmlSerializeDefinitionBlock (RootNode, &Table);
-  if (EFI_ERROR (Status)) {
-    goto Exit;
-  }
-
-  TableHandle = 0;
-  Status      = AcpiTable->InstallAcpiTable (AcpiTable, Table, Table->Length, &TableHandle);
-  if (!EFI_ERROR (Status)) {
-    DEBUG ((
-      DEBUG_WARN,
-      "AppleAgxGpu: NTAS0023 PUBLISHED, 8 memory resources + 1 interrupt (GSIV %u -> AIC %u). "
-      "uat_ttbs=0x%lx/+0x%lx uat_pagetables=0x%lx/+0x%lx uat_handoff=0x%lx/+0x%lx (live ADT); "
-      "hw_data_a=0x%lx hw_data_b=0x%lx globals=0x%lx (%a). preboot-handoff-present=%u\n",
-      (UINT32)NTASI_GPU_PUBLISHED_GSIV,
-      (UINT32)NTASI_GPU_PHYSICAL_AIC,
-      Handoff->Resources[NTASI_GPU_RES_TTBS].Base,
-      Handoff->Resources[NTASI_GPU_RES_TTBS].Size,
-      Handoff->Resources[NTASI_GPU_RES_PAGETABLES].Base,
-      Handoff->Resources[NTASI_GPU_RES_PAGETABLES].Size,
-      Handoff->Resources[NTASI_GPU_RES_HANDOFF].Base,
-      Handoff->Resources[NTASI_GPU_RES_HANDOFF].Size,
-      Handoff->Resources[NTASI_GPU_RES_HWDATA_A].Base,
-      Handoff->Resources[NTASI_GPU_RES_HWDATA_B].Base,
-      Handoff->Resources[NTASI_GPU_RES_GLOBALS].Base,
-      Handoff->PlaceholdersAllocated ? "firmware-owned placeholders" : "live ADT",
-      (UINT32)(Handoff->PrebootHandoffPresent ? 1 : 0)
-      ));
-  }
-
-Exit:
-  if (Table != NULL) {
-    FreePool (Table);
-  }
-
-  if (RootNode != NULL) {
-    DeleteStatus = AmlDeleteTree (RootNode);
-    if (!EFI_ERROR (Status) && EFI_ERROR (DeleteStatus)) {
-      Status = DeleteStatus;
-    }
-  }
-
-  return Status;
-}
-
-/**
-  Resolve, reserve, back and publish the GPU. Non-fatal throughout.
-**/
-STATIC
-VOID
-NtasiPublishGpu (
-  IN EFI_ACPI_TABLE_PROTOCOL  *AcpiTable,
-  IN NTASI_GPU_HANDOFF        *Handoff
-  )
-{
-  EFI_STATUS  Status;
-
-  if (!NtasiGpuMmioWindowsAgreeWithAdt ()) {
-    return;
-  }
-
-  //
-  // The three UAT carveouts are the ones that MUST come from the live ADT.
-  // They are real silicon addresses that legitimately live above boot_args'
-  // mem_size ceiling, and there is no honest way to invent them.
-  //
-  if (!Handoff->Resources[NTASI_GPU_RES_TTBS].Resolved ||
-      !Handoff->Resources[NTASI_GPU_RES_PAGETABLES].Resolved ||
-      !Handoff->Resources[NTASI_GPU_RES_HANDOFF].Resolved)
-  {
-    DEBUG ((
-      DEBUG_ERROR,
-      "AppleAgxGpu: one or more UAT carveouts did not resolve from the live ADT or failed a "
-      "safety check; NTAS0023 withheld. GPU unavailable; boot unaffected.\n"
-      ));
-    return;
-  }
-
-  if (!Handoff->PrebootHandoffPresent) {
-    if (!NtasiGpuAllocatePlaceholderHandoff (Handoff, NtasiCurrentStackPointer ())) {
-      return;
-    }
-  }
-
-  Status = NtasiInstallGpuTable (AcpiTable, Handoff);
-  if (EFI_ERROR (Status)) {
-    DEBUG ((DEBUG_ERROR, "AppleAgxGpu: NTAS0023 SSDT installation failed: %r\n", Status));
-  }
-}
-
-#endif // NTASI_ENABLE_GPU_ACPI_PUBLICATION
 #endif // NTASI_J414S_GPU_RESOURCE_PROFILE
 
 #if NTASI_ENABLE_WIRELESS_DART_HANDOFF
@@ -3708,22 +2974,7 @@ AcpiPlatformEntryPoint (
   // console and no exception vector table. NtasiResolveAndReserveGpuCarveouts()
   // logs a breadcrumb before every step and never returns a fatal status.
   //
-  {
-    NTASI_GPU_HANDOFF  GpuHandoff;
-
-    NtasiResolveAndReserveGpuCarveouts (&GpuHandoff);
- #if NTASI_ENABLE_GPU_ACPI_PUBLICATION
-    //
-    // Publishing NTAS0023 is non-fatal by construction, like DRT0 and the
-    // media tables: a firmware bug here must never take down a boot that would
-    // otherwise reach Windows. AppleAgxGpu is a demand-start, non-WDDM,
-    // ErrorControl=NORMAL service, so a devnode that fails to start costs the
-    // GPU and nothing else -- it is never loaded by winload and cannot
-    // participate in boot-device selection.
-    //
-    NtasiPublishGpu (AcpiTable, &GpuHandoff);
- #endif
-  }
+  NtasiResolveAndReserveGpuCarveouts ();
 #endif
 
 #if NTASI_ENABLE_WIRELESS_DART_HANDOFF
