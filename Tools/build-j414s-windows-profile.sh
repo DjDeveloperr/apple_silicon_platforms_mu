@@ -3,7 +3,7 @@
 set -eu
 
 usage() {
-    echo "usage: $0 baseline|ans|ans-noacpi|gpu|ans-gpu|wireless|gpu-wireless|ans-gpu-wireless|media" >&2
+    echo "usage: $0 baseline|ans|ans-noacpi|gpu|gpu-noacpi|ans-gpu|wireless|gpu-wireless|ans-gpu-wireless|media|media-gpu" >&2
     exit 2
 }
 
@@ -16,6 +16,14 @@ case "$profile" in
     # for the BUGCODE_USB3_DRIVER 0x144 investigation.
     ans-noacpi) ;;
     gpu) ;;
+    # Rails-down, no ANS, and NTAS0023 NOT published. This is the ONLY cell in
+    # which an XHC2 A/B carries information: measured over all 49 boot logs that
+    # reached Windows storage, rails-down non-ANS profiles show storage-death
+    # 5/8 with XHC2 on vs 0/8 with it off (Fisher one-tailed p = 0.013), while
+    # ans-gpu-wireless fails 9/11 with XHC2 ALREADY OFF -- so a sample there
+    # says nothing. It also excludes GPU publication, which independently
+    # stalls Windows before storage (measured 2026-07-31, 3292c5b).
+    gpu-noacpi) ;;
     ans-gpu) ;;
     # CORRECTED 2026-07-30: wireless used to require a second argument -- a
     # same-instance, hardware-captured handoff manifest sealing one specific
@@ -32,6 +40,10 @@ case "$profile" in
     # interrupt resource, no CSRT change. Single variable on top of the
     # configuration that is known to boot.
     media) ;;
+    # media + GPU carveouts, no ANS, no wireless. Carried in both profile dicts
+    # since the GPU work landed; it was unbuildable only because this case
+    # statement never learned about it.
+    media-gpu) ;;
     *) usage ;;
 esac
 
