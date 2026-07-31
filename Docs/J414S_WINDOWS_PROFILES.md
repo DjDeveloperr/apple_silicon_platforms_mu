@@ -232,56 +232,123 @@ overlap, so it is the one new device expected to start. The real fix is
 driver-side and is the one ANS already took: read the pmgr_east base from
 `_DSD` and drop the window.
 
-## `NTAS0023` (GPU) is deliberately NOT published
+## `NTAS0023` (GPU) is published, and how it was made safe
 
-This is a decision, recorded here and in the artifact manifest
-(`experimental_features.gpu_acpi_ntas0023_publication: false`). It used to be
-an accident, twice over:
+**Changed 2026-07-31.** This section used to record a decision *not* to publish.
+It now records how publishing was made safe, because the reasons it was unsafe
+were addressable and have been addressed.
 
-* `GPU.asl`'s FFS GUID (`2CC5C83E-…`) was never one of the four
-  `Pcd*AcpiTableStorageFile` GUIDs `AcpiPlatformDxe` reads, so the table was
-  compiled into every `gpu`-profile FV and **never installed**.
-* Its `_CRS` hardcoded `hw_data_a` at `[0x103db294000, 0x103db29c000)` --
-  inside OS RAM, ending exactly at `SystemMemoryTop`, and containing the exact
-  `SP_EL1` (`0x103db29ba10`) that crashed Mu's PEI twice.
+### What was wrong
 
-`GPU.asl` and `GpuAcpiTables.inf` are deleted, and the manifest now **fails**
-if `GPU.aml` is ever rebuilt, so those addresses cannot ship again. The `gpu`
-profile's FFS count is consequently baseline's, exactly like `wireless`:
-selecting it changes one thing a static build can prove, the
-`NTASI_J414S_GPU_RESOURCE_PROFILE` define, which gates the ADT-derived,
-DRAM-bounded GCD carveout reservations.
+`GPU.asl`'s `_CRS` hardcoded `hw_data_a` at `[0x103db294000, 0x103db29c000)` --
+inside OS RAM, ending exactly at `SystemMemoryTop`, and containing the exact
+`SP_EL1` (`0x103db29ba10`) that crashed Mu's PEI twice. Those addresses were
+real, but they came from m1n1's `dt_set_gpu()` calling `top_of_memory_alloc()`
+on a *different* boot, on the Linux path -- which also shrinks the DT memory
+node so Linux never owns them. This project's chainload/HV path never calls
+`dt_set_gpu()` and never shrinks anything, so Mu's `boot_args` still covered
+them. The table was also never installed: its FFS GUID was not one of the four
+`Pcd*AcpiTableStorageFile` GUIDs `AcpiPlatformDxe` reads.
 
-`AppleAgxGpu`'s `_CRS` needs eight resources. Resources 2-4
-(`uat_ttbs`/`uat_pagetables`/`uat_handoff`) are real silicon carveouts and are
-resolved live from `/arm-io/sgx`, bounded against real DRAM, and reserved.
-Resources 5-7 (`hw_data_a`/`hw_data_b`/`globals`) have **no source on this boot
-path**: no ADT property carries them, m1n1's `dt_set_gpu()` never runs on the
-chainload/HV path, and computing them from Mu's own window crashed the machine
-twice. Publishing them would either hand the driver addresses inside memory
-Windows owns, or claim pre-computed init data exists when it does not. The
-Windows `AppleAgxGpu` carveout gate correctly refuses either way, so
-publication buys nothing and risks real harm.
+`GPU.asl` and `GpuAcpiTables.inf` remain deleted, and the manifest still fails
+if `GPU.aml` is ever rebuilt. The device is now generated at DXE runtime with
+`AmlLib` by `NtasiInstallGpuTable()`, exactly like `ANS0` and `DRT0` -- which is
+what stops any address being baked into a build artifact again.
 
-**What unblocks it:** `NtasiResolveAndReserveGpuCarveouts()` already probes all
-six regions with one naming convention. The moment `/arm-io/sgx` carries
-`hw-data-a-base/-size`, `hw-data-b-base/-size` and `gpu-globals-base/-size` --
-i.e. m1n1 publishes the preboot handoff its own `_DSD` contract
-(`ntasp,preboot-owner` = `"m1n1"`, `ntasp,preboot-handoff-required` = `One`)
-already promises -- all six resolve, the log says so in one line, and
-generating `NTAS0023` is a mechanical follow-up on the same AmlLib path `ANS0`
-and `DRT0` already use.
+### The eight resources, and where each now comes from
 
-**Worth raising with the AGX workstream:** in Asahi these three are not preboot
-carveouts at all. `HwDataA`/`HwDataB`/`Globals` are AGX *initdata* structures
-the GPU driver builds itself at runtime from the ADT's power/perf tables; m1n1
-only forwards those tables and never allocates a region for them. If
-`AppleAgxGpu` built them the same way, resources 5-7 would not need to exist
-and `NTAS0023` could be published today from resources 0-4 alone. That is a
-driver-side ABI question, not one firmware can settle unilaterally, which is
-why nothing here forces it. The deleted `GPU.asl`'s `_DSD` (chip id, perf
-data, PMGR offsets, payload sizes and the three expected CRC32s) is recoverable
-from git history if that ABI is revisited.
+`AppleAgxGpu` matches `_CRS` **positionally** and
+`ntasi_agx_t6020_resources_validate()` rejects any count other than eight, so
+the order is a contract and a short list cannot be improvised.
+
+| # | Resource | Source | Safe because |
+|---|---|---|---|
+| 0 | ASC `0x406400000 +0x40000` | driver-ABI constant, **proven** against live ADT | MMIO; a strict subset of `/arm-io/gfx-asc` `reg[0]` (`+0x6C000`) |
+| 1 | SGX `0x404000000 +0x1000000` | driver-ABI constant, **proven** against live ADT | MMIO; **contains** `sgx` `reg[0]` and `reg[1]`, and the GPU PMGR page at `+0xE80000` the driver derives |
+| 2 | `uat_ttbs` `0x103fffb8000 +0x4000` | live ADT `gpu-region` | above `SystemMemoryTop`, below real DRAM top |
+| 3 | `uat_pagetables` `0x103fff78000 +0x40000` | live ADT `gfx-shared-region` | ditto |
+| 4 | `uat_handoff` `0x103fff70000 +0x4000` | live ADT `gfx-handoff` | ditto |
+| 5 | `hw_data_a` `+0x8000` | **firmware-allocated** | `EfiReservedMemoryType`, so Windows never owns it |
+| 6 | `hw_data_b` `+0x4000` | **firmware-allocated** | ditto |
+| 7 | `globals` `+0x18000` | **firmware-allocated** | ditto |
+
+Resources 0 and 1 cannot be *derived*: the driver validates them against exact
+constants and returns `ERR_FIXED` for anything else, so publishing the ADT's own
+window lengths would be more truthful and would be **refused**. They are
+therefore hardcoded and then checked -- the difference between this and
+`GPU.asl` is a constant that is proven against the machine rather than trusted.
+
+Resources 2-4 are bounded against **real installed DRAM**
+(`ALIGN_DOWN(phys_base, 4GiB) + mem_size_actual`), not against `boot_args`'
+`mem_size`. They legitimately live *above* the `mem_size` ceiling, in the pool
+iBoot and m1n1 reserve for themselves; that is exactly why the naive bound was
+wrong and why `NtasiGpuReservationGuard.h` exists.
+
+### Resources 5-7: backed, not guessed and not omitted
+
+There is no live source for them -- a full probe of `/arm-io/sgx` finds only
+`gpu-region`, `gfx-shared-region`, `gfx-handoff`, `ttbat-phys-addr-base` and
+`rtkit-private-vm-region-*` -- and deriving them from Mu's own window is what
+crashed the machine. So firmware **allocates** one 16 KiB-aligned
+`EfiReservedMemoryType` block and carves the three pinned sizes out of it,
+zero-filled.
+
+An earlier version of this document claimed firmware-allocated regions would be
+refused by "the driver's carveout gate", so publication "buys nothing". That was
+factually wrong. `AgxkmdVerifyCarveoutsNotOsOwned()` walks
+`MmGetPhysicalMemoryRanges()` and refuses ranges Windows *owns*; reserved pages
+are excluded from that list and are precisely the `RESERVED` verdict it accepts.
+The refusal happens later, in the calibration blob validator, which detects an
+all-zero blob **deliberately** -- because the DT reserves zero placeholders
+before m1n1 fills them. So publication buys the machine reaching the one gate
+that *names* the missing thing, instead of the device never existing.
+
+Nothing is claimed falsely: `_DSD` carries `ntasp,preboot-handoff-present = 0`
+whenever the blobs are placeholders, and the payload sizes and CRC32s the
+deleted `GPU.asl` asserted are **not** republished -- they described data
+captured on a different boot.
+
+### The interrupt: GSIV **46**, not 40
+
+One vector: the AGX ASC mailbox doorbell, physical AIC line **1146**
+(`/arm-io/gfx-asc` `interrupts[2]`), above the carrier's 1019 limit and so
+translated by the CSRT `ALI2` tail as `46 -> 1146`.
+
+It was 40 until 2026-07-31 -- which is also the media profile's `admac-sio`
+(`40 -> 1218`). `CSRT.aslc` carried a compile-time `#error` making media and GPU
+mutually exclusive rather than fixing the clash. The **GPU** alias moved because
+media's 40..45 block is a shipped, documented allocation with pinned CSRT bytes
+and a driver-side `_DSD`, while the GPU alias had never been booted and is not
+read by `AppleAgxGpu` at all (it takes its GSIV from the `_CRS` descriptor).
+
+46 is free on all five allocation rules: inside `[32,1024)`, not another alias's
+published GSIV, not any alias's physical line, outside the MSI bank, and --
+the rule that matters -- **claimed by no node in the live ADT**, unlike 44
+(`/arm-io/i2c0/hpmBusManager`).
+
+The `#error` was replaced by something **stricter**, not deleted: `CSRT.aslc`
+now names every published GSIV and `STATIC_ASSERT`s that no two collide,
+pairwise, across every feature combination. That catches the original 40-vs-40
+case, the 44 rule, *and* collisions purely between two media aliases -- a class
+the `#error` could never have caught. `ntasi_aic2_t6020_aliases_are_wellformed()`
+enforces the same invariant a second, independent time at emission.
+
+### Consequences
+
+* Media and GPU are no longer mutually exclusive. The `media-gpu` profile and
+  the 9-alias `m2-pro-media-gpu` CSRT exist.
+* `gpu-noacpi` is the single-variable control, the GPU analogue of
+  `ans-noacpi`: carveouts reserved and the CSRT alias present, device not
+  published.
+* The launcher guard is no longer an unconditional refusal. It is a
+  both-directions cross-check plus an exact published-GSIV set, so an FD whose
+  publication flag disagrees with its profile name -- or which republishes 40 --
+  is refused rather than launched.
+* `AppleAgxGpu` is `StartType=3` (demand-start), `ErrorControl=1`, one service
+  per binary, and explicitly **non-WDDM**. It is never loaded by `winload`,
+  cannot participate in boot-device selection, and registers no display adapter,
+  so it cannot blank the SimpleFb console. A devnode that fails to start costs
+  the GPU and nothing else.
 
 ## The `ans-noacpi` control, and what the USB3 0x144 investigation has ruled out
 
