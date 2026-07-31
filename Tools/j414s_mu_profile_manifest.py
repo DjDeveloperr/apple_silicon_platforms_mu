@@ -116,6 +116,20 @@ PROFILES = {
         "ans": True,
         "gpu": True,
         "wireless": True,
+        # Explicitly OFF rather than inherited from "gpu".
+        #
+        # 2026-07-31: build 3450262 turned NTAS0023 publication on for the
+        # first time AND restored XHC2 _STA in the same image. That image went
+        # silent -- Mu emitted nothing at all on the secondary UART -- so
+        # neither change could be attributed. dd49d61, the last image that
+        # booted, had gpu_acpi False.
+        #
+        # Keeping publication off isolates the XHC2 restore as the single
+        # variable. The GPU carveout reservation and the
+        # NTASI_J414S_GPU_RESOURCE_PROFILE code are unaffected: this switch
+        # only decides whether the ACPI device is published, which is exactly
+        # the separation the gpu-noacpi control profile exists to test.
+        "gpu_acpi": False,
         "expected_ffs_count": 88,
     },
     # Media publication: MCA0 (NTAS0080, speakers + headset jack), AOPA
