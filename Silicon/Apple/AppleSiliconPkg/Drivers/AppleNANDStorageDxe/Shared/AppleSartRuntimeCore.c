@@ -181,3 +181,44 @@ void ntasi_sart_runtime_clear_owned(struct ntasi_sart_runtime *runtime)
     }
     runtime->used_entries = 0;
 }
+
+int ntasi_sart_runtime_close_all(struct ntasi_sart_runtime *runtime,
+                                 unsigned int *still_armed)
+{
+    unsigned int entry;
+    unsigned int armed = 0;
+
+    if (still_armed != NULL)
+        *still_armed = 0;
+    if (runtime == NULL || runtime->params == NULL)
+        return NTASI_SART_RUNTIME_ERR_ARGUMENT;
+
+    for (entry = 0; entry < NTASI_SART_MAX_ENTRIES; ++entry) {
+        struct ntasi_sart_entry_values values;
+        uint64_t paddr;
+        uint64_t size;
+        uint8_t flags;
+
+        /* Unconditional: an entry this runtime never added is exactly the
+         * kind it must still close. */
+        clear_entry(runtime, entry);
+
+        /* Verify. A revoked permission that the hardware did not take is a
+         * window that is still open, and it must not be reported as shut. */
+        values = read_entry(runtime, entry);
+        if (ntasi_sart_entry_decode(runtime->params, &values, &flags, &paddr,
+                                    &size) != NTASI_SART_OK) {
+            ++armed;
+            continue;
+        }
+        if (flags != 0)
+            ++armed;
+    }
+
+    runtime->used_entries = 0;
+    runtime->protected_entries = 0;
+    if (still_armed != NULL)
+        *still_armed = armed;
+    return armed == 0 ? NTASI_SART_RUNTIME_OK
+                      : NTASI_SART_RUNTIME_ERR_NOT_CLEARED;
+}

@@ -9,6 +9,8 @@ enum ntasi_sart_runtime_result {
     NTASI_SART_RUNTIME_ERR_ARGUMENT = -20,
     NTASI_SART_RUNTIME_ERR_NO_SPACE = -21,
     NTASI_SART_RUNTIME_ERR_NOT_FOUND = -22,
+    /* An entry still read back armed after being cleared. */
+    NTASI_SART_RUNTIME_ERR_NOT_CLEARED = -23,
 };
 
 struct ntasi_sart_runtime_ops {
@@ -43,6 +45,39 @@ int ntasi_sart_runtime_remove(struct ntasi_sart_runtime *runtime,
 
 /* Clears only entries owned by this runtime; firmware entries survive. */
 void ntasi_sart_runtime_clear_owned(struct ntasi_sart_runtime *runtime);
+
+/*
+ * Closes the SART window completely: clears EVERY entry, including the ones
+ * iBoot programmed before Mu ran, and VERIFIES each one by reading it back.
+ *
+ * WHY THIS EXISTS SEPARATELY FROM clear_owned().
+ *
+ * SART is an ALLOW list. An armed entry PERMITS the ANS coprocessor to DMA
+ * into that physical range. iBoot's entries cover iBoot's own ANS buffers --
+ * memory that Windows reclaims as conventional RAM the moment it takes over.
+ * Leaving them armed across ExitBootServices is a standing grant over pages
+ * the OS will hand to arbitrary drivers. clear_owned() cannot close them,
+ * because it only knows about entries this runtime added.
+ *
+ * ONLY SAFE ONCE THE COPROCESSOR IS CONFIRMED HALTED. Revoking a grant that a
+ * live IOP is DMAing through converts a benign handoff into a DMA fault of
+ * unknown blast radius, which is strictly worse than the open window. The
+ * caller owns that precondition; this function does not check it and cannot.
+ *
+ * The readback is the point. A write that the hardware did not take would
+ * otherwise be indistinguishable from a closed window, and "we closed SART"
+ * would become an assumption in the log rather than a measurement.
+ *
+ * @param still_armed  Optional. Receives the number of entries that still read
+ *                     back with a nonzero flags byte after being cleared, i.e.
+ *                     0 when the window is provably shut. Also set on the
+ *                     argument-error path (to 0), so a caller never reads an
+ *                     uninitialised count.
+ *
+ * Returns NTASI_SART_RUNTIME_OK when every entry read back clear.
+ */
+int ntasi_sart_runtime_close_all(struct ntasi_sart_runtime *runtime,
+                                 unsigned int *still_armed);
 
 /*
  * Read back one live SART entry, decoded. Pure observation: touches no state

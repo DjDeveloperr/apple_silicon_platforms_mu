@@ -1157,6 +1157,9 @@ AnsExitBootServices (
   int               Result;
   BOOLEAN           Stopped;
   bool              CoprocessorStopped;
+ #if !defined (APPLE_ANS_QEMU_TEST)
+  UINT32            AscControl;
+ #endif
 
   (VOID)Event;
   Device->HandedOff = TRUE;
@@ -1196,12 +1199,46 @@ AnsExitBootServices (
   }
 
   if (Stopped) {
-    ntasi_sart_runtime_clear_owned (&Device->Sart);
-    ANS_DEBUG ((
-      DEBUG_INFO,
-      "AppleANS: handoff complete; coprocessor halted, SART grants released, "
-      "shared buffers left reserved for the OS\n"
-      ));
+    //
+    // CLOSE THE WHOLE SART WINDOW, not just the entries this driver added.
+    //
+    // SART is an ALLOW list: an armed entry PERMITS ANS DMA into that physical
+    // range. clear_owned() closes only Mu's own grants and leaves iBoot's
+    // entries armed -- and iBoot's entries cover iBoot's ANS buffers, which
+    // Windows reclaims as conventional RAM seconds later. A standing DMA grant
+    // over memory the OS is handing to arbitrary drivers is a loaded gun, and
+    // it is loaded in every profile that carries ANS, whether or not this
+    // driver ever booted the IOP.
+    //
+    // Safe here and nowhere earlier: the coprocessor's run bit is confirmed
+    // clear on this path, so no grant is being revoked out from under a live
+    // DMA. close_all() reads every entry back, so "SART is shut" is a
+    // measurement rather than an assumption.
+    //
+    unsigned int  StillArmed;
+    int           CloseResult;
+
+    StillArmed  = 0;
+    CloseResult = ntasi_sart_runtime_close_all (&Device->Sart, &StillArmed);
+    if (CloseResult != NTASI_SART_RUNTIME_OK) {
+      ANS_DEBUG ((
+        DEBUG_ERROR,
+        "AppleANS: SART close FAILED: %Lu of %Lu entries still read back armed "
+        "(%d).  Windows is inheriting a DMA grant this firmware could not "
+        "revoke\n",
+        (UINT64)StillArmed,
+        (UINT64)NTASI_SART_MAX_ENTRIES,
+        CloseResult
+        ));
+    } else {
+      ANS_DEBUG ((
+        DEBUG_INFO,
+        "AppleANS: handoff complete; coprocessor halted, ALL %Lu SART entries "
+        "cleared and verified closed (iBoot's included), shared buffers left "
+        "reserved for the OS\n",
+        (UINT64)NTASI_SART_MAX_ENTRIES
+        ));
+    }
   } else {
     ANS_DEBUG ((
       DEBUG_ERROR,
@@ -1226,50 +1263,95 @@ AnsExitBootServices (
   // returns its master port to a known state, so nothing that was in flight
   // when the CPU stopped can remain dangling.
   //
-  // On 2026-07-30 a BUGCODE_USB3_DRIVER 0x144 reproduced on the `ans` profile
-  // with the Windows ANS driver DISABLED (Start=4) -- so the cause had to be
-  // hardware state Mu left behind -- while `gpu` on the same commit and cable
-  // booted. XHC1 was halted on USBSTS.HSE with DWC3 buserr_valid=1, and the
-  // failure was load-dependent, appearing only once real USB I/O started.
-  // "Halted but never reset" is the one difference from m1n1 that fits: a
-  // dangling fabric transaction is exactly the kind of fault that surfaces on
-  // another master under contention rather than immediately.
+  // WHY THIS IS STILL HERE EVEN THOUGH THE ANS CORRELATION IS DEAD.
+  //
+  // This reset was originally added because a BUGCODE_USB3_DRIVER 0x144
+  // correlated 4-for-4 with ANS-carrying profiles and 0-for-2 without. That
+  // correlation was FALSIFIED on 2026-07-30 when the `gpu-wireless` profile --
+  // which contains no ANS FFS, boots no IOP, and never reaches this code --
+  // produced a 0x144 of its own. ANS is not a necessary condition for the
+  // bugcheck, and nothing below should be read as claiming otherwise.
+  //
+  // It stays because it is correct on its own terms, independent of the 0x144:
+  // m1n1's nvme_shutdown() performs it, this firmware previously omitted it,
+  // and "halted but never reset" leaves a block's AXI master port in a state
+  // no downstream owner has any reason to expect. Leaving a known-incorrect
+  // teardown in place because its motivating hypothesis lost is how a second
+  // bug gets built on the first.
   //
   // Only reached when bring-up actually ran, and only after the coprocessor is
   // confirmed halted -- resetting a running block would be worse than not
   // resetting at all.
   //
+  // The exact SART state Windows inherits, read BEFORE the PMGR reset.
+  //
+  // Ordering matters and used to be wrong. This dump used to run after
+  // AppleAnsPmgrResetDomain(), i.e. after DEV_DISABLE had detached the block
+  // from the fabric -- reading a register block whose domain has just been
+  // cycled is how an ExitBootServices callback turns into a hang with no
+  // console left to say so. Read-only or not, it goes first.
+  DumpSartState (Device, "handed-to-os");
+
+  //
+  // The run bit, read into a real variable BEFORE the PMGR reset.
+  //
+  // Two corrections in one. It used to be read twice inside a DEBUG() argument
+  // list, which means it was not read at all in a RELEASE build -- the only
+  // build that ships -- so the log line that "proved" the coprocessor was
+  // handed over halted never existed on the hardware it was written for. And
+  // it used to run AFTER the PMGR reset, i.e. after DEV_DISABLE had detached
+  // the block from the fabric.
+  //
+  AscControl = MmioRead32 (Device->CpuBase + NTASI_ASC_CPU_CONTROL);
+  ANS_DEBUG ((
+    DEBUG_INFO,
+    "AppleANS: ASC CPU_CONTROL before PMGR reset = 0x%08x (run bit %a)\n",
+    AscControl,
+    ((AscControl & NTASI_ASC_CPU_CONTROL_START) != 0) ? "SET" : "clear"
+    ));
+
   if (Stopped) {
     EFI_STATUS  ResetStatus;
+    UINT32      ResetFinalValue;
 
-    ResetStatus = AppleAnsPmgrResetDomain (
-                    "AppleANS",
-                    "ANS2",
-                    FixedPcdGet64 (PcdAppleAnsPmgrResetBase)
-                    );
+    ResetFinalValue = 0;
+    ResetStatus     = AppleAnsPmgrResetDomain (
+                        "AppleANS",
+                        "ANS2",
+                        FixedPcdGet64 (PcdAppleAnsPmgrResetBase),
+                        &ResetFinalValue
+                        );
     if (EFI_ERROR (ResetStatus)) {
       ANS_DEBUG ((
         DEBUG_ERROR,
-        "AppleANS: ANS2 PMGR reset did not run (%r); the block is halted but its fabric "
-        "interface was not quiesced -- this is the state that correlated with the USB3 0x144\n",
-        ResetStatus
+        "AppleANS: ANS2 PMGR reset did not complete (%r, last power-state word 0x%08x); "
+        "the block is halted but its fabric interface was NOT quiesced\n",
+        ResetStatus,
+        ResetFinalValue
+        ));
+    } else {
+      ANS_DEBUG ((
+        DEBUG_INFO,
+        "AppleANS: ANS2 PMGR reset converged; power-state word 0x%08x\n",
+        ResetFinalValue
+        ));
+      //
+      // Only re-read the ASC once the domain has provably converged back to
+      // ACTIVE with DEV_DISABLE clear. Reading a block whose fabric attachment
+      // is in an unknown state is how this callback would hang with the
+      // console already gone.
+      //
+      AscControl = MmioRead32 (Device->CpuBase + NTASI_ASC_CPU_CONTROL);
+      ANS_DEBUG ((
+        DEBUG_INFO,
+        "AppleANS: ASC CPU_CONTROL handed to OS = 0x%08x (run bit %a)\n",
+        AscControl,
+        ((AscControl & NTASI_ASC_CPU_CONTROL_START) != 0) ? "SET" : "clear"
         ));
     }
 
     ReportAnsPmgrDomains ();
   }
-
-  // The exact SART state Windows inherits. Read-only, so it is safe here even
-  // though allocation is not.
-  DumpSartState (Device, "handed-to-os");
-
-  ANS_DEBUG ((
-    DEBUG_INFO,
-    "AppleANS: ASC CPU_CONTROL handed to OS = 0x%08x (run bit %a)\n",
-    MmioRead32 (Device->CpuBase + NTASI_ASC_CPU_CONTROL),
-    ((MmioRead32 (Device->CpuBase + NTASI_ASC_CPU_CONTROL) & NTASI_ASC_CPU_CONTROL_START) != 0)
-      ? "SET" : "clear"
-    ));
 #endif
 
   ArmDataSynchronizationBarrier ();

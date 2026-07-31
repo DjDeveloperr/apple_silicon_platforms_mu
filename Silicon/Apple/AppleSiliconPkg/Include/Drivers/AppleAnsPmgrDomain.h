@@ -77,6 +77,19 @@
 //
 #define APPLE_ANS_PMGR_MAX_REG_TUPLES  16u
 
+//
+// Reset timing. m1n1 holds RESET for a flat 10 us (src/pmgr.c
+// pmgr_reset_device) and separately polls PS_ACTUAL with a 10000 us budget
+// whenever it changes a power state (pmgr_set_mode, PMGR_POLL_TIMEOUT). This
+// firmware does BOTH: the 10 us minimum hold, and then a bounded poll for the
+// register to actually converge -- because a blind delay proves nothing about
+// what the hardware did, and this reset runs inside the ExitBootServices
+// callback where there is no second chance and no driver left to complain.
+//
+#define APPLE_ANS_PMGR_RESET_HOLD_US     10u
+#define APPLE_ANS_PMGR_POLL_TIMEOUT_US   10000u
+#define APPLE_ANS_PMGR_POLL_STEP_US      10u
+
 /**
   Resolve one "/arm-io/pmgr" PMGR power-state register address live from the
   ADT, by exact device name -- mirrors m1n1's pmgr_find_device() +
@@ -301,24 +314,65 @@ AppleAnsPmgrReportDomain (
       exactly as m1n1 refuses to reset a gated device.
     * Read-modify-write of single defined bits only; no field is invented.
 
-  @retval EFI_SUCCESS       The reset sequence completed.
+  CONVERGENCE, NOT A BLIND DELAY. m1n1 can afford `udelay(10)` and no readback:
+  it is a debug loader that continues running afterwards and can be told to try
+  again. This copy runs inside the ExitBootServices callback, microseconds
+  before Windows owns the machine, and it is the last chance to quiesce the ANS
+  fabric interface. So it:
+
+    * holds RESET for m1n1's 10 us minimum, then READS THE REGISTER BACK to
+      confirm DEV_DISABLE and RESET actually latched -- MmioOr32() returns the
+      value it wrote, not what the hardware took, so nothing before that read
+      has established anything;
+    * after clearing both bits, POLLS PS_ACTUAL (and PS_TARGET, and the two
+      control bits) back to ACTIVE with m1n1's own 10 ms budget, instead of
+      assuming;
+    * keeps every readback in a real variable. The previous version's final
+      readback lived inside a DEBUG() argument, which means it did not happen
+      at all in a RELEASE build -- the one build that ships. A verification
+      that compiles out is not a verification.
+
+  @param[out] FinalValue  OPTIONAL. Receives the last power-state word read.
+                          Written on every path that read the register at all,
+                          including the failure paths, so a caller can report
+                          the hardware's own account rather than a status code.
+
+  @retval EFI_SUCCESS       The reset sequence completed AND the domain
+                            converged back to PS_ACTUAL == PS_TARGET == ACTIVE
+                            with RESET and DEV_DISABLE clear.
   @retval EFI_NOT_FOUND     Name did not resolve, or disagreed with
                             ExpectedAddress.
   @retval EFI_NOT_READY     The domain is not ACTIVE; refused (m1n1 does the
                             same).
+  @retval EFI_DEVICE_ERROR  The RESET/DEV_DISABLE bits did not read back as
+                            set; the sequence was unwound and the block was
+                            NOT reset.
+  @retval EFI_TIMEOUT       The bits were driven correctly but the domain did
+                            not converge within the poll budget. The block is
+                            in an unknown state -- say so, do not claim a
+                            quiesced fabric interface.
 **/
 STATIC
 inline
 EFI_STATUS
 AppleAnsPmgrResetDomain (
-  IN CONST CHAR8  *Tag,
-  IN CONST CHAR8  *DomainName,
-  IN UINT64       ExpectedAddress
+  IN  CONST CHAR8  *Tag,
+  IN  CONST CHAR8  *DomainName,
+  IN  UINT64       ExpectedAddress,
+  OUT UINT32       *FinalValue  OPTIONAL
   )
 {
   EFI_STATUS  Status;
   UINT64      Address;
   UINT32      Value;
+  UINT32      Actual;
+  UINT32      Target;
+  UINT32      Elapsed;
+  BOOLEAN     Converged;
+
+  if (FinalValue != NULL) {
+    *FinalValue = 0;
+  }
 
   Address = 0;
   Status  = AppleAnsPmgrResolveDomain (Tag, DomainName, &Address);
@@ -340,6 +394,10 @@ AppleAnsPmgrResetDomain (
   }
 
   Value = MmioRead32 ((UINTN)Address);
+  if (FinalValue != NULL) {
+    *FinalValue = Value;
+  }
+
   if (((Value & APPLE_PMGR_PS_ACTUAL_MASK) >> APPLE_PMGR_PS_ACTUAL_SHIFT) != APPLE_PMGR_PS_ACTIVE) {
     DEBUG ((
       DEBUG_WARN,
@@ -356,17 +414,104 @@ AppleAnsPmgrResetDomain (
 
   MmioOr32 ((UINTN)Address, APPLE_PMGR_DEV_DISABLE);
   MmioOr32 ((UINTN)Address, APPLE_PMGR_RESET);
-  MicroSecondDelay (10);
+
+  //
+  // m1n1's minimum hold, then confirm the hardware actually took both bits.
+  // This read is unconditional: it is the only evidence that anything was
+  // driven at all, and it must exist in RELEASE.
+  //
+  MicroSecondDelay (APPLE_ANS_PMGR_RESET_HOLD_US);
+  Value = MmioRead32 ((UINTN)Address);
+  if (FinalValue != NULL) {
+    *FinalValue = Value;
+  }
+
+  if ((Value & (APPLE_PMGR_RESET | APPLE_PMGR_DEV_DISABLE)) !=
+      (APPLE_PMGR_RESET | APPLE_PMGR_DEV_DISABLE))
+  {
+    //
+    // The register refused the control bits (a locked or already-gated
+    // domain would do this). Unwind what was attempted and report honestly:
+    // the block was NOT reset, so the caller must not claim a quiesced
+    // fabric interface.
+    //
+    MmioAnd32 ((UINTN)Address, (UINT32) ~APPLE_PMGR_RESET);
+    MmioAnd32 ((UINTN)Address, (UINT32) ~APPLE_PMGR_DEV_DISABLE);
+    Value = MmioRead32 ((UINTN)Address);
+    if (FinalValue != NULL) {
+      *FinalValue = Value;
+    }
+
+    DEBUG ((
+      DEBUG_ERROR,
+      "%a: PMGR \"%a\" @0x%Lx: RESET|DEV_DISABLE did not read back as set "
+      "(0x%08x); the block was NOT reset\n",
+      Tag,
+      DomainName,
+      Address,
+      Value
+      ));
+    return EFI_DEVICE_ERROR;
+  }
+
   MmioAnd32 ((UINTN)Address, (UINT32) ~APPLE_PMGR_RESET);
   MmioAnd32 ((UINTN)Address, (UINT32) ~APPLE_PMGR_DEV_DISABLE);
 
+  //
+  // Poll to convergence rather than assuming. Budget and step are m1n1's
+  // (PMGR_POLL_TIMEOUT). Convergence means all four things at once: both
+  // control bits clear, PS_ACTUAL back to ACTIVE, and PS_TARGET agreeing --
+  // a domain whose ACTUAL trails its TARGET is still moving.
+  //
+  Converged = FALSE;
+  for (Elapsed = 0; Elapsed < APPLE_ANS_PMGR_POLL_TIMEOUT_US; Elapsed += APPLE_ANS_PMGR_POLL_STEP_US) {
+    Value  = MmioRead32 ((UINTN)Address);
+    Actual = (Value & APPLE_PMGR_PS_ACTUAL_MASK) >> APPLE_PMGR_PS_ACTUAL_SHIFT;
+    Target = (Value & APPLE_PMGR_PS_TARGET_MASK) >> APPLE_PMGR_PS_TARGET_SHIFT;
+    if (((Value & (APPLE_PMGR_RESET | APPLE_PMGR_DEV_DISABLE)) == 0) &&
+        (Actual == APPLE_PMGR_PS_ACTIVE) &&
+        (Target == APPLE_PMGR_PS_ACTIVE))
+    {
+      Converged = TRUE;
+      break;
+    }
+
+    MicroSecondDelay (APPLE_ANS_PMGR_POLL_STEP_US);
+  }
+
+  //
+  // One more unconditional read so the reported value is the settled one and
+  // exists in every build flavour.
+  //
+  Value = MmioRead32 ((UINTN)Address);
+  if (FinalValue != NULL) {
+    *FinalValue = Value;
+  }
+
+  if (!Converged) {
+    DEBUG ((
+      DEBUG_ERROR,
+      "%a: PMGR \"%a\" @0x%Lx: did NOT converge within %Lu us (last 0x%08x, "
+      "actual=0x%x target=0x%x); the block is in an unknown state\n",
+      Tag,
+      DomainName,
+      Address,
+      (UINT64)APPLE_ANS_PMGR_POLL_TIMEOUT_US,
+      Value,
+      (Value & APPLE_PMGR_PS_ACTUAL_MASK) >> APPLE_PMGR_PS_ACTUAL_SHIFT,
+      (Value & APPLE_PMGR_PS_TARGET_MASK) >> APPLE_PMGR_PS_TARGET_SHIFT
+      ));
+    return EFI_TIMEOUT;
+  }
+
   DEBUG ((
     DEBUG_INFO,
-    "%a: PMGR \"%a\" @0x%Lx: reset done (now 0x%08x)\n",
+    "%a: PMGR \"%a\" @0x%Lx: reset done and converged in <=%Lu us (now 0x%08x)\n",
     Tag,
     DomainName,
     Address,
-    MmioRead32 ((UINTN)Address)
+    (UINT64)Elapsed + APPLE_ANS_PMGR_POLL_STEP_US,
+    Value
     ));
   return EFI_SUCCESS;
 }
