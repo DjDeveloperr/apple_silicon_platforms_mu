@@ -255,46 +255,8 @@
                 }
             })
 
-            //
-            // RESTORED 2026-07-31.  This returned 0x0 from 32a3031
-            // ("experiment(acpi): disable XHC2 for the rails-vs-XHC2 isolation
-            // test", 2026-07-30 12:32) onwards and was never re-enabled, which
-            // is the whole of the reported "the right-hand port used to work
-            // once per boot, now it never works" regression: with _STA = 0
-            // Windows never creates an ACPI\PNP0D15\2 devnode, so USBXHCI is
-            // never asked to start the controller and no device on that port
-            // can enumerate at all.
-            //
-            // What the live capture actually shows, and why "XHC2 is HALTED"
-            // was never evidence of a fault
-            // (build/m2-pro-readiness/logs/boot-ans-quiesce.log,
-            // 2026-07-31T01:27:41, in the drivers repo):
-            //
-            //   XHC2  USBCMD=0  USBSTS=0x1 (HCH only; HSE/HCE/SRE/CNR clear)
-            //         CONFIG=0x7f  DCBAAP=0x103d8ef8000
-            //         ERSTSZ=1  IMAN=0x2  IMOD=4000
-            //   XHC1  USBCMD=0x2005 (R/S)  USBSTS=0x18
-            //         ERSTSZ=4  IMAN=0x3  IMOD=200
-            //
-            // ERSTSZ 1 is MU_BASECORE XhciDxe's ERST_NUMBER (Xhci.h:85), IMAN
-            // 0x2 is its lone XhcSetRuntimeRegBit(IMAN_IE) (XhciSched.c:906),
-            // IMOD 4000 is the xHCI 1.2 reset default XhciDxe never writes, and
-            // USBCMD 0 is XhcHaltHC + XhcFreeSched at ExitBootServices
-            // (Xhci.c:1917, XhciSched.c:639).  All four differ from XHC1 on the
-            // same boot.  So XHC2 was carrying THIS firmware's own xHCI state,
-            // untouched by Windows -- exactly what _STA = 0 predicts.  The
-            // DWC3 core was in host mode (GCTL PRTCAP=1, GSTS CURMOD=1,
-            // GCTL byte-identical to XHC1's), so AppleUsbTypeCBringupDxe's
-            // bring-up of usb-drd2 is proven good on that boot too.
-            //
-            // The experiment 32a3031 set out to run is also already answered:
-            // its own success criterion was "if 0x144 still occurs with XHC2
-            // disabled, XHC2 is exonerated and the cause is rails/MSI", and
-            // 0x144 has kept occurring with XHC2 disabled.  Nothing is lost by
-            // restoring it.
-            //
             Method (_STA) {
-                Return (0xF)
+                Return (0x0)
             }
         }
 
