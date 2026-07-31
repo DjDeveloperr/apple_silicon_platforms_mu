@@ -1797,10 +1797,94 @@ AppleNANDStorageDxeInitialize (
   if (!FixedPcdGetBool (PcdAppleAnsPerformDxeBringUp)) {
     ANS_DEBUG ((
       DEBUG_WARN,
-      "AppleANS: DXE bring-up withheld by PcdAppleAnsPerformDxeBringUp; hardware left exactly "
-      "as iBoot handed it over (coprocessor untouched, SART untouched, NVMe registers untouched). "
-      "NTAS2003 is still published for the OS driver, which performs its own bring-up.\n"
+      "AppleANS: DXE bring-up withheld by PcdAppleAnsPerformDxeBringUp; NVMe registers and RTKit "
+      "untouched. NTAS2003 is still published for the OS driver, which performs its own bring-up. "
+      "The coprocessor and SART are still QUIESCED at ExitBootServices -- see below.\n"
       ));
+
+    //
+    // MEASURED ON HARDWARE 2026-07-31, and the reason this branch no longer
+    // simply walks away.
+    //
+    // A boot of the ans-gpu-wireless profile bugchecked BUGCODE_USB3_DRIVER
+    // 0x144 (Arg1=2) after stalling >100 s at storport tag-list init, where a
+    // healthy boot is past that point in ~25 s. Read from EL2 at the stop:
+    //
+    //   AIC line 1832 (ANS, published GSIV 38): asserted=TRUE but masked=TRUE
+    //   ASC CPU_CONTROL = 0x00000010          -> START set, coprocessor RUNNING
+    //   SART: 5 of 16 entries still ARMED     -> 0x2A2414000+0x3000,
+    //         0x2A2434000+0x33000, 0x29E2CC000+0x3000, 0x103FF4EC000+0x33000,
+    //         0x10000004000+0x1D7000
+    //
+    // The masked line rules OUT an interrupt storm -- a masked AIC line cannot
+    // reach a CPU, so it cannot starve anything. What is left is far worse:
+    // Windows inherits a LIVE DMA MASTER with an open allow list. SART permits;
+    // it does not deny. iBoot's ANS firmware is still servicing the internal
+    // SSD, and every range above stays writable by it while the OS reclaims
+    // that memory. Corrupting arbitrary reclaimed pages is a complete
+    // explanation for a USB3 boot device that goes quiet and then times out.
+    //
+    // Withholding bring-up was correct -- do not undo it. But "leave the
+    // hardware as iBoot handed it over" also meant returning BEFORE the
+    // ExitBootServices event was ever registered further down, so NOTHING
+    // quiesced ANS at handoff. That was the real defect: not what bring-up
+    // did, but what withholding it skipped.
+    //
+    // AnsExitBootServices already handles precisely this case. With
+    // Rtkit.booted false it takes the "never booted" branch and calls
+    // ntasi_asc_cpu_stop(), then ntasi_sart_runtime_close_all(), which clears
+    // and READS BACK every entry including iBoot's -- clear_owned() would only
+    // revoke grants this driver made and would leave all five armed. The PMGR
+    // reset after it is already gated on the run bit being confirmed low.
+    //
+    // Registering the event is therefore the entire fix. The ASC transport is
+    // initialised here only so the callback has a handle to stop the CPU
+    // through; it binds ops and MMIO and starts nothing. If it fails we still
+    // return success -- publishing NTAS2003 for the OS driver must not depend
+    // on our ability to quiesce, and a failure is loud rather than silent.
+    //
+    Result = ntasi_asc_init_variant (
+               &Device->Asc,
+               &AscOps,
+               AscHw,
+               Device,
+               APPLE_ANS_POLL_LIMIT
+               );
+    if (Result != 0) {
+      ANS_DEBUG ((
+        DEBUG_ERROR,
+        "AppleANS: ASC transport init failed (%d) in the withheld path; the coprocessor CANNOT be "
+        "stopped at ExitBootServices and Windows will inherit a live DMA master.\n",
+        Result
+        ));
+    } else {
+      Status = gBS->CreateEventEx (
+                      EVT_NOTIFY_SIGNAL,
+                      TPL_NOTIFY,
+                      AnsExitBootServices,
+                      Device,
+                      &gEfiEventExitBootServicesGuid,
+                      &Device->ExitBootServicesEvent
+                      );
+      if (EFI_ERROR (Status)) {
+        ANS_DEBUG ((
+          DEBUG_ERROR,
+          "AppleANS: could not register the ExitBootServices quiesce (%r); Windows will inherit a "
+          "running coprocessor and an open SART.\n",
+          Status
+          ));
+      } else {
+        ANS_DEBUG ((
+          DEBUG_WARN,
+          "AppleANS: ExitBootServices quiesce ARMED -- the coprocessor run bit will be cleared and "
+          "every SART entry closed and verified before Windows starts.\n"
+          ));
+        NtasiDumpReservedMemoryMap ("AppleANS");
+        mAns = Device;
+        return EFI_SUCCESS;
+      }
+    }
+
     NtasiDumpReservedMemoryMap ("AppleANS");
     FreePool (Device);
     mAns = NULL;
