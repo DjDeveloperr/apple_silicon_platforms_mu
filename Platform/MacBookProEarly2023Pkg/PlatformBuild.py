@@ -202,6 +202,10 @@ class PlatformBuilder( UefiBuilder, BuildSettingsManager):
             "gpu-wireless": {"ans_acpi": "FALSE", "ans": "FALSE", "gpu": "1", "wireless": "1"},
             "ans-gpu-wireless": {"ans": "TRUE", "gpu": "1", "wireless": "1", "ans_acpi": "TRUE"},
             "media": {"ans_acpi": "FALSE", "ans": "FALSE", "gpu": "0", "wireless": "0", "media": "1"},
+            # Everything at once. Must stay in step with the same key in
+            # Tools/j414s_mu_profile_manifest.py PROFILES -- this dict is the
+            # one that reaches the compiler.
+            "ans-gpu-wireless-media": {"ans": "TRUE", "ans_acpi": "TRUE", "gpu": "1", "wireless": "1", "media": "1"},
             # Single-variable control for NTAS0023, exactly as ans-noacpi is for
             # NTAS2003: the GPU carveouts are still reserved in the GCD and all
             # of the NTASI_J414S_GPU_RESOURCE_PROFILE code is still compiled in,

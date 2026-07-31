@@ -3,7 +3,7 @@
 set -eu
 
 usage() {
-    echo "usage: $0 baseline|ans|ans-noacpi|gpu|gpu-noacpi|ans-gpu|wireless|gpu-wireless|ans-gpu-wireless|media|media-gpu" >&2
+    echo "usage: $0 baseline|ans|ans-noacpi|gpu|gpu-noacpi|ans-gpu|wireless|gpu-wireless|ans-gpu-wireless|media|media-gpu|ans-gpu-wireless-media" >&2
     exit 2
 }
 
@@ -44,6 +44,8 @@ case "$profile" in
     # since the GPU work landed; it was unbuildable only because this case
     # statement never learned about it.
     media-gpu) ;;
+    # ANS + GPU + wireless + media together; CSRT variant m2-pro-media-gpu.
+    ans-gpu-wireless-media) ;;
     *) usage ;;
 esac
 

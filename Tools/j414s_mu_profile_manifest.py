@@ -164,6 +164,30 @@ PROFILES = {
     # 2026-07-30, baseline and gpu are the configurations that boot Windows and
     # stay up; media is run as a single variable on top of baseline so a result
     # is attributable.
+    # Everything at once: ANS + GPU + wireless + media, with XHC2 enabled in
+    # the DSDT.  Requested explicitly 2026-07-31 after baseline and
+    # ans-gpu-wireless both booted.
+    #
+    # media + gpu selects the "m2-pro-media-gpu" CSRT (9 ALI2 aliases: the 3
+    # fixed + 5 MCA + the AGX mailbox 46 -> 1146), which already exists as an
+    # emit_aic2_csrt.c fixture -- this profile adds no new CSRT variant.
+    # expected_ffs_count is 88 because ANS is the only feature here that adds
+    # an FFS module; gpu, wireless and media are all compiler defines plus
+    # DXE-runtime AmlLib tables.
+    #
+    # KEEP IN STEP with profile_values in
+    # Platform/MacBookProEarly2023Pkg/PlatformBuild.py.  Those are two
+    # independent dicts and only that one reaches the compiler: on 2026-07-31
+    # changing this one alone produced a byte-identical FD whose manifest
+    # claimed a feature was off while it was compiled in.
+    "ans-gpu-wireless-media": {
+        "profile_abi": "ntasi.j414s.windows.ans-gpu-wireless-media-combined.v1",
+        "ans": True,
+        "gpu": True,
+        "wireless": True,
+        "media": True,
+        "expected_ffs_count": 88,
+    },
     "media": {
         "profile_abi": "ntasi.j414s.windows.media-publication.v1",
         "ans": False,
