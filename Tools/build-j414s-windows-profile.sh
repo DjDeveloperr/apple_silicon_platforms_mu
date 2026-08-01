@@ -57,7 +57,7 @@ esac
 
 source_root=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
 source_parent=$(dirname -- "$source_root")
-expected_branch=feature/j414s-windows-unified
+expected_branch=main
 branch=$(git -C "$source_root" branch --show-current)
 commit=$(git -C "$source_root" rev-parse HEAD)
 git_dir=$(git -C "$source_root" rev-parse --absolute-git-dir)
