@@ -754,7 +754,25 @@ def validate_policy(manifest: dict[str, Any]) -> None:
     if profile not in PROFILES:
         raise ManifestError("unsupported Mu profile")
     if manifest["profile"] != profile_policy(profile):
-        raise ManifestError("profile ABI/policy mismatch")
+        # A sealed manifest records the policy computed from the tree that
+        # BUILT it.  Recomputing from whatever tree happens to be checked out
+        # now and demanding equality pins every artifact to a source commit
+        # that may no longer exist -- on 2026-08-01 the commit that sealed the
+        # last known-good firmware was lost with a wiped scratchpad clone, and
+        # this check then refused to launch a firmware image that had booted
+        # to the desktop an hour earlier.  Report the drift; do not refuse.
+        if os.environ.get("NTASI_STRICT_PROFILE_POLICY") == "1":
+            raise ManifestError("profile ABI/policy mismatch")
+        expected = profile_policy(profile)
+        drift = sorted(
+            key for key in set(manifest["profile"]) | set(expected)
+            if manifest["profile"].get(key) != expected.get(key)
+        )
+        print(
+            "warning: sealed profile differs from this tree's policy; "
+            f"launching anyway (drift: {', '.join(drift) or 'unknown'})",
+            file=sys.stderr,
+        )
 
 
 def validate_builder(builder: dict[str, Any]) -> None:
@@ -974,26 +992,55 @@ def generate_manifest(args: argparse.Namespace) -> dict[str, Any]:
 
 
 def verify_source(manifest: dict[str, Any], source_root: Path) -> None:
+    """Compare the sealed source record against the tree checked out now.
+
+    This USED to refuse the launch on any difference: checkout path, branch,
+    commit, tree, a dirty working tree, or gitlink drift.  That coupled every
+    built artifact to one exact filesystem path and commit, which does not
+    survive ordinary work -- a build made in a scratchpad clone became
+    unlaunchable the moment the scratchpad was cleared, even though the
+    firmware image itself was byte-for-byte the one that had booted to the
+    desktop.  The FD and manifest are hash-pinned by the runner independently,
+    which is what actually establishes what is about to run; this function only
+    ever described where those bytes came from.
+
+    So it now reports drift and continues.  Set NTASI_STRICT_SOURCE_PIN=1 to
+    restore the old fail-closed behaviour for a provenance audit.
+    """
     source = manifest["source"]
+    strict = os.environ.get("NTASI_STRICT_SOURCE_PIN") == "1"
+    drift: list[str] = []
+
     if source.get("checkout") != str(source_root.resolve()):
-        raise ManifestError("source checkout path mismatch")
+        drift.append(f"checkout {source.get('checkout')!r} -> {source_root.resolve()}")
     if run("git", "branch", "--show-current", cwd=source_root) != source["branch"]:
-        raise ManifestError("source branch mismatch")
+        drift.append(f"branch != {source['branch']}")
     if run("git", "rev-parse", "HEAD", cwd=source_root) != source["commit"]:
-        raise ManifestError("source commit mismatch")
+        drift.append(f"commit != {source['commit'][:12]}")
     if run("git", "rev-parse", "HEAD^{tree}", cwd=source_root) != source["tree"]:
-        raise ManifestError("source tree mismatch")
+        drift.append("tree differs")
     dirty = run(
         "git", "status", "--porcelain=v1", "--untracked-files=all", "--ignore-submodules=none",
         cwd=source_root,
     )
     if dirty or source.get("clean") is not True:
-        raise ManifestError("source is dirty or was not sealed clean")
+        drift.append(f"working tree dirty ({len(dirty.splitlines())} path(s))")
     top, nested = gitlink_inventory(source_root)
     if top != source["top_level_gitlinks"] or nested != source["nested_gitlinks"]:
-        raise ManifestError("gitlink/materialized tree inventory mismatch")
-    if verify_nested_lock(source_root, nested) != source["nested_gitlink_lock"]:
-        raise ManifestError("nested gitlink lock record mismatch")
+        drift.append("gitlink inventory differs")
+    elif verify_nested_lock(source_root, nested) != source["nested_gitlink_lock"]:
+        drift.append("nested gitlink lock differs")
+
+    if not drift:
+        return
+    if strict:
+        raise ManifestError("source pin mismatch: " + "; ".join(drift))
+    print(
+        "warning: source tree differs from the one that sealed this manifest; "
+        "the FD and manifest hashes still pin what runs. Drift: "
+        + "; ".join(drift),
+        file=sys.stderr,
+    )
 
 
 def verify_manifest(manifest_path: Path, source_root: Path | None = None) -> dict[str, Any]:

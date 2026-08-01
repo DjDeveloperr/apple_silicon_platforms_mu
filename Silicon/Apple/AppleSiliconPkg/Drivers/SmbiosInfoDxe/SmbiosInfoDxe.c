@@ -311,6 +311,18 @@ SMBIOS_TABLE_TYPE4 mProcessorInfoType4 = {
     6, // ThreadCount; patched at runtime (Apple cores are single-threaded)
     0xAC,                        // ProcessorCharacteristics;
     ProcessorFamilyARMv8,        // ARM Processor Family;
+    //
+    // SMBIOS 3.0 (CoreCount2/EnabledCoreCount2/ThreadCount2) and 3.6
+    // (ThreadEnabled).  sizeof(SMBIOS_TABLE_TYPE4) includes them, so they are
+    // published whether or not they are initialised here; keep the static
+    // record self-consistent with the 8-bit fields above.  All four are
+    // patched at runtime from the ADT alongside CoreCount.
+    //
+    6, // CoreCount2;
+    6, // EnabledCoreCount2;
+    6, // ThreadCount2;
+    6, // ThreadEnabled;
+    0, // SocketType string; the SoC is not socketed, so no string is offered.
 };
 
 CHAR8 *mProcessorInfoType4Strings[] = {
@@ -921,6 +933,14 @@ VOID ProcessorInfoUpdateSmbiosType4(IN UINTN MaxCpus)
       mProcessorPartNumberString, sizeof(mProcessorPartNumberString),
       "T%x", ChipId);
     mProcessorInfoType4Strings[3] = mProcessorPartNumberString;
+  } else {
+    //
+    // No ADT chip-id: fall back to the per-family part identifier from the
+    // DSC (T602XFamilyPkg.dsc.inc sets "T602x") rather than shipping the
+    // literal string "Not Specified", which is what a Type 4 string is
+    // rendered as when it carries no information.
+    //
+    mProcessorInfoType4Strings[3] = (CHAR8 *)PcdGetPtr(PcdSmbiosCpuIdentifier);
   }
 
   //
@@ -943,6 +963,19 @@ VOID ProcessorInfoUpdateSmbiosType4(IN UINTN MaxCpus)
     mProcessorInfoType4.CoreCount        = (UINT8)TotalCoreCount;
     mProcessorInfoType4.EnabledCoreCount = (UINT8)TotalCoreCount;
     mProcessorInfoType4.ThreadCount      = (UINT8)TotalCoreCount;
+    //
+    // SMBIOS 3.0 widened the three counts to 16 bits and 3.6 added
+    // ThreadEnabled.  sizeof(SMBIOS_TABLE_TYPE4) covers all four, so the
+    // record's Length advertises them to consumers; leaving them at their
+    // zero-initialised value publishes "unknown" (DMTF SMBIOS 3.6.0 7.5.9:
+    // the wide fields carry the count when it does not fit in 8 bits, and
+    // must otherwise agree with the 8-bit fields).  Apple cores are
+    // single-threaded, so ThreadEnabled equals the enabled core count.
+    //
+    mProcessorInfoType4.CoreCount2        = (UINT16)TotalCoreCount;
+    mProcessorInfoType4.EnabledCoreCount2 = (UINT16)TotalCoreCount;
+    mProcessorInfoType4.ThreadCount2      = (UINT16)TotalCoreCount;
+    mProcessorInfoType4.ThreadEnabled     = (UINT16)TotalCoreCount;
   }
 
   DEBUG((DEBUG_INFO,
