@@ -120,6 +120,10 @@ PROFILES = {
         "gpu": False,
         "wireless": True,
         "battery": True,
+        # ANS adds exactly one FFS over baseline's 87, and the GPU has
+        # contributed none since GPU.asl/GpuAcpiTables.inf were deleted on
+        # 2026-07-30 -- so this matches ans-gpu-wireless.
+        "expected_ffs_count": 88,
     },
     "ans-gpu-wireless": {
         "profile_abi": "ntasi.j414s.windows.ans-gpu-wireless-battery.v1",
