@@ -256,7 +256,11 @@
             })
 
             Method (_STA) {
-                Return (0xF)
+                // 2026-08-01: XHC2 DISABLED. With it enabled Windows enumerated the
+                // right-side controller ("Windows right-side xHCI HCCPARAMS1" appeared
+                // for the first time) but the boot stalled BEFORE any driver started,
+                // which matches the recorded storage-death signature for XHC2-on.
+                Return (0x0)
             }
         }
 
