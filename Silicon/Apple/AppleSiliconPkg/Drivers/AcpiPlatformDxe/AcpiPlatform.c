@@ -2525,6 +2525,292 @@ NtasiInstallMediaTables (
 }
 #endif // NTASI_ENABLE_MEDIA_PUBLICATION
 
+#if NTASI_ENABLE_BATTERY_PUBLICATION
+//
+// ===========================================================================
+// J414s BATTERY -- BAT0 (NTAS0053)
+// ===========================================================================
+//
+// Publishes the ACPI devnode AppleSmcBattery.sys binds to.  That driver is a
+// battc.sys (battery class) miniport: it reads the SMC's battery and charger
+// keys and hands Windows BATTERY_INFORMATION / BATTERY_STATUS, which is what
+// makes a battery icon appear.  CompBatt -> battc -> miniport is the same
+// stack CmBatt.sys uses; only the backend differs.
+//
+// WHY THIS IS NOT A PNP0C0A CONTROL-METHOD BATTERY.  Argued in full in
+// apple_silicon_nt_drivers/docs/j414s-battery-power.md section 2.  The short
+// version, in four independent reasons any one of which is sufficient:
+//
+//   1. The SMC is not a register file.  Reading one key is an RTKit
+//      HELLO/EPMAP/power-state handshake, an endpoint-0x20 command carrying a
+//      4-bit rotating message id, a bounded mailbox poll with a result-id
+//      match, and a shared-memory window whose address the coprocessor hands
+//      back at run time and which must be validated against the SRAM aperture.
+//      AML has OperationRegion/Field for flat MMIO and nothing for the rest.
+//   2. This AmlLib cannot generate a method with a body -- only
+//      AmlCodeGenMethodRetInteger/RetNameString.  _BIF/_BIX/_BST must return
+//      Packages, so a control-method battery could only ever be a STATIC .asl,
+//      which lands in EVERY profile's firmware volume including the baseline
+//      that boots.  Default off would stop meaning byte-identical firmware.
+//   3. The SMC mailbox has exactly one owner and it is taken.  \_SB.SMCG
+//      (NTAS0052) is published unconditionally and AppleSmcGpio.sys drives the
+//      same ASC block for the MTP trackpad reset lines.  AML poking that
+//      mailbox from arbitrary ACPI thread context, concurrently with a KMDF
+//      driver holding a sequential queue over it, would corrupt both.
+//   4. A control-method battery refreshes on Notify(BAT0, 0x80) from a GPE.
+//      This platform has no ACPI GPE block and no SCI; AIC lines are consumed
+//      by the HAL extension.  A CmBatt battery here could never announce a
+//      change, so it would show the boot-time charge level forever.
+//
+// THIS DEVICE CLAIMS NO RESOURCES, DELIBERATELY.  _CRS is an EMPTY resource
+// template, and that is the whole point of the design rather than an omission:
+//
+//   - No memory window.  SMCG already claims [0x2A2400000, +0xC000] and
+//     [0x2A3E00000, +0x100000] as exclusive ResourceConsumer ranges.  Naming
+//     either one here would produce CM_PROB_NORMAL_CONFLICT (Code 12) on one
+//     of the two devnodes -- the same defect class as the NTAS2003-vs-KBL0 and
+//     MCA0/ISP0-vs-KBL0 pmgr_east collisions.  AppleSmcBattery reaches the SMC
+//     through AppleSmcGpio's device interface instead, so exactly one driver
+//     ever touches the mailbox.
+//   - No interrupt, so NO GSIV IS ALLOCATED.  There is no battery interrupt on
+//     this platform to publish; status changes are found by polling and
+//     announced with BatteryClassStatusNotify from a timer.  This matters
+//     specifically here: AIC2 GSIVs above 1019 need a CSRT ALI2 alias and a
+//     published-GSIV collision is an active suspect in an unrelated boot
+//     failure.  The CSRT is byte-for-byte unchanged by this feature, and
+//     tools/verify-j414s-gsiv-allocation.py has nothing new to arbitrate.
+//
+// So the OS resource arbiter has nothing to satisfy, which means this devnode
+// cannot fail to start for resource reasons and cannot take a resource away
+// from anything that boots.
+//
+// _DSD IS DATA, NOT A CLAIM.  The properties below let AppleSmcBattery
+// cross-check its compiled-in constants against what this firmware actually
+// believes, in the same spirit as SMCG's "ntasp,smc-gpio-key-format": a driver
+// that disagrees with the firmware about the poll contract or the energy scale
+// should say so rather than proceed on its own numbers.
+//
+// NOTHING HERE ENABLES A WRITE.  Battery reporting is read-only by
+// construction -- READ_KEY is the only SMC command in the path.  Charge
+// control (CH0I/CH0C/CHTE/CH0B/CH0K), charge limits (CHWA/CHLS) and
+// notification arming (NTAP) are absent from the driver and unreachable from
+// here; ntasp,battery-write-keys-allowed is 0 and is asserted to stay 0.
+//
+
+//
+// Deliberately its own type rather than a reuse of NTASI_MEDIA_PROPERTY: that
+// struct lives inside #if NTASI_ENABLE_MEDIA_PUBLICATION, and the battery is
+// an independent switch that must build with media off.
+//
+typedef struct {
+  CONST CHAR8    *Name;
+  UINT64         Value;
+} NTASI_BATTERY_PROPERTY;
+
+STATIC CONST NTASI_BATTERY_PROPERTY  mNtasiBatteryProperties[] = {
+  //
+  // Which pack.  The SMC key family is B0xx for battery 0; this machine has
+  // one pack and no second-battery keys exist in its key table.
+  //
+  { "ntasp,battery-index",             0     },
+  //
+  // Where the numbers come from.  0x52 is the numeric tail of NTAS0052
+  // (\_SB.SMCG), the devnode that owns the SMC ASC mailbox; the battery
+  // driver opens that device's interface rather than mapping the mailbox
+  // itself.  0x20 is the SMC's RTKit endpoint, the same value SMCG publishes.
+  //
+  { "ntasp,smc-transport-owner-hid",   0x52  },
+  { "ntasp,smc-rtkit-endpoint",        0x20  },
+  //
+  // The mAh -> mWh energy scale.  The SMC reports charge in mAh but Windows
+  // renders energy, and the SMC does not report a pack voltage to convert
+  // with; Linux's macsmc-power.c:30 uses 3800 mV per cell and takes the cell
+  // count from the BNCB key.  Stating the constant here means a driver built
+  // against a different one is detectable instead of merely wrong.
+  //
+  { "ntasp,battery-nominal-cell-mv",   3800  },
+  //
+  // Poll cadence, milliseconds.  There is no notification interrupt and there
+  // must not be one, so every change Windows sees is found by polling: slow
+  // when idle, tighter while charging, tightest at low charge.
+  //
+  { "ntasp,battery-poll-idle-ms",      30000 },
+  { "ntasp,battery-poll-active-ms",    10000 },
+  { "ntasp,battery-poll-low-ms",       5000  },
+  //
+  // Standing statements about this devnode, so a driver can refuse to run
+  // against a firmware that changed its mind.  Zero interrupts, zero memory
+  // windows, and no SMC write of any kind.
+  //
+  { "ntasp,battery-interrupt-count",   0     },
+  { "ntasp,battery-memory-windows",    0     },
+  { "ntasp,battery-write-keys-allowed", 0    },
+};
+
+/**
+  Publish BAT0 (NTAS0053): a resourceless vendor devnode for the SMC-backed
+  battery miniport.
+
+  Emits the same object shape as the media devices minus every resource: an
+  SSDT containing \_SB.BAT0 with _HID/_UID/_CCA/_STA, an EMPTY _CRS, and a
+  _DSD data package.  The empty _CRS is deliberate and is explained at length
+  above -- the SMC windows belong to SMCG and re-claiming them would collide.
+
+  Non-fatal by construction, like every publication after ANS: a machine that
+  reaches Windows without a battery icon is strictly better than one that does
+  not reach Windows.
+
+  @param[in] AcpiTable  The ACPI table protocol.
+
+  @retval EFI_SUCCESS   The SSDT was built and installed.
+  @retval other         Nothing was installed.
+**/
+STATIC
+EFI_STATUS
+NtasiInstallBatteryTable (
+  IN EFI_ACPI_TABLE_PROTOCOL  *AcpiTable
+  )
+{
+  EFI_STATUS                   Status;
+  EFI_STATUS                   DeleteStatus;
+  AML_ROOT_NODE_HANDLE         RootNode;
+  AML_OBJECT_NODE_HANDLE       ScopeNode;
+  AML_OBJECT_NODE_HANDLE       DeviceNode;
+  AML_OBJECT_NODE_HANDLE       DsdNode;
+  AML_OBJECT_NODE_HANDLE       DsdPackageNode;
+  EFI_ACPI_DESCRIPTION_HEADER  *Table;
+  UINTN                        TableHandle;
+  UINTN                        Index;
+
+  RootNode = NULL;
+  Table    = NULL;
+
+  DEBUG ((
+    DEBUG_INFO,
+    "AppleBattery ACPI: stage \"build-ssdt\" device=BAT0 hid=NTAS0053 "
+    "windows=0 interrupts=0 properties=%u\n",
+    (UINT32)ARRAY_SIZE (mNtasiBatteryProperties)
+    ));
+
+  Status = AmlCodeGenDefinitionBlock ("SSDT", "Apple", "J414BAT", 1, &RootNode);
+  if (EFI_ERROR (Status)) {
+    goto Exit;
+  }
+
+  Status = AmlCodeGenScope ("\\_SB_", RootNode, &ScopeNode);
+  if (EFI_ERROR (Status)) {
+    goto Exit;
+  }
+
+  Status = AmlCodeGenDevice ("BAT0", ScopeNode, &DeviceNode);
+  if (EFI_ERROR (Status)) {
+    goto Exit;
+  }
+
+  Status = AmlCodeGenNameString ("_HID", "NTAS0053", DeviceNode, NULL);
+  if (EFI_ERROR (Status)) {
+    goto Exit;
+  }
+
+  Status = AmlCodeGenNameInteger ("_UID", 0, DeviceNode, NULL);
+  if (EFI_ERROR (Status)) {
+    goto Exit;
+  }
+
+  //
+  // _CCA = 0, matching SMCG.  Moot in practice: this devnode does no DMA at
+  // all, because it does no I/O at all -- its driver's only transport is an
+  // IOCTL to the devnode that owns the mailbox.  Stated rather than omitted
+  // because Windows ARM64 requires _CCA on any device it might map buffers
+  // for, and an absent _CCA is a device-start failure, not a default.
+  //
+  Status = AmlCodeGenNameInteger ("_CCA", 0, DeviceNode, NULL);
+  if (EFI_ERROR (Status)) {
+    goto Exit;
+  }
+
+  Status = AmlCodeGenNameInteger ("_STA", 0x0F, DeviceNode, NULL);
+  if (EFI_ERROR (Status)) {
+    goto Exit;
+  }
+
+  //
+  // An EMPTY resource template: Name (_CRS, ResourceTemplate () {}).  Nothing
+  // is added to CrsNode, on purpose.  Publishing _CRS at all -- rather than
+  // omitting it -- makes "this device claims nothing" an assertion the AML
+  // carries and a test can check, instead of an absence that could equally be
+  // an oversight.
+  //
+  Status = AmlCodeGenNameResourceTemplate ("_CRS", DeviceNode, NULL);
+  if (EFI_ERROR (Status)) {
+    goto Exit;
+  }
+
+  DsdNode        = NULL;
+  DsdPackageNode = NULL;
+
+  Status = AmlCodeGenNamePackage ("_DSD", DeviceNode, &DsdNode);
+  if (EFI_ERROR (Status)) {
+    goto Exit;
+  }
+
+  Status = AmlAddDeviceDataDescriptorPackage (
+             &gAppleAnsDsdPropertiesGuid,
+             DsdNode,
+             &DsdPackageNode
+             );
+  if (EFI_ERROR (Status)) {
+    goto Exit;
+  }
+
+  for (Index = 0; Index < ARRAY_SIZE (mNtasiBatteryProperties); Index++) {
+    Status = AmlAddNameIntegerPackage (
+               mNtasiBatteryProperties[Index].Name,
+               mNtasiBatteryProperties[Index].Value,
+               DsdPackageNode
+               );
+    if (EFI_ERROR (Status)) {
+      goto Exit;
+    }
+  }
+
+  Status = AmlSerializeDefinitionBlock (RootNode, &Table);
+  if (EFI_ERROR (Status)) {
+    goto Exit;
+  }
+
+  TableHandle = 0;
+  Status      = AcpiTable->InstallAcpiTable (
+                             AcpiTable,
+                             Table,
+                             Table->Length,
+                             &TableHandle
+                             );
+  if (!EFI_ERROR (Status)) {
+    DEBUG ((
+      DEBUG_INFO,
+      "AppleBattery ACPI: BAT0 (NTAS0053) published, 0 memory windows, "
+      "0 interrupts, %u _DSD properties, no SMC write path\n",
+      (UINT32)ARRAY_SIZE (mNtasiBatteryProperties)
+      ));
+  }
+
+Exit:
+  if (Table != NULL) {
+    FreePool (Table);
+  }
+
+  if (RootNode != NULL) {
+    DeleteStatus = AmlDeleteTree (RootNode);
+    if (!EFI_ERROR (Status) && EFI_ERROR (DeleteStatus)) {
+      Status = DeleteStatus;
+    }
+  }
+
+  return Status;
+}
+#endif // NTASI_ENABLE_BATTERY_PUBLICATION
+
 /**
   Publish the native Apple ANS controller to Windows.  Addresses and the
   hardware profile are derived from the live Apple Device Tree so one firmware
@@ -2944,10 +3230,21 @@ AcpiPlatformInstallAppleAnsTable (
   // opposed to "grant this device exclusive ownership of these bytes".
   //
   // ABI NOTE: this changes NTAS2003's _CRS from seven memory resources to
-  // three. Nothing consumes the old layout today -- AppleNvmeSart3 is
-  // disabled (Start=4) and never loads -- so the change costs nothing now,
-  // but a future ANS driver must read the four addresses from _DSD rather
-  // than from _CRS indices 3-6.
+  // three.
+  //
+  // UPDATED 2026-07-31: the "nothing consumes the old layout today" note that
+  // used to sit here was true when written and stopped being true the moment
+  // AppleNvmeSart3 was re-enabled. That driver hard-required 7 access ranges
+  // and rejected the 3-range _CRS in HwFindAdapter, so ANS sat at Device
+  // Manager problem 10 with STATUS_DEVICE_CONFIGURATION_ERROR (0xC0000182).
+  //
+  // FIXED ON THE DRIVER SIDE, and it must stay fixed there: AppleNvme now
+  // treats the PMGR words as optional (see MapResources in AppleNvme.c). Do
+  // NOT restore the four resources here to make an old driver bind -- that
+  // trades ANS's code 10 for a code 12 on ANS0 or KBL0, and the bring-up they
+  // enabled is a no-op on this silicon anyway (iBoot leaves all four domains
+  // ACTIVE; ReportAnsPmgrDomains() in AppleNANDStorageDxe verifies and prints
+  // that on every ANS boot).
   //
 
   Status = AmlCodeGenRdInterrupt (
@@ -3876,6 +4173,23 @@ AcpiPlatformEntryPoint (
   // for MCA0's published GSIVs come from CSRT.aslc, gated on the same flag.
   //
   NtasiInstallMediaTables (AcpiTable);
+#endif
+
+#if NTASI_ENABLE_BATTERY_PUBLICATION
+  //
+  // Publish BAT0 (NTAS0053), the devnode AppleSmcBattery.sys binds to.
+  // Non-fatal by construction, like DRT0, the GPU and the media tables: a
+  // machine that reaches Windows without a battery icon is strictly better
+  // than one that does not reach Windows.  This publication allocates no GSIV
+  // and claims no memory window, so unlike the media tables it cannot take a
+  // resource away from a devnode that boots -- see the block comment on
+  // NtasiInstallBatteryTable for why the SMC windows stay with SMCG.
+  //
+  Status = NtasiInstallBatteryTable (AcpiTable);
+  if (EFI_ERROR (Status)) {
+    DEBUG ((DEBUG_ERROR, "AppleBattery ACPI: SSDT installation failed: %r\n", Status));
+  }
+
 #endif
 
   //

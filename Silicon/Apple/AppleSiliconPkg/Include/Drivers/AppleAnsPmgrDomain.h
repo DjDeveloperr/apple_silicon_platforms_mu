@@ -3,7 +3,10 @@
   power-state words the ANS/NVMe coprocessor depends on.
 
   ONE COPY, TWO CONSUMERS. AcpiPlatformDxe publishes these four words to
-  Windows in NTAS2003's _CRS; AppleNANDStorageDxe reads them before it
+  Windows as NTAS2003 _DSD integer properties -- NOT as _CRS resources, and
+  never again: every one of them sits inside the 4 KiB page NTAS0051/KBL0
+  claims exclusively, so claiming them here is an arbiter conflict that costs
+  one of the two devices a code 12. AppleNANDStorageDxe reads them before it
   touches any ANS MMIO. Both used to be impossible to share because the
   resolution wrapper lived inside AcpiPlatform.c as a STATIC function. It is
   a static inline here instead, so there is still exactly one copy of the

@@ -200,7 +200,10 @@ class PlatformBuilder( UefiBuilder, BuildSettingsManager):
             "ans-gpu": {"ans": "TRUE", "gpu": "1", "wireless": "0", "ans_acpi": "TRUE"},
             "wireless": {"ans_acpi": "FALSE", "ans": "FALSE", "gpu": "0", "wireless": "1"},
             "gpu-wireless": {"ans_acpi": "FALSE", "ans": "FALSE", "gpu": "1", "wireless": "1"},
-            "ans-gpu-wireless": {"ans": "TRUE", "gpu": "1", "wireless": "1", "ans_acpi": "TRUE"},
+            "ans-gpu-wireless": {"ans": "TRUE", "gpu": "1", "wireless": "1", "ans_acpi": "TRUE",
+                                 # Battery (NTAS0053) added 2026-07-31: no GSIV, no memory
+                                 # window, read-only SMC access via SMCG's device interface.
+                                 "battery": "1"},
             "media": {"ans_acpi": "FALSE", "ans": "FALSE", "gpu": "0", "wireless": "0", "media": "1"},
             # Everything at once. Must stay in step with the same key in
             # Tools/j414s_mu_profile_manifest.py PROFILES -- this dict is the
@@ -221,12 +224,23 @@ class PlatformBuilder( UefiBuilder, BuildSettingsManager):
             # two dicts are now key-for-key in step; the test suite pins that.
             "gpu-noacpi": {"ans_acpi": "FALSE", "ans": "FALSE", "gpu": "1", "wireless": "0", "gpu_acpi": "0"},
             "media-gpu": {"ans_acpi": "FALSE", "ans": "FALSE", "gpu": "1", "wireless": "0", "media": "1"},
+            # Battery: baseline plus BAT0 (NTAS0053) and nothing else. A single
+            # variable on top of the only configuration currently known to boot
+            # and stay up, exactly as "media" is. It is the cheapest experiment
+            # in the set: the device claims no memory window and publishes no
+            # interrupt, so unlike media it cannot take a resource away from a
+            # devnode that already boots, and unlike gpu it reserves nothing.
+            "battery": {"ans_acpi": "FALSE", "ans": "FALSE", "gpu": "0", "wireless": "0", "battery": "1"},
         }
         # Every profile that does not name media leaves it off. Written as a
         # default rather than repeated in nine dicts so a profile added later
         # cannot silently inherit an enabled media publication by omission.
         for values in profile_values.values():
             values.setdefault("media", "0")
+            # Same rule for the battery devnode: a profile that does not name
+            # it does not get it. Written as a default so a profile added later
+            # cannot inherit a battery publication by omission.
+            values.setdefault("battery", "0")
             # NTAS0023 publication tracks the gpu flag unless a profile says
             # otherwise, mirroring ans_acpi/ans. Defaulted rather than repeated
             # so a profile added later cannot inherit a publication by
@@ -334,6 +348,15 @@ class PlatformBuilder( UefiBuilder, BuildSettingsManager):
         self.env.SetValue(
             "BLD_*_NTASI_ENABLE_MEDIA_PUBLICATION",
             profile_values[profile]["media"],
+            "Selected by NTASI_MU_PROFILE",
+        )
+        # Battery publication (BAT0 / NTAS0053). Same shape as media: the whole
+        # generator is inside "#if NTASI_ENABLE_BATTERY_PUBLICATION" in
+        # AcpiPlatform.c, so 0 produces byte-identical firmware to a tree
+        # without this feature at all.
+        self.env.SetValue(
+            "BLD_*_NTASI_ENABLE_BATTERY_PUBLICATION",
+            profile_values[profile]["battery"],
             "Selected by NTASI_MU_PROFILE",
         )
 

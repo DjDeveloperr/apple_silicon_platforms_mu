@@ -112,10 +112,19 @@ PROFILES = {
         "expected_ffs_count": 87,
     },
     "ans-gpu-wireless": {
-        "profile_abi": "ntasi.j414s.windows.ans-gpu-wireless-combined.v1",
+        "profile_abi": "ntasi.j414s.windows.ans-gpu-wireless-battery.v1",
         "ans": True,
         "gpu": True,
         "wireless": True,
+        # Battery (NTAS0053) added 2026-07-31. It publishes NO GSIV and NO
+        # memory window -- SMCG (NTAS0052) holds the SMC ASC/SRAM ranges
+        # exclusively, and a second claimant is the CM_PROB_NORMAL_CONFLICT
+        # this design exists to avoid -- so the CSRT and the GSIV allocation
+        # are byte-identical to the same profile without it. Keep in step with
+        # PlatformBuild.py profile_values; they are two independent dicts.
+        # profile_abi is bumped because the published device set changed, which
+        # is what a sealed manifest is for.
+        "battery": True,
         # gpu_acpi is INHERITED from "gpu" again (True), and this comment
         # records why it was briefly pinned False and why that is no longer
         # needed. Keep this key in step with the same key in
@@ -223,9 +232,26 @@ PROFILES = {
         "gpu_acpi": False,
         "expected_ffs_count": 87,
     },
+    # Baseline plus BAT0 (NTAS0053), the devnode AppleSmcBattery.sys binds to,
+    # and nothing else. Cheaper than every other experiment in this table: the
+    # device publishes an EMPTY _CRS -- no memory window, no interrupt -- so it
+    # allocates no GSIV, changes no CSRT byte, and cannot take a resource away
+    # from a devnode that already boots. The SSDT is generated at DXE runtime
+    # like ANS0/DRT0/media, so no FFS module and no static table is added.
+    "battery": {
+        "profile_abi": "ntasi.j414s.windows.battery-publication.v1",
+        "ans": False,
+        "gpu": False,
+        "battery": True,
+        "expected_ffs_count": 87,
+    },
 }
 for _profile in PROFILES.values():
     _profile.setdefault("wireless", False)
+    # Battery publication is opt-in per profile, defaulted here rather than
+    # written into every entry so a profile added later cannot inherit an
+    # enabled battery publication by omission.
+    _profile.setdefault("battery", False)
     # Media publication is opt-in per profile. Defaulted here rather than
     # written into every entry so a profile added later cannot inherit an
     # enabled media publication by omission.
@@ -678,6 +704,30 @@ def profile_policy(profile: str) -> dict[str, Any]:
                 else 3
             ),
             "media_speaker_render_enabled": False,
+            # BATTERY (BAT0 / NTAS0053).
+            #   battery_publication -- the SSDT generator compiled in at all.
+            #   battery_acpi_devices -- the exact _HID set, so a launcher can
+            #     refuse a wrong SET and not merely a wrong count.
+            #   battery_published_gsivs -- ALWAYS empty. This device publishes
+            #     no interrupt: there is no battery interrupt on this platform,
+            #     status changes are polled, and BatteryClassStatusNotify does
+            #     the announcing. Recorded explicitly so "allocates no GSIV"
+            #     is a checkable claim rather than an absence.
+            #   battery_memory_windows -- ALWAYS 0. SMCG (NTAS0052) holds the
+            #     SMC ASC and SRAM ranges as exclusive claims; re-claiming
+            #     either here is the CM_PROB_NORMAL_CONFLICT this design exists
+            #     to avoid. The battery driver reaches the SMC through SMCG's
+            #     device interface instead.
+            #   battery_smc_write_enabled -- ALWAYS False. Battery reporting is
+            #     read-only by construction: READ_KEY is the only SMC command
+            #     in the path, and no charge-control key (CH0I/CH0C/CHTE/CH0B/
+            #     CH0K), charge limit (CHWA/CHLS) or NTAP arming exists in the
+            #     driver or is reachable from _DSD.
+            "battery_publication": selected["battery"],
+            "battery_acpi_devices": (["NTAS0053"] if selected["battery"] else []),
+            "battery_published_gsivs": [],
+            "battery_memory_windows": 0,
+            "battery_smc_write_enabled": False,
         },
     }
 
@@ -815,6 +865,10 @@ def generate_manifest(args: argparse.Namespace) -> dict[str, Any]:
         # it adds no FFS and no static table, so this define is to media what
         # NTASI_ENABLE_WIRELESS_DART_HANDOFF is to wireless.
         "NTASI_ENABLE_MEDIA_PUBLICATION": "1" if PROFILES[profile]["media"] else "0",
+        # Same argument for the battery devnode: it adds no FFS and no static
+        # table, so this define is the only build-time proof its generator
+        # compiled in.
+        "NTASI_ENABLE_BATTERY_PUBLICATION": "1" if PROFILES[profile]["battery"] else "0",
         "NTASI_DEPLOY_EVIDENCE_ECHO": getattr(args, "evidence_echo", "0"),
     }
     for name, value in expected_defines.items():
