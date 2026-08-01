@@ -35,6 +35,12 @@ case "$profile" in
     wireless) ;;
     gpu-wireless) ;;
     ans-gpu-wireless) ;;
+    # 2026-08-01: the GPU-free counterpart of ans-gpu-wireless.  Turning only
+    # NTAS0023 publication off (gpu_acpi=0) is NOT GPU-free: that build still
+    # sets NTASI_J414S_GPU_RESOURCE_PROFILE=1 and carves the GPU reservations
+    # out of the memory map with no device to own them.  gpu=0 turns both off.
+    ans-wireless) ;;
+
     # Publishes MCA0 (NTAS0080), AOPA (NTAS0081) and ISP0 (NTAS0090) on top of
     # baseline, and nothing else: no FFS module, no static ACPI table, no
     # interrupt resource, no CSRT change. Single variable on top of the

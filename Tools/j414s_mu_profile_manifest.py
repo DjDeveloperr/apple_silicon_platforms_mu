@@ -111,6 +111,16 @@ PROFILES = {
         "wireless": True,
         "expected_ffs_count": 87,
     },
+    # GPU-free counterpart of ans-gpu-wireless.  See the comment on the same
+    # key in PlatformBuild.py profile_values -- these are two independent dicts
+    # and both have to agree.
+    "ans-wireless": {
+        "profile_abi": "ntasi.j414s.windows.ans-wireless-battery.v1",
+        "ans": True,
+        "gpu": False,
+        "wireless": True,
+        "battery": True,
+    },
     "ans-gpu-wireless": {
         "profile_abi": "ntasi.j414s.windows.ans-gpu-wireless-battery.v1",
         "ans": True,

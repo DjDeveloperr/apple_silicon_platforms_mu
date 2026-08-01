@@ -212,6 +212,17 @@ class PlatformBuilder( UefiBuilder, BuildSettingsManager):
                                  # Battery (NTAS0053) added 2026-07-31: no GSIV, no memory
                                  # window, read-only SMC access via SMCG's device interface.
                                  "battery": "1"},
+            # 2026-08-01: ans-gpu-wireless MINUS the GPU, added because no
+            # existing profile was genuinely GPU-free.  "ans-gpu-wireless" with
+            # NTAS0023 publication turned off is NOT that: it still builds with
+            # NTASI_J414S_GPU_RESOURCE_PROFILE=1, so it carves the GPU
+            # reservations out of the memory map while publishing no device to
+            # own them.  Windows then boots against a map with holes for a
+            # device that does not exist, and dies before the desktop.  Here
+            # gpu=0 turns BOTH the resource profile and the ACPI publication
+            # off, so nothing GPU-related is programmed at all.
+            "ans-wireless": {"ans": "TRUE", "gpu": "0", "wireless": "1",
+                             "ans_acpi": "TRUE", "battery": "1"},
             "media": {"ans_acpi": "FALSE", "ans": "FALSE", "gpu": "0", "wireless": "0", "media": "1"},
             # Everything at once. Must stay in step with the same key in
             # Tools/j414s_mu_profile_manifest.py PROFILES -- this dict is the
