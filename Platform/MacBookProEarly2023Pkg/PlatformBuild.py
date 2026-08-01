@@ -200,16 +200,15 @@ class PlatformBuilder( UefiBuilder, BuildSettingsManager):
             "ans-gpu": {"ans": "TRUE", "gpu": "1", "wireless": "0", "ans_acpi": "TRUE"},
             "wireless": {"ans_acpi": "FALSE", "ans": "FALSE", "gpu": "0", "wireless": "1"},
             "gpu-wireless": {"ans_acpi": "FALSE", "ans": "FALSE", "gpu": "1", "wireless": "1"},
-            # 2026-08-01: gpu_acpi pinned "0" to ISOLATE the GPU driver. With
-            # AppleAgxGpu 0.6.0.0 the GPX PS_MIN precondition is gone, so the
-            # driver ACTUALLY powers the GPU domain for the first time -- and
-            # the boot then bugchecks deterministically during demand-driver
-            # start. Withholding NTAS0023 keeps the carveouts and every other
-            # device identical while the driver simply never binds, which is
-            # the single-variable control. Restore to inherit from "gpu" once
-            # the driver is fixed.
+            # 2026-08-01: gpu_acpi was briefly pinned "0" to isolate the GPU
+            # driver, on the belief that AppleAgxGpu 0.6.0.0 had retired the
+            # GPX PS_MIN precondition and was powering the GPU domain for the
+            # first time. That premise was wrong: the package on the disk was
+            # 0.5.0.0 -- 0.6.0.0 had never been built, let alone deployed -- so
+            # the isolation run tested a driver that still refused D0Entry at
+            # stage 10 either way, and it hung rather than bugchecking. The pin
+            # is removed; gpu_acpi inherits from "gpu" again.
             "ans-gpu-wireless": {"ans": "TRUE", "gpu": "1", "wireless": "1", "ans_acpi": "TRUE",
-                                 "gpu_acpi": "0",
                                  # Battery (NTAS0053) added 2026-07-31: no GSIV, no memory
                                  # window, read-only SMC access via SMCG's device interface.
                                  "battery": "1"},
