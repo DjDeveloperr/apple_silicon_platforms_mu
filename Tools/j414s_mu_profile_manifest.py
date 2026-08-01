@@ -115,6 +115,10 @@ PROFILES = {
         "profile_abi": "ntasi.j414s.windows.ans-gpu-wireless-battery.v1",
         "ans": True,
         "gpu": True,
+        # 2026-08-01: pinned False to isolate AppleAgxGpu 0.6.0.0, which now
+        # really powers the GPU domain and bugchecks the boot. Keep in step
+        # with PlatformBuild.py profile_values.
+        "gpu_acpi": False,
         "wireless": True,
         # Battery (NTAS0053) added 2026-07-31. It publishes NO GSIV and NO
         # memory window -- SMCG (NTAS0052) holds the SMC ASC/SRAM ranges
