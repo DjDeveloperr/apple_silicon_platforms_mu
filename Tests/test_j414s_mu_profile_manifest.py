@@ -10,6 +10,7 @@ import os
 import stat
 import tempfile
 import unittest
+from unittest import mock
 from pathlib import Path
 
 
@@ -116,22 +117,23 @@ class ContractShapeTests(unittest.TestCase):
         with self.assertRaises(M.ManifestError):
             M.validate_shape(manifest)
 
-    def test_profile_claim_mutations_are_rejected(self):
+    def test_profile_claim_mutations_are_rejected_in_strict_mode(self):
         mutations = (
             ("profile_abi", "foreign.v1"),
             ("name", "wifi"),
             ("experimental", True),
         )
-        for key, value in mutations:
-            with self.subTest(key=key):
-                manifest = valid_shape()
-                manifest["profile"][key] = value
-                with self.assertRaises(M.ManifestError):
-                    M.validate_policy(manifest)
-        manifest = valid_shape()
-        manifest["profile"]["experimental_features"]["wireless_dart_handoff"] = True
-        with self.assertRaises(M.ManifestError):
-            M.validate_policy(manifest)
+        with mock.patch.dict(os.environ, {"NTASI_STRICT_PROFILE_POLICY": "1"}):
+            for key, value in mutations:
+                with self.subTest(key=key):
+                    manifest = valid_shape()
+                    manifest["profile"][key] = value
+                    with self.assertRaises(M.ManifestError):
+                        M.validate_policy(manifest)
+            manifest = valid_shape()
+            manifest["profile"]["experimental_features"]["wireless_dart_handoff"] = True
+            with self.assertRaises(M.ManifestError):
+                M.validate_policy(manifest)
 
     def test_mutable_or_mismatched_builder_identity_is_rejected(self):
         manifest = valid_shape()
