@@ -178,6 +178,29 @@ PROFILES = {
         # and gpu-noacpi remains the control that isolates it.
         "expected_ffs_count": 88,
     },
+    # 2026-08-02: ans-gpu-wireless with ANS never published to Windows.
+    #
+    # ans stays True deliberately -- see the matching comment in
+    # PlatformBuild.py profile_values. "ANS off" must NOT be spelled
+    # ans=False: that skips the DXE that quiesces the coprocessor iBoot left
+    # running and leaves ps_ans2 unpowered. The "ans-live" boot measured what
+    # that costs -- AppleNvme took a synchronous external abort at the SART
+    # (0x34bc50010, ESR 0x92000010, DFSC 0x10) and the boot died.
+    #
+    # ans_acpi=False keeps the hardware bring-up and quiesce identical to the
+    # known-good profile while never publishing NTAS2003, so Windows builds no
+    # devnode and AppleNvme never starts. Identical FFS set to
+    # ans-gpu-wireless: AppleNANDStorageDxe stays in the FV, and neither gpu
+    # nor wireless contributes a module.
+    "ans-noacpi-gpu-wireless": {
+        "profile_abi": "ntasi.j414s.windows.ans-gpu-wireless-no-acpi-control.v1",
+        "ans": True,
+        "ans_acpi": False,
+        "gpu": True,
+        "wireless": True,
+        "battery": True,
+        "expected_ffs_count": 88,
+    },
     # Media publication: MCA0 (NTAS0080, speakers + headset jack), AOPA
     # (NTAS0081, internal PDM mic array) and ISP0 (NTAS0090, FaceTime camera).
     #

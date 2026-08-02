@@ -25,6 +25,13 @@ case "$profile" in
     # stalls Windows before storage (measured 2026-07-31, 3292c5b).
     gpu-noacpi) ;;
     ans-gpu) ;;
+    # 2026-08-02: ans-gpu-wireless with NTAS2003 withheld.  ANS is still
+    # brought up and quiesced by the DXE -- only the ACPI publication is off --
+    # so Windows never builds a devnode and AppleNvme never starts.  This is
+    # what "ANS off" has to mean on this platform: `ans-live` (ans=FALSE) left
+    # ps_ans2 unpowered and AppleNvme took a synchronous external abort at the
+    # SART (0x34bc50010) that killed the boot.
+    ans-noacpi-gpu-wireless) ;;
     # CORRECTED 2026-07-30: wireless used to require a second argument -- a
     # same-instance, hardware-captured handoff manifest sealing one specific
     # coordinator-chosen reservation address into this build. That is exactly

@@ -224,6 +224,26 @@ class PlatformBuilder( UefiBuilder, BuildSettingsManager):
                                  # Battery (NTAS0053) added 2026-07-31: no GSIV, no memory
                                  # window, read-only SMC access via SMCG's device interface.
                                  "battery": "1"},
+            # 2026-08-02: ans-gpu-wireless with ANS never published to Windows.
+            #
+            # ans STAYS TRUE on purpose.  "ANS off" cannot mean ans=FALSE here:
+            # that skips Mu's ANS DXE entirely, which is the only thing that
+            # quiesces the coprocessor iBoot left running, and it also leaves
+            # the ps_ans2 domain unpowered.  A boot on the "ans-live" profile
+            # (ans=FALSE, ans_acpi=TRUE) proved what that costs -- AppleNvme
+            # touched the SART at 0x34bc50010 with the domain down and took a
+            # synchronous external abort (ESR 0x92000010, DFSC 0x10) that
+            # killed the boot.
+            #
+            # ans_acpi=FALSE is the correct lever: the ANS hardware is brought
+            # up and quiesced exactly as in the known-good profile, but NTAS2003
+            # is never published, so Windows never builds a devnode, never
+            # starts AppleNvme, and no driver can touch ANS at all.  Same FFS
+            # set as ans-gpu-wireless -- AppleNANDStorageDxe is still in the FV,
+            # and neither gpu nor wireless adds a module -- so the count is
+            # unchanged at 88.
+            "ans-noacpi-gpu-wireless": {"ans": "TRUE", "gpu": "1", "wireless": "1",
+                                        "ans_acpi": "FALSE", "battery": "1"},
             # 2026-08-01: ans-gpu-wireless MINUS the GPU, added because no
             # existing profile was genuinely GPU-free.  "ans-gpu-wireless" with
             # NTAS0023 publication turned off is NOT that: it still builds with
