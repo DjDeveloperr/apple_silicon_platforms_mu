@@ -129,6 +129,10 @@ PROFILES = {
     "ans-live": {
         "profile_abi": "ntasi.j414s.windows.ans-live-battery.v1",
         "ans": False,
+        # ans_acpi defaults to ans (line ~284), but this profile exists
+        # precisely to decouple them: publish NTAS2003 while the ANS DXE driver
+        # never runs, so nothing quiesces the coprocessor.
+        "ans_acpi": True,
         "gpu": True,
         "wireless": True,
         "battery": True,
