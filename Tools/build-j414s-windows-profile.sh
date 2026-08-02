@@ -40,6 +40,8 @@ case "$profile" in
     # sets NTASI_J414S_GPU_RESOURCE_PROFILE=1 and carves the GPU reservations
     # out of the memory map with no device to own them.  gpu=0 turns both off.
     ans-wireless) ;;
+    # ANS DXE never runs, NTAS2003 still published -- see PlatformBuild.py.
+    ans-live) ;;
 
     # Publishes MCA0 (NTAS0080), AOPA (NTAS0081) and ISP0 (NTAS0090) on top of
     # baseline, and nothing else: no FFS module, no static ACPI table, no

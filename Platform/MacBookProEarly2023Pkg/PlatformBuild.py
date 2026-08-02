@@ -196,6 +196,18 @@ class PlatformBuilder( UefiBuilder, BuildSettingsManager):
             # never published, so Windows never builds a devnode for it and
             # its PnP arbiter never allocates resources for it.
             "ans-noacpi": {"ans": "TRUE", "gpu": "0", "wireless": "0", "ans_acpi": "FALSE"},
+            # 2026-08-01: the INVERSE of ans-noacpi, and the one combination no
+            # profile had.  Mu's AppleNANDStorageDxe boots ANS and then halts it
+            # at ExitBootServices, clearing the SART entries it armed -- so
+            # Windows inherits a coprocessor that was booted, stopped, and
+            # stripped of its DMA grants.  That is why BOOT_STATUS reads OK
+            # while the core is halted and 0 of 16 SART entries are armed, and
+            # neither Linux nor m1n1 ever clears a SART entry.  ans=FALSE keeps
+            # the DXE driver out of the boot entirely so nothing quiesces ANS,
+            # while ans_acpi=TRUE still publishes NTAS2003 so the Windows driver
+            # loads and can take its WAKE path against a live coprocessor.
+            "ans-live": {"ans": "FALSE", "gpu": "1", "wireless": "1",
+                         "ans_acpi": "TRUE", "battery": "1"},
             "gpu": {"ans_acpi": "FALSE", "ans": "FALSE", "gpu": "1", "wireless": "0"},
             "ans-gpu": {"ans": "TRUE", "gpu": "1", "wireless": "0", "ans_acpi": "TRUE"},
             "wireless": {"ans_acpi": "FALSE", "ans": "FALSE", "gpu": "0", "wireless": "1"},

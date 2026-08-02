@@ -125,6 +125,15 @@ PROFILES = {
         # 2026-07-30 -- so this matches ans-gpu-wireless.
         "expected_ffs_count": 88,
     },
+    # See the comment on the same key in PlatformBuild.py profile_values.
+    "ans-live": {
+        "profile_abi": "ntasi.j414s.windows.ans-live-battery.v1",
+        "ans": False,
+        "gpu": True,
+        "wireless": True,
+        "battery": True,
+        "expected_ffs_count": 88,
+    },
     "ans-gpu-wireless": {
         "profile_abi": "ntasi.j414s.windows.ans-gpu-wireless-battery.v1",
         "ans": True,
