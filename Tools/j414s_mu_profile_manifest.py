@@ -77,6 +77,20 @@ PROFILES = {
         "gpu": True,
         "expected_ffs_count": 88,
     },
+    "gpu-no-xhc2": {
+        "profile_abi": "ntasi.j414s.windows.gpu-no-xhc2.v1",
+        "ans": False,
+        "gpu": True,
+        "xhc2": False,
+        "expected_ffs_count": 87,
+    },
+    "ans-gpu-no-xhc2": {
+        "profile_abi": "ntasi.j414s.windows.ans-gpu-no-xhc2.v1",
+        "ans": True,
+        "gpu": True,
+        "xhc2": False,
+        "expected_ffs_count": 88,
+    },
     # CORRECTED 2026-07-30: wireless used to be its own optional FFS
     # (WirelessDartAcpiTables.inf, compiling a static WDRT.asl that baked a
     # same-instance hardware-captured reservation address at build time --
@@ -109,6 +123,14 @@ PROFILES = {
         "ans": False,
         "gpu": True,
         "wireless": True,
+        "expected_ffs_count": 87,
+    },
+    "gpu-wireless-no-xhc2": {
+        "profile_abi": "ntasi.j414s.windows.gpu-wireless-no-xhc2.v1",
+        "ans": False,
+        "gpu": True,
+        "wireless": True,
+        "xhc2": False,
         "expected_ffs_count": 87,
     },
     # GPU-free counterpart of ans-gpu-wireless.  See the comment on the same
@@ -176,6 +198,15 @@ PROFILES = {
         # see NtasiGpuAllocatePlaceholderHandoff() in AcpiPlatform.c. With that
         # fixed there is no reason to withhold publication from this profile,
         # and gpu-noacpi remains the control that isolates it.
+        "expected_ffs_count": 88,
+    },
+    "ans-gpu-wireless-no-xhc2": {
+        "profile_abi": "ntasi.j414s.windows.ans-gpu-wireless-no-xhc2.v1",
+        "ans": True,
+        "gpu": True,
+        "wireless": True,
+        "battery": True,
+        "xhc2": False,
         "expected_ffs_count": 88,
     },
     # 2026-08-02: ans-gpu-wireless with ANS never published to Windows.
@@ -298,6 +329,7 @@ PROFILES = {
 }
 for _profile in PROFILES.values():
     _profile.setdefault("wireless", False)
+    _profile.setdefault("xhc2", True)
     # Battery publication is opt-in per profile, defaulted here rather than
     # written into every entry so a profile added later cannot inherit an
     # enabled battery publication by omission.
@@ -603,10 +635,14 @@ def acpi_inventory(
 
     dsdt = decompile_aml(find_unique(build_root, "DSDT.aml"))
     disp = decompile_aml(find_unique(build_root, "DISP.aml"))
+    xhc2_start = dsdt.index("Device (XHC2)")
+    xhc2_end = dsdt.find("Device (", xhc2_start + len("Device (XHC2)"))
+    xhc2 = dsdt[xhc2_start:xhc2_end if xhc2_end >= 0 else None]
     assertions = {
         "dsdt_pci0": "Device (PCI0)" in dsdt,
         "dsdt_xhc1": "Device (XHC1)" in dsdt,
         "dsdt_xhc2": "Device (XHC2)" in dsdt,
+        "dsdt_xhc2_enabled": "Return (0x0F)" in xhc2 if PROFILES[profile]["xhc2"] else "Return (Zero)" in xhc2,
         "dsdt_drt0_absent": "Device (DRT0)" not in dsdt,
         "dsdt_ntas0011_absent": "NTAS0011" not in dsdt,
         "disp_ntas0070": "NTAS0070" in disp,
@@ -656,6 +692,7 @@ def profile_policy(profile: str) -> dict[str, Any]:
             "ramdisk_gpt_fat": True,
             "apple_silicon_pci_platform_dxe": False,
             "xhc2_right_usb_c": {
+                "enabled": selected["xhc2"],
                 "acpi_uid": 2,
                 "gsiv": 39,
                 "typec_policy_owner": "m1n1_non_proxy_source_dfp_v1",
@@ -944,6 +981,7 @@ def generate_manifest(args: argparse.Namespace) -> dict[str, Any]:
         "NTASI_ANS_PUBLISH_ACPI": "TRUE" if PROFILES[profile]["ans_acpi"] else "FALSE",
         "NTASI_J414S_GPU_RESOURCE_PROFILE": "1" if PROFILES[profile]["gpu"] else "0",
         "NTASI_ENABLE_WIRELESS_DART_HANDOFF": "1" if PROFILES[profile]["wireless"] else "0",
+        "NTASI_ENABLE_XHC2": "1" if PROFILES[profile]["xhc2"] else "0",
         # The only build-time proof that the media SSDT generator compiled in:
         # it adds no FFS and no static table, so this define is to media what
         # NTASI_ENABLE_WIRELESS_DART_HANDOFF is to wireless.
@@ -1210,6 +1248,7 @@ def verify_manifest(manifest_path: Path, source_root: Path | None = None) -> dic
         "dsdt_pci0": True,
         "dsdt_xhc1": True,
         "dsdt_xhc2": True,
+        "dsdt_xhc2_enabled": True,
         "dsdt_drt0_absent": True,
         "dsdt_ntas0011_absent": True,
         "disp_ntas0070": True,

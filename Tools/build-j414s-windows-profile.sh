@@ -16,6 +16,8 @@ case "$profile" in
     # for the BUGCODE_USB3_DRIVER 0x144 investigation.
     ans-noacpi) ;;
     gpu) ;;
+    gpu-no-xhc2) ;;
+    ans-gpu-no-xhc2) ;;
     # Rails-down, no ANS, and NTAS0023 NOT published. This is the ONLY cell in
     # which an XHC2 A/B carries information: measured over all 49 boot logs that
     # reached Windows storage, rails-down non-ANS profiles show storage-death
@@ -41,7 +43,9 @@ case "$profile" in
     # than ans or gpu do.
     wireless) ;;
     gpu-wireless) ;;
+    gpu-wireless-no-xhc2) ;;
     ans-gpu-wireless) ;;
+    ans-gpu-wireless-no-xhc2) ;;
     # 2026-08-01: the GPU-free counterpart of ans-gpu-wireless.  Turning only
     # NTAS0023 publication off (gpu_acpi=0) is NOT GPU-free: that build still
     # sets NTASI_J414S_GPU_RESOURCE_PROFILE=1 and carves the GPU reservations

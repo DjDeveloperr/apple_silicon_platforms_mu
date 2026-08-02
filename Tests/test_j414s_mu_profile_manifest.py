@@ -101,6 +101,7 @@ class ContractShapeTests(unittest.TestCase):
             self.assertEqual(
                 manifest["profile"]["baseline_capabilities"]["xhc2_right_usb_c"],
                 {
+                    "enabled": M.PROFILES[profile]["xhc2"],
                     "acpi_uid": 2,
                     "gsiv": 39,
                     "typec_policy_owner": "m1n1_non_proxy_source_dfp_v1",

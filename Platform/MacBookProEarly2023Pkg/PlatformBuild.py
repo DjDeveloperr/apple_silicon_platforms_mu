@@ -210,8 +210,11 @@ class PlatformBuilder( UefiBuilder, BuildSettingsManager):
                          "ans_acpi": "TRUE", "battery": "1"},
             "gpu": {"ans_acpi": "FALSE", "ans": "FALSE", "gpu": "1", "wireless": "0"},
             "ans-gpu": {"ans": "TRUE", "gpu": "1", "wireless": "0", "ans_acpi": "TRUE"},
+            "gpu-no-xhc2": {"ans_acpi": "FALSE", "ans": "FALSE", "gpu": "1", "wireless": "0", "xhc2": "0"},
+            "ans-gpu-no-xhc2": {"ans": "TRUE", "gpu": "1", "wireless": "0", "ans_acpi": "TRUE", "xhc2": "0"},
             "wireless": {"ans_acpi": "FALSE", "ans": "FALSE", "gpu": "0", "wireless": "1"},
             "gpu-wireless": {"ans_acpi": "FALSE", "ans": "FALSE", "gpu": "1", "wireless": "1"},
+            "gpu-wireless-no-xhc2": {"ans_acpi": "FALSE", "ans": "FALSE", "gpu": "1", "wireless": "1", "xhc2": "0"},
             # 2026-08-01: gpu_acpi was briefly pinned "0" to isolate the GPU
             # driver, on the belief that AppleAgxGpu 0.6.0.0 had retired the
             # GPX PS_MIN precondition and was powering the GPU domain for the
@@ -224,6 +227,8 @@ class PlatformBuilder( UefiBuilder, BuildSettingsManager):
                                  # Battery (NTAS0053) added 2026-07-31: no GSIV, no memory
                                  # window, read-only SMC access via SMCG's device interface.
                                  "battery": "1"},
+            "ans-gpu-wireless-no-xhc2": {"ans": "TRUE", "gpu": "1", "wireless": "1", "ans_acpi": "TRUE",
+                                           "battery": "1", "xhc2": "0"},
             # 2026-08-02: ans-gpu-wireless with ANS never published to Windows.
             #
             # ans STAYS TRUE on purpose.  "ANS off" cannot mean ans=FALSE here:
@@ -287,6 +292,7 @@ class PlatformBuilder( UefiBuilder, BuildSettingsManager):
         # default rather than repeated in nine dicts so a profile added later
         # cannot silently inherit an enabled media publication by omission.
         for values in profile_values.values():
+            values.setdefault("xhc2", "1")
             values.setdefault("media", "0")
             # Same rule for the battery devnode: a profile that does not name
             # it does not get it. Written as a default so a profile added later
@@ -390,6 +396,11 @@ class PlatformBuilder( UefiBuilder, BuildSettingsManager):
         self.env.SetValue(
             "BLD_*_NTASI_ENABLE_WIRELESS_DART_HANDOFF",
             profile_values[profile]["wireless"],
+            "Selected by NTASI_MU_PROFILE",
+        )
+        self.env.SetValue(
+            "BLD_*_NTASI_ENABLE_XHC2",
+            profile_values[profile]["xhc2"],
             "Selected by NTASI_MU_PROFILE",
         )
         # Media publication (MCA0/AOPA/ISP0). Like gpu and wireless this is a

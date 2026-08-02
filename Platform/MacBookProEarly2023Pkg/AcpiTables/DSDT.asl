@@ -281,7 +281,11 @@
                 //
                 // With the rendezvous fix in place an A/B finally carries
                 // information: a stall now is evidence against XHC2, not noise.
+#if NTASI_ENABLE_XHC2
                 Return (0x0F)
+#else
+                Return (Zero)
+#endif
             }
         }
 
