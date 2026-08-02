@@ -936,6 +936,10 @@ def generate_manifest(args: argparse.Namespace) -> dict[str, Any]:
     }
     ffs_guids = {entry["guid"] for entry in ffs}
     if len(ffs) != PROFILES[profile]["expected_ffs_count"]:
+        # Name the number.  "unexpected FFS count" with no value forces a
+        # guess-and-rebuild loop; the count is right here.
+        print("FFS count for %s: expected %d, built %d" % (
+            profile, PROFILES[profile]["expected_ffs_count"], len(ffs)))
         raise ManifestError("unexpected FFS count")
     missing = set(REQUIRED_FFS) - ffs_guids
     if missing:
