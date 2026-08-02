@@ -827,16 +827,23 @@ def validate_policy(manifest: dict[str, Any]) -> None:
 
 def validate_builder(builder: dict[str, Any]) -> None:
     if not re.fullmatch(r"sha256:[0-9a-f]{64}", builder.get("image_id", "")):
-        raise ManifestError("builder image ID is not immutable")
+        raise ManifestError("builder identity is not immutable")
     digests = builder.get("repo_digests")
-    if not isinstance(digests, list) or not digests or any(
-        not re.fullmatch(r"[^@]+@sha256:[0-9a-f]{64}", digest) for digest in digests
-    ):
-        raise ManifestError("builder repo digest inventory is invalid")
-    if all(not digest.endswith(builder["image_id"]) for digest in digests):
-        raise ManifestError("builder image ID/repo digest mismatch")
-    if builder.get("platform") != "linux/arm64" or builder.get("target") != "DEBUG" or builder.get("toolchain") != "CLANGPDB":
-        raise ManifestError("builder platform/target/toolchain mismatch")
+    platform = builder.get("platform")
+    if platform == "linux/arm64":
+        if not isinstance(digests, list) or not digests or any(
+            not re.fullmatch(r"[^@]+@sha256:[0-9a-f]{64}", digest) for digest in digests
+        ):
+            raise ManifestError("builder repo digest inventory is invalid")
+        if all(not digest.endswith(builder["image_id"]) for digest in digests):
+            raise ManifestError("builder image ID/repo digest mismatch")
+    elif platform == "darwin/arm64":
+        if builder.get("image_ref") != "native:darwin-arm64" or digests != []:
+            raise ManifestError("native builder identity is invalid")
+    else:
+        raise ManifestError("unsupported builder platform")
+    if builder.get("target") != "DEBUG" or builder.get("toolchain") != "CLANGPDB":
+        raise ManifestError("builder target/toolchain mismatch")
 
 
 def validate_shape(manifest: dict[str, Any]) -> None:
@@ -1013,7 +1020,7 @@ def generate_manifest(args: argparse.Namespace) -> dict[str, Any]:
             "branch": branch,
             "commit": commit,
             "tree": tree,
-            "clean": True,
+            "clean": not bool(dirty),
             "top_level_gitlinks": top_gitlinks,
             "nested_gitlinks": nested_gitlinks,
             "nested_gitlink_lock": nested_lock,
@@ -1022,7 +1029,7 @@ def generate_manifest(args: argparse.Namespace) -> dict[str, Any]:
             "image_ref": args.image_ref,
             "image_id": args.image_id,
             "repo_digests": sorted(json.loads(args.image_repo_digests_json)),
-            "platform": "linux/arm64",
+            "platform": args.builder_platform,
             "target": "DEBUG",
             "toolchain": "CLANGPDB",
         },
@@ -1233,6 +1240,7 @@ def parse_args() -> argparse.Namespace:
     seal.add_argument("--image-ref", required=True)
     seal.add_argument("--image-id", required=True)
     seal.add_argument("--image-repo-digests-json", required=True)
+    seal.add_argument("--builder-platform", choices=("linux/arm64", "darwin/arm64"), default="linux/arm64")
     # The WinPE deploy-evidence echo is orthogonal to the profile, so the
     # manifest -- not the profile table -- is what proves whether a given FD
     # carries it. Sealing it here means a boot can never be attributed to a

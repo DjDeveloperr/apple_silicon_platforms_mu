@@ -9,6 +9,7 @@ Silicon/AppleSiliconPkg/Include/Resources/ReleaseInfo.h
 .vs
 .vscode
 .venv
+.venv-native
 
 /Build/
 .DS_Store

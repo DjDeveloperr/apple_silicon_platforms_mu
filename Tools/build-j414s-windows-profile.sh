@@ -93,7 +93,6 @@ if test "$branch" != "$expected_branch"; then
 fi
 if test -n "$(git -C "$source_root" status --porcelain=v1 --untracked-files=all --ignore-submodules=none)"; then
     echo "note: unified Mu tree is dirty; this build is not reproducible from $commit alone" >&2
-    commit="$commit-dirty"
 fi
 
 # WinPE deploy-verdict echo. Orthogonal to the profile, OFF unless asked for, and
