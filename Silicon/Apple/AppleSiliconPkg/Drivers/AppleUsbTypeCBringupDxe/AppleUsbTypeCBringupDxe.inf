@@ -59,6 +59,7 @@
 [Pcd]
   gAppleSiliconPkgTokenSpaceGuid.PcdAppleSocIdentifier
   gAppleSiliconPkgTokenSpaceGuid.PcdAppleNumDwc3Controllers
+  gAppleSiliconPkgTokenSpaceGuid.PcdAppleUsb3PipeSwitchPortMask
 
 [Guids]
   gEfiEndOfDxeEventGroupGuid

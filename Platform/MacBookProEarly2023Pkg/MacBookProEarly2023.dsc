@@ -89,6 +89,14 @@
   gAppleSiliconPkgTokenSpaceGuid.PcdSmbiosSystemModelNumber|"Mac14,5/Mac14,6/Mac14,9/Mac14,10"
   gAppleSiliconPkgTokenSpaceGuid.PcdSmbiosSystemSku|"MacBook Pro (Early 2023) (Mac14,5/Mac14,6/Mac14,9/Mac14,10)"
   gAppleSiliconPkgTokenSpaceGuid.PcdAppleNumDwc3Controllers|3 # M2 Pro case is hardcoded for now.
+  #
+  # Let AppleUsbTypeCBringupDxe finish the deferred USB3 PIPE switch on
+  # usb-drd2 (bit 2), the right-hand port. Gated to that port only: usb-drd1
+  # carries the boot volume, and running ATC PHY bringup on it pre-Mu is a
+  # known hang. The driver still no-ops unless m1n1 actually configured the
+  # PHY, so this is safe to leave on.
+  #
+  gAppleSiliconPkgTokenSpaceGuid.PcdAppleUsb3PipeSwitchPortMask|0x4
   gAppleSiliconPkgTokenSpaceGuid.PcdAppleNumDwc3Darts|6 # M2 Pro case is hardcoded for now.
   # Windows consumes GSIV 38; the AIC2 CSRT translates it to T6020 line 1832.
   gAppleSiliconPkgTokenSpaceGuid.PcdAppleAnsPublishedInterrupt|38

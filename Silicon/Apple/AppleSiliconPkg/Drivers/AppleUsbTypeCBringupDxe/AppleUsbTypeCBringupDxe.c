@@ -44,14 +44,426 @@
 //
 // This driver is just a stub to bringup register the DWC3 controller(s) as a non-discoverable XHCI controller(s), which
 // the built-in XHCI DXE driver should be able to bring up more or less normally.
-// Note that the PHY will be doing USB 2.0 speeds, because iBoot only brings up the PHY to that state,
-// and bringing up the PHY to USB 3.0 speed is not only unnecessary for Windows installation but requires much
-// more complicated tunables, and a number of them from fuses.
+//
+// Historically the PHY only ever did USB 2.0 speeds here, because iBoot only brings it up to that
+// state and the USB 3.0 tunables (several of them fuse-derived) were out of scope. That is still
+// true of anything this driver does on its own.
+//
+// It is NO LONGER true of the machine as a whole: m1n1 now has a full ATC PHY driver and can
+// configure a port for USB3 before handing off. When it does, it deliberately stops one step short
+// and leaves the pipehandler PIPE mux parked on DUMMY, because the mux switch has to happen after
+// dwc3 core init (Asahi dwc3-apple.c:29) and dwc3 core init happens *here*. Finishing that handoff
+// is what AtcPhyFinishDeferredUsb3Switch below is for. See the block comment on it.
 //
 // As for actual bringup of the DWC3 controllers, the device registration sequence should be almost exactly the same as that of the sequence used on NXP's UsbHcd driver,
 // Only difference here is that we do more of those bringups. Note that the Synopsys bringup will be based on the sequence done in 
 // u-boot's DWC3 driver to ensure Apple platform compatibility. (which the NXP bringup sequence is based off of.)
 //
+
+//
+// ===========================================================================
+// Apple vendor DWC3 registers and the deferred USB3 PIPE handoff
+// ===========================================================================
+//
+// Offsets below are DWC3-ABSOLUTE, i.e. relative to the controller base and
+// NOT to DWC3_CONTROLLER (which starts at base + DWC3_REG_OFFSET == 0xC100).
+// This is the same convention Linux uses when it writes DWC3_GCTL as 0xC110,
+// and it is verified against this file's own struct: DWC3_CONTROLLER.GCtl sits
+// at struct offset 0x10, so 0xC100 + 0x10 == 0xC110. Likewise GUsb3PipeCtl[0]
+// is at struct offset 0x1C0 -> 0xC2C0, matching DWC3_GUSB3PIPECTL(0).
+//
+#define DWC3_APPLE_CIO_UNK_CD38      0xCD38
+#define DWC3_APPLE_CIO_UNK_CD38_VAL  0x0F800F80
+#define DWC3_APPLE_CIO_UNK_CD3C      0xCD3C
+#define DWC3_APPLE_CIO_UNK_CD3C_VAL  0x0FC00FC0
+
+//
+// Link timer register. Field layout and values from dwc3-apple.c:122-128,155-162.
+//
+#define DWC3_APPLE_CIO_LINK_TIMERS         0xCD40
+#define DWC3_APPLE_LINK_HP_TIMER_SHIFT     16
+#define DWC3_APPLE_LINK_HP_TIMER_MASK      0x00FF0000
+#define DWC3_APPLE_LINK_HP_TIMER_VAL       0x14
+#define DWC3_APPLE_LINK_PM_LC_TIMER_SHIFT  8
+#define DWC3_APPLE_LINK_PM_LC_TIMER_MASK   0x0000FF00
+#define DWC3_APPLE_LINK_PM_LC_TIMER_VAL    0x0A
+#define DWC3_APPLE_LINK_PM_ENTRY_SHIFT     0
+#define DWC3_APPLE_LINK_PM_ENTRY_MASK      0x000000FF
+#define DWC3_APPLE_LINK_PM_ENTRY_VAL       0x10
+
+//
+// SUSPHY. Linux core.c:111-136 (dwc3_enable_susphy).
+//
+#define DWC3_GUSB3PIPECTL_SUSPHY  BIT17
+#define DWC3_GUSB2PHYCFG_SUSPHY   BIT6
+
+//
+// ---------------------------------------------------------------------------
+// Apple ATC PHY register windows, transcribed from m1n1 src/atcphy_core.h,
+// which in turn cites Asahi Linux drivers/phy/apple/atc.c line by line.
+//
+// Two windows are involved, resolved from the guest ADT exactly as m1n1
+// resolves them (m1n1 src/atcphy.c:9-18):
+//   pipehandler : /arm-io/usb-drdN  reg[3]
+//   phy core    : /arm-io/atc-phyN  reg[3]
+// ---------------------------------------------------------------------------
+//
+#define ATCPHY_DRD_REG_PIPEHANDLER  3
+#define ATCPHY_ATC_REG_CORE         3
+
+#define ATCPHY_PIPEHANDLER_OVERRIDE                 0x00
+#define ATCPHY_PIPEHANDLER_OVERRIDE_RXVALID         BIT0
+#define ATCPHY_PIPEHANDLER_OVERRIDE_RXDETECT        BIT2
+#define ATCPHY_PIPEHANDLER_OVERRIDE_VALUES          0x04
+#define ATCPHY_PIPEHANDLER_OVERRIDE_VAL_RXDETECT0   BIT1
+#define ATCPHY_PIPEHANDLER_OVERRIDE_VAL_RXDETECT1   BIT2
+#define ATCPHY_PIPEHANDLER_MUX_CTRL                 0x0C
+#define ATCPHY_PIPEHANDLER_MUX_DATA_MASK            0x7
+#define ATCPHY_PIPEHANDLER_MUX_DATA_SHIFT           0
+#define ATCPHY_PIPEHANDLER_MUX_DATA_USB3            0
+#define ATCPHY_PIPEHANDLER_MUX_DATA_DUMMY           2
+#define ATCPHY_PIPEHANDLER_MUX_CLK_MASK             0x38
+#define ATCPHY_PIPEHANDLER_MUX_CLK_SHIFT            3
+#define ATCPHY_PIPEHANDLER_MUX_CLK_OFF              0
+#define ATCPHY_PIPEHANDLER_MUX_CLK_USB3             1
+#define ATCPHY_PIPEHANDLER_MUX_CLK_DUMMY            4
+#define ATCPHY_PIPEHANDLER_LOCK_REQ                 0x10
+#define ATCPHY_PIPEHANDLER_LOCK_ACK                 0x14
+#define ATCPHY_PIPEHANDLER_LOCK_EN                  BIT0
+#define ATCPHY_PIPEHANDLER_LOCK_TIMEOUT_US          1000
+#define ATCPHY_PIPEHANDLER_NONSELECTED_OVERRIDE     0x20
+#define ATCPHY_PIPEHANDLER_NATIVE_POWER_DOWN_MASK   0xF
+#define ATCPHY_PIPEHANDLER_NATIVE_POWER_DOWN_SHIFT  0
+#define ATCPHY_PIPEHANDLER_NATIVE_RESET             BIT12
+
+#define ATCPHY_CORE_BIST_CIOPHY_CFG1                0x84
+#define ATCPHY_CORE_BIST_CIOPHY_CFG1_CLK_EN         BIT27
+#define ATCPHY_CORE_BIST_CIOPHY_CFG1_BIST_EN        BIT28
+#define ATCPHY_CORE_BIST_OV_CFG                     0x8C
+#define ATCPHY_CORE_BIST_OV_CFG_LN0_RESET_N_OV      BIT13
+#define ATCPHY_CORE_BIST_OV_CFG_LN0_PWR_DOWN_OV     BIT25
+#define ATCPHY_CORE_BIST_READ_CTRL                  0x90
+#define ATCPHY_CORE_BIST_READ_CTRL_LN0_PHY_STATUS_RE BIT2
+#define ATCPHY_CORE_PHY_STAT                        0x9C
+#define ATCPHY_CORE_PHY_STAT_LN0_UNK0               BIT0
+#define ATCPHY_CORE_PHY_STAT_LN0_UNK23              BIT23
+#define ATCPHY_CORE_BIST_PHY_CFG0                   0xA8
+#define ATCPHY_CORE_BIST_PHY_CFG0_LN0_RESET_N       BIT0
+#define ATCPHY_CORE_BIST_PHY_CFG1                   0xAC
+#define ATCPHY_CORE_BIST_PHY_CFG1_LN0_PWR_DOWN_MASK 0x3C00
+#define ATCPHY_CORE_BIST_PHY_CFG1_LN0_PWR_DOWN_SHIFT 10
+
+#define ATCPHY_CORE_POWER_CTRL                      0x20000
+#define ATCPHY_CORE_POWER_APB_RESET_N               BIT3
+#define ATCPHY_CORE_POWER_PHY_RESET_N               BIT4
+
+#define ATCPHY_PHY_STAT_TIMEOUT_US                  10000
+
+//
+// Poll Addr until (read & Mask) == Target, or TimeoutUs elapses.
+//
+STATIC EFI_STATUS AtcPhyPoll32(IN UINTN Addr, IN UINT32 Mask, IN UINT32 Target, IN UINT32 TimeoutUs) {
+  UINT32 Elapsed;
+
+  for (Elapsed = 0; Elapsed < TimeoutUs; Elapsed += 10) {
+    if ((MmioRead32(Addr) & Mask) == Target) {
+      return EFI_SUCCESS;
+    }
+    MicroSecondDelay(10);
+  }
+
+  return ((MmioRead32(Addr) & Mask) == Target) ? EFI_SUCCESS : EFI_TIMEOUT;
+}
+
+//
+// Apple vendor CIO registers. dwc3_apple_setup_cio, dwc3-apple.c:150-163,
+// carrying the upstream comment "without these USB3 devices sometimes don't
+// work" (dwc3-apple.c:110-111). Nothing in our chain used to write these.
+//
+STATIC VOID Dwc3AppleSetupCio(IN UINTN Dwc3ControllerBaseReg) {
+  UINT32 LinkTimers;
+
+  MmioWrite32(Dwc3ControllerBaseReg + DWC3_APPLE_CIO_UNK_CD38, DWC3_APPLE_CIO_UNK_CD38_VAL);
+  MmioWrite32(Dwc3ControllerBaseReg + DWC3_APPLE_CIO_UNK_CD3C, DWC3_APPLE_CIO_UNK_CD3C_VAL);
+
+  //
+  // Read-modify-write: upstream sets named fields rather than the whole
+  // register, so bits outside these three are left as the hardware had them.
+  //
+  LinkTimers = MmioRead32(Dwc3ControllerBaseReg + DWC3_APPLE_CIO_LINK_TIMERS);
+  LinkTimers &= ~(UINT32)(DWC3_APPLE_LINK_HP_TIMER_MASK |
+                          DWC3_APPLE_LINK_PM_LC_TIMER_MASK |
+                          DWC3_APPLE_LINK_PM_ENTRY_MASK);
+  LinkTimers |= (DWC3_APPLE_LINK_HP_TIMER_VAL << DWC3_APPLE_LINK_HP_TIMER_SHIFT) |
+                (DWC3_APPLE_LINK_PM_LC_TIMER_VAL << DWC3_APPLE_LINK_PM_LC_TIMER_SHIFT) |
+                (DWC3_APPLE_LINK_PM_ENTRY_VAL << DWC3_APPLE_LINK_PM_ENTRY_SHIFT);
+  MmioWrite32(Dwc3ControllerBaseReg + DWC3_APPLE_CIO_LINK_TIMERS, LinkTimers);
+
+  DEBUG((DEBUG_INFO, "Dwc3AppleSetupCio: CIO regs programmed (link timers now 0x%x)\n", LinkTimers));
+}
+
+//
+// dwc3_enable_susphy, core.c:111-136. Called from dwc3-apple.c:271 with the
+// comment "This platform requires SUSPHY to be enabled here already in order
+// to properly configure the PHY and switch dwc3's PIPE interface to USB3 PHY."
+// So this MUST run before the PIPE switch below, not after.
+//
+STATIC VOID Dwc3EnableSusphy(IN DWC3_CONTROLLER *Controller) {
+  MmioOr32((UINTN)&Controller->GUsb3PipeCtl[0], DWC3_GUSB3PIPECTL_SUSPHY);
+  MmioOr32((UINTN)&Controller->GUsb2PhyCfg[0], DWC3_GUSB2PHYCFG_SUSPHY);
+  MemoryFence();
+}
+
+//
+// Park the PIPE mux back on the dummy backend. Used as the failure path below:
+// a half-switched mux is worse than no switch at all, and dummy is the state
+// the rest of the boot chain expects for a USB2-only port.
+//
+STATIC VOID AtcPhyPipeParkDummy(IN UINTN PipeHandler) {
+  UINT32 MuxCtrl;
+
+  MuxCtrl = MmioRead32(PipeHandler + ATCPHY_PIPEHANDLER_MUX_CTRL);
+  MuxCtrl &= ~(UINT32)(ATCPHY_PIPEHANDLER_MUX_CLK_MASK | ATCPHY_PIPEHANDLER_MUX_DATA_MASK);
+  MuxCtrl |= (ATCPHY_PIPEHANDLER_MUX_CLK_DUMMY << ATCPHY_PIPEHANDLER_MUX_CLK_SHIFT) |
+             (ATCPHY_PIPEHANDLER_MUX_DATA_DUMMY << ATCPHY_PIPEHANDLER_MUX_DATA_SHIFT);
+  MmioWrite32(PipeHandler + ATCPHY_PIPEHANDLER_MUX_CTRL, MuxCtrl);
+  MemoryFence();
+}
+
+//
+// Switch the pipehandler PIPE mux from the dummy backend to the live USB3 PHY.
+//
+// This is a transcription of atcphy_configure_pipehandler_usb3 (Asahi atc.c:
+// 975-1079, host path), by way of m1n1's op-table implementation of the same
+// sequence in src/atcphy_core.c:853-942. Line citations are upstream atc.c.
+//
+// PRECONDITION: the ATC PHY itself is already configured and out of reset.
+// This function does NOT configure the PHY -- it cannot, that needs the
+// tunable blobs and PLL sequencing that live in m1n1. It only moves the mux.
+//
+STATIC EFI_STATUS AtcPhyPipeSwitchToUsb3(IN UINTN PipeHandler, IN UINTN PhyCore) {
+  EFI_STATUS Status;
+  UINT32     RegVal;
+
+  //
+  // atcphy_pipehandler_check, atc.c:956-973: a previous attempt may have left
+  // the lock held. Release it before requesting it again, or the request below
+  // never completes.
+  //
+  if (MmioRead32(PipeHandler + ATCPHY_PIPEHANDLER_LOCK_ACK) & ATCPHY_PIPEHANDLER_LOCK_EN) {
+    DEBUG((DEBUG_WARN, "AtcPhyPipeSwitchToUsb3: lock already held, clearing first\n"));
+    MmioAnd32(PipeHandler + ATCPHY_PIPEHANDLER_LOCK_REQ, ~(UINT32)ATCPHY_PIPEHANDLER_LOCK_EN);
+    AtcPhyPoll32(PipeHandler + ATCPHY_PIPEHANDLER_LOCK_ACK, ATCPHY_PIPEHANDLER_LOCK_EN, 0,
+                 ATCPHY_PIPEHANDLER_LOCK_TIMEOUT_US);
+  }
+
+  //
+  // Force-disable link detection while the mux moves, atc.c:989-995.
+  //
+  MmioAnd32(PipeHandler + ATCPHY_PIPEHANDLER_OVERRIDE_VALUES,
+            ~(UINT32)(ATCPHY_PIPEHANDLER_OVERRIDE_VAL_RXDETECT0 |
+                      ATCPHY_PIPEHANDLER_OVERRIDE_VAL_RXDETECT1));
+  MmioOr32(PipeHandler + ATCPHY_PIPEHANDLER_OVERRIDE, ATCPHY_PIPEHANDLER_OVERRIDE_RXVALID);
+  MmioOr32(PipeHandler + ATCPHY_PIPEHANDLER_OVERRIDE, ATCPHY_PIPEHANDLER_OVERRIDE_RXDETECT);
+
+  //
+  // atcphy_pipehandler_lock, atc.c:920-940.
+  //
+  MmioOr32(PipeHandler + ATCPHY_PIPEHANDLER_LOCK_REQ, ATCPHY_PIPEHANDLER_LOCK_EN);
+  Status = AtcPhyPoll32(PipeHandler + ATCPHY_PIPEHANDLER_LOCK_ACK, ATCPHY_PIPEHANDLER_LOCK_EN,
+                        ATCPHY_PIPEHANDLER_LOCK_EN, ATCPHY_PIPEHANDLER_LOCK_TIMEOUT_US);
+  if (EFI_ERROR(Status)) {
+    DEBUG((DEBUG_ERROR, "AtcPhyPipeSwitchToUsb3: pipehandler lock not acked, aborting\n"));
+    return Status;
+  }
+
+  //
+  // The BIST dance, atc.c:1004-1037. This is what actually brings lane 0 of the
+  // USB3 PHY into a state the pipehandler will accept as a clock source.
+  //
+  MmioOr32(PhyCore + ATCPHY_CORE_BIST_PHY_CFG0, ATCPHY_CORE_BIST_PHY_CFG0_LN0_RESET_N);
+  MmioOr32(PhyCore + ATCPHY_CORE_BIST_OV_CFG, ATCPHY_CORE_BIST_OV_CFG_LN0_RESET_N_OV);
+  Status = AtcPhyPoll32(PhyCore + ATCPHY_CORE_PHY_STAT, ATCPHY_CORE_PHY_STAT_LN0_UNK23, 0,
+                        ATCPHY_PHY_STAT_TIMEOUT_US);
+  if (EFI_ERROR(Status)) {
+    DEBUG((DEBUG_ERROR, "AtcPhyPipeSwitchToUsb3: PHY_STAT.LN0_UNK23 never cleared (PHY not "
+                        "configured? m1n1 must have run the ATC PHY bringup first)\n"));
+    goto Unlock;
+  }
+
+  MmioOr32(PhyCore + ATCPHY_CORE_BIST_READ_CTRL, ATCPHY_CORE_BIST_READ_CTRL_LN0_PHY_STATUS_RE);
+  MmioAnd32(PhyCore + ATCPHY_CORE_BIST_READ_CTRL, ~(UINT32)ATCPHY_CORE_BIST_READ_CTRL_LN0_PHY_STATUS_RE);
+
+  RegVal = MmioRead32(PhyCore + ATCPHY_CORE_BIST_PHY_CFG1);
+  RegVal &= ~(UINT32)ATCPHY_CORE_BIST_PHY_CFG1_LN0_PWR_DOWN_MASK;
+  RegVal |= 3u << ATCPHY_CORE_BIST_PHY_CFG1_LN0_PWR_DOWN_SHIFT;
+  MmioWrite32(PhyCore + ATCPHY_CORE_BIST_PHY_CFG1, RegVal);
+
+  MmioOr32(PhyCore + ATCPHY_CORE_BIST_OV_CFG, ATCPHY_CORE_BIST_OV_CFG_LN0_PWR_DOWN_OV);
+  MmioOr32(PhyCore + ATCPHY_CORE_BIST_CIOPHY_CFG1, ATCPHY_CORE_BIST_CIOPHY_CFG1_CLK_EN);
+  MmioOr32(PhyCore + ATCPHY_CORE_BIST_CIOPHY_CFG1, ATCPHY_CORE_BIST_CIOPHY_CFG1_BIST_EN);
+  MmioWrite32(PhyCore + ATCPHY_CORE_BIST_CIOPHY_CFG1, 0);
+
+  Status = AtcPhyPoll32(PhyCore + ATCPHY_CORE_PHY_STAT, ATCPHY_CORE_PHY_STAT_LN0_UNK0,
+                        ATCPHY_CORE_PHY_STAT_LN0_UNK0, ATCPHY_PHY_STAT_TIMEOUT_US);
+  if (EFI_ERROR(Status)) {
+    DEBUG((DEBUG_ERROR, "AtcPhyPipeSwitchToUsb3: PHY_STAT.LN0_UNK0 never set\n"));
+    goto Unlock;
+  }
+  Status = AtcPhyPoll32(PhyCore + ATCPHY_CORE_PHY_STAT, ATCPHY_CORE_PHY_STAT_LN0_UNK23, 0,
+                        ATCPHY_PHY_STAT_TIMEOUT_US);
+  if (EFI_ERROR(Status)) {
+    DEBUG((DEBUG_ERROR, "AtcPhyPipeSwitchToUsb3: PHY_STAT.LN0_UNK23 never re-cleared\n"));
+    goto Unlock;
+  }
+
+  //
+  // Clear reset for the non-selected USB3 PHY, atc.c:1043-1046.
+  //
+  RegVal = MmioRead32(PipeHandler + ATCPHY_PIPEHANDLER_NONSELECTED_OVERRIDE);
+  RegVal &= ~(UINT32)ATCPHY_PIPEHANDLER_NATIVE_POWER_DOWN_MASK;
+  RegVal |= 3u << ATCPHY_PIPEHANDLER_NATIVE_POWER_DOWN_SHIFT;
+  MmioWrite32(PipeHandler + ATCPHY_PIPEHANDLER_NONSELECTED_OVERRIDE, RegVal);
+  MmioAnd32(PipeHandler + ATCPHY_PIPEHANDLER_NONSELECTED_OVERRIDE,
+            ~(UINT32)ATCPHY_PIPEHANDLER_NATIVE_RESET);
+
+  //
+  // More BIST, atc.c:1049-1053.
+  //
+  MmioWrite32(PhyCore + ATCPHY_CORE_BIST_OV_CFG, 0);
+  MmioOr32(PhyCore + ATCPHY_CORE_BIST_CIOPHY_CFG1, ATCPHY_CORE_BIST_CIOPHY_CFG1_CLK_EN);
+  MmioOr32(PhyCore + ATCPHY_CORE_BIST_CIOPHY_CFG1, ATCPHY_CORE_BIST_CIOPHY_CFG1_BIST_EN);
+
+  //
+  // The mux itself, atc.c:1056-1065. Clock off, then data to USB3, then clock
+  // to USB3, 10 us apart. Order and spacing are upstream's.
+  //
+  RegVal = MmioRead32(PipeHandler + ATCPHY_PIPEHANDLER_MUX_CTRL);
+  RegVal &= ~(UINT32)ATCPHY_PIPEHANDLER_MUX_CLK_MASK;
+  RegVal |= ATCPHY_PIPEHANDLER_MUX_CLK_OFF << ATCPHY_PIPEHANDLER_MUX_CLK_SHIFT;
+  MmioWrite32(PipeHandler + ATCPHY_PIPEHANDLER_MUX_CTRL, RegVal);
+  MicroSecondDelay(10);
+
+  RegVal = MmioRead32(PipeHandler + ATCPHY_PIPEHANDLER_MUX_CTRL);
+  RegVal &= ~(UINT32)ATCPHY_PIPEHANDLER_MUX_DATA_MASK;
+  RegVal |= ATCPHY_PIPEHANDLER_MUX_DATA_USB3 << ATCPHY_PIPEHANDLER_MUX_DATA_SHIFT;
+  MmioWrite32(PipeHandler + ATCPHY_PIPEHANDLER_MUX_CTRL, RegVal);
+  MicroSecondDelay(10);
+
+  RegVal = MmioRead32(PipeHandler + ATCPHY_PIPEHANDLER_MUX_CTRL);
+  RegVal &= ~(UINT32)ATCPHY_PIPEHANDLER_MUX_CLK_MASK;
+  RegVal |= ATCPHY_PIPEHANDLER_MUX_CLK_USB3 << ATCPHY_PIPEHANDLER_MUX_CLK_SHIFT;
+  MmioWrite32(PipeHandler + ATCPHY_PIPEHANDLER_MUX_CTRL, RegVal);
+  MicroSecondDelay(10);
+
+  //
+  // Remove the link detection override, atc.c:1068-1069.
+  //
+  MmioAnd32(PipeHandler + ATCPHY_PIPEHANDLER_OVERRIDE, ~(UINT32)ATCPHY_PIPEHANDLER_OVERRIDE_RXVALID);
+  MmioAnd32(PipeHandler + ATCPHY_PIPEHANDLER_OVERRIDE, ~(UINT32)ATCPHY_PIPEHANDLER_OVERRIDE_RXDETECT);
+
+  Status = EFI_SUCCESS;
+
+Unlock:
+  //
+  // atcphy_pipehandler_unlock, host mode only, atc.c:947-949,1073.
+  //
+  MmioAnd32(PipeHandler + ATCPHY_PIPEHANDLER_LOCK_REQ, ~(UINT32)ATCPHY_PIPEHANDLER_LOCK_EN);
+  AtcPhyPoll32(PipeHandler + ATCPHY_PIPEHANDLER_LOCK_ACK, ATCPHY_PIPEHANDLER_LOCK_EN, 0,
+               ATCPHY_PIPEHANDLER_LOCK_TIMEOUT_US);
+
+  if (EFI_ERROR(Status)) {
+    //
+    // A half-switched mux is worse than none: park it back on dummy so the
+    // port degrades to USB2 rather than to an undefined PIPE topology.
+    //
+    DEBUG((DEBUG_ERROR, "AtcPhyPipeSwitchToUsb3: FAILED, parking mux back on dummy\n"));
+    AtcPhyPipeParkDummy(PipeHandler);
+  }
+
+  return Status;
+}
+
+//
+// Finish the USB3 handoff m1n1 deliberately left half-done for this port.
+//
+// WHY THIS EXISTS
+// ---------------
+// Asahi's dwc3-apple.c:29 states the ordering rule: the PIPE mux switch has to
+// happen AFTER dwc3 core init. m1n1 cannot satisfy that, because dwc3 core init
+// happens here in Mu, after m1n1 is gone. When m1n1 switched the mux itself, the
+// result was that Dwc3ControllerSoftReset above then asserted
+// GUSB3PIPECTL.PHYSOFTRST for 100 ms on an already-live USB3 PIPE -- something no
+// Asahi code path ever does, and a good explanation for SuperSpeed never training
+// on this port despite the PHY reporting itself configured.
+//
+// So the work is split. m1n1 does the part only it can do (tunables, PLLs, lanes,
+// crossbar, PHY_RESET_N) and parks the mux on DUMMY. We do the part that must
+// come after our own core init: CIO regs, SUSPHY, then the mux.
+//
+// HOW WE KNOW IT IS OUR TURN
+// --------------------------
+// Two conditions, both required, and we do nothing unless both hold:
+//   1. the platform opted this port in via PcdAppleUsb3PipeSwitchPortMask;
+//   2. the ATC PHY reports powered and out of reset (POWER_CTRL APB_RESET_N and
+//      PHY_RESET_N both set), which is the state m1n1 leaves behind and is not
+//      the state a USB2-only iBoot handoff leaves behind.
+// If either fails we leave the port exactly as it was: USB2-only, working.
+//
+STATIC VOID AtcPhyFinishDeferredUsb3Switch(IN UINT32 PortIndex, IN UINTN Dwc3ControllerBaseReg,
+                                           IN DWC3_CONTROLLER *Dwc3Controller) {
+  CHAR8       NodeName[31];
+  dt_node_t   *DrdNode;
+  dt_node_t   *PhyNode;
+  UINT64      PipeHandlerBase;
+  UINT64      PhyCoreBase;
+  UINT32      PowerCtrl;
+  EFI_STATUS  Status;
+
+  if ((PcdGet32(PcdAppleUsb3PipeSwitchPortMask) & (1u << PortIndex)) == 0) {
+    return;
+  }
+
+  AsciiSPrint(NodeName, ARRAY_SIZE(NodeName), "usb-drd%d", PortIndex);
+  DrdNode = dt_get(NodeName);
+  AsciiSPrint(NodeName, ARRAY_SIZE(NodeName), "atc-phy%d", PortIndex);
+  PhyNode = dt_get(NodeName);
+  if (DrdNode == NULL || PhyNode == NULL) {
+    DEBUG((DEBUG_WARN, "AtcPhyFinishDeferredUsb3Switch: port %d missing usb-drd or atc-phy node, "
+                       "skipping USB3 switch\n", PortIndex));
+    return;
+  }
+
+  if (dt_node_reg(DrdNode, ATCPHY_DRD_REG_PIPEHANDLER, &PipeHandlerBase, NULL) < 0 ||
+      dt_node_reg(PhyNode, ATCPHY_ATC_REG_CORE, &PhyCoreBase, NULL) < 0) {
+    DEBUG((DEBUG_WARN, "AtcPhyFinishDeferredUsb3Switch: port %d missing pipehandler/core reg, "
+                       "skipping USB3 switch\n", PortIndex));
+    return;
+  }
+
+  PowerCtrl = MmioRead32((UINTN)PhyCoreBase + ATCPHY_CORE_POWER_CTRL);
+  if ((PowerCtrl & (ATCPHY_CORE_POWER_APB_RESET_N | ATCPHY_CORE_POWER_PHY_RESET_N)) !=
+      (ATCPHY_CORE_POWER_APB_RESET_N | ATCPHY_CORE_POWER_PHY_RESET_N)) {
+    DEBUG((DEBUG_INFO, "AtcPhyFinishDeferredUsb3Switch: port %d ATC PHY not configured "
+                       "(POWER_CTRL=0x%x); leaving port on USB2\n", PortIndex, PowerCtrl));
+    return;
+  }
+
+  DEBUG((DEBUG_INFO, "AtcPhyFinishDeferredUsb3Switch: port %d PHY is configured "
+                     "(POWER_CTRL=0x%x), finishing USB3 handoff\n", PortIndex, PowerCtrl));
+
+  //
+  // P3 then P2 then P1, in dwc3_apple_init's order (dwc3-apple.c:260-272):
+  // CIO regs, PRTCAP (already set by our caller), SUSPHY, then the mux.
+  //
+  Dwc3AppleSetupCio(Dwc3ControllerBaseReg);
+  Dwc3EnableSusphy(Dwc3Controller);
+
+  Status = AtcPhyPipeSwitchToUsb3((UINTN)PipeHandlerBase, (UINTN)PhyCoreBase);
+  DEBUG((DEBUG_INFO, "AtcPhyFinishDeferredUsb3Switch: port %d USB3 PIPE switch %r "
+                     "(MUX_CTRL now 0x%x)\n", PortIndex, Status,
+                     MmioRead32((UINTN)PipeHandlerBase + ATCPHY_PIPEHANDLER_MUX_CTRL)));
+}
 
 STATIC VOID Dwc3XhciSetBeatBurstLength(IN DWC3_CONTROLLER *Controller) {
   MmioAndThenOr32 ((UINTN)&Controller->GSBusCfg0, ~USB3_ENABLE_BEAT_BURST_MASK,
@@ -203,6 +615,7 @@ AppleUsbTypeCBringupDxeBringupCallback(IN EFI_EVENT Event, IN VOID *Context)
   UINT64 Dwc3ControllerBaseAddr;
   CHAR8 Dwc3RegNodeName[31];
   UINT32 Dwc3ControllerRegSize;
+  NON_DISCOVERABLE_DEVICE_INIT DeviceInit;
   //
   // Close the event so that we don't have duplicate events floating around.
   //
@@ -236,9 +649,23 @@ AppleUsbTypeCBringupDxeBringupCallback(IN EFI_EVENT Event, IN VOID *Context)
     // Register the controller as a non-registerable XHCI DMA-coherent controller. (All DMA on Apple systems must be cache-coherent)
     // Note: if this doesn't end up working, change the DMA type to non-coherent as one of the first steps to try.
     //
-    Status = RegisterNonDiscoverableMmioDevice(NonDiscoverableDeviceTypeXhci, 
+    DeviceInit = AppleUsbTypeCBringupDxeInitializeUsbController(Dwc3ControllerBaseAddr);
+
+    //
+    // dwc3 core init has just run (inside the call above) and xhci cannot bind
+    // until RegisterNonDiscoverableMmioDevice below. That makes this exact spot
+    // the only window in the whole boot chain that satisfies Asahi's ordering
+    // rule for the USB3 PIPE switch: after core init, before xhci. No-op unless
+    // m1n1 configured this port's PHY and deferred the switch to us.
+    //
+    AtcPhyFinishDeferredUsb3Switch(
+      Dwc3Index,
+      (UINTN)Dwc3ControllerBaseAddr,
+      (DWC3_CONTROLLER *)(UINTN)(Dwc3ControllerBaseAddr + DWC3_REG_OFFSET));
+
+    Status = RegisterNonDiscoverableMmioDevice(NonDiscoverableDeviceTypeXhci,
              NonDiscoverableDeviceDmaTypeCoherent,
-             AppleUsbTypeCBringupDxeInitializeUsbController(Dwc3ControllerBaseAddr),
+             DeviceInit,
              NULL,
              1,
              Dwc3ControllerBaseAddr,

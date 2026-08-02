@@ -101,6 +101,20 @@
   # Number of DWC3 controllers on the SoC.
   #
   gAppleSiliconPkgTokenSpaceGuid.PcdAppleNumDwc3Controllers|1|UINT32|0x00004703
+  #
+  # Bitmask of usb-drdN ports whose USB3 PIPE mux AppleUsbTypeCBringupDxe is
+  # allowed to switch away from the dummy backend after its dwc3 core init.
+  #
+  # This is an opt-in for a two-stage handoff: m1n1 configures the ATC PHY and
+  # deliberately leaves the mux on DUMMY, because the switch has to happen after
+  # dwc3 core init (Asahi dwc3-apple.c:29) and that only exists here. Setting a
+  # bit here does NOT force a switch -- the driver additionally requires the PHY
+  # to report itself powered and out of reset, so a port whose PHY m1n1 never
+  # touched is left on USB2 regardless.
+  #
+  # Default 0: no port opts in, behaviour identical to before this existed.
+  #
+  gAppleSiliconPkgTokenSpaceGuid.PcdAppleUsb3PipeSwitchPortMask|0x00000000|UINT32|0x00004704
   #File name GUID for frontpage app
   gAppleSiliconPkgTokenSpaceGuid.PcdUIApplicationFile|{ 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00 }|VOID*|0x00004408
 
