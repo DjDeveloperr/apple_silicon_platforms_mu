@@ -189,6 +189,10 @@ run_logged "Building $profile with native CLANGPDB" stuart_build -c "$platform_b
 fd=$build_dir/MacBookProEarly2023-AARCH64/DEBUG_CLANGPDB/FV/MACBOOKPROEARLY2023_EFI.fd
 test -f "$fd"
 cp "$fd" "$artifact_dir/MACBOOKPROEARLY2023_EFI.fd"
+# The build-time links are implementation details, not source changes. Remove
+# them before the manifest samples Git state so a clean native build is sealed
+# as clean instead of recording the two temporary paths as provenance drift.
+rm "$source_root/Build" "$source_root/Conf"
 llvm_identity=$(
     {
         "$llvm_bin/clang" --version
