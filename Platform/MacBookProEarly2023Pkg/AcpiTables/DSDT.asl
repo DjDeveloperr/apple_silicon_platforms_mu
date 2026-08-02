@@ -256,11 +256,32 @@
             })
 
             Method (_STA) {
-                // 2026-08-01: XHC2 DISABLED. With it enabled Windows enumerated the
-                // right-side controller ("Windows right-side xHCI HCCPARAMS1" appeared
-                // for the first time) but the boot stalled BEFORE any driver started,
-                // which matches the recorded storage-death signature for XHC2-on.
-                Return (0x0)
+                // 2026-08-02: RE-ENABLED, because the evidence that disabled it
+                // is no longer trustworthy.
+                //
+                // The 2026-08-01 note read: "With it enabled Windows enumerated
+                // the right-side controller but the boot stalled BEFORE any
+                // driver started, which matches the recorded storage-death
+                // signature for XHC2-on." That symptom -- an early stall with no
+                // driver activity -- is exactly what m1n1's rendezvous defect
+                // produced, and that defect was killing roughly half of ALL
+                // boots regardless of what was enabled. It was diagnosed and
+                // fixed today (m1n1 ed83a306): hv_cpus_in_guest is cleared only
+                // by hv_exc_entry(), seven return-to-guest paths skipped it, and
+                // hv_rendezvous() panicked the machine rather than waiting. So
+                // the XHC2-on boots were competing with a coin flip.
+                //
+                // Nothing about this device looks wrong on inspection: GSIV 39
+                // is a routable SPI, unlike COM0's 1198 and XHC1's 1274 which
+                // fell in the reserved 1024..4095 gap and produced
+                // CM_PROB_NORMAL_CONFLICT. m1n1 already stage-2 aliases the
+                // MMIO (0x61000000 -> 0xF02280000). And the 0x144 bugcheck this
+                // was blamed for is already recorded as probabilistic -- it
+                // occurs with XHC2 OFF as well.
+                //
+                // With the rendezvous fix in place an A/B finally carries
+                // information: a stall now is evidence against XHC2, not noise.
+                Return (0x0F)
             }
         }
 
