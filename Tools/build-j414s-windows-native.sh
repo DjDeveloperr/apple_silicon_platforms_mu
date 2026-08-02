@@ -107,6 +107,18 @@ cleanup() {
     rmdir "$lock_dir" 2>/dev/null || true
 }
 trap cleanup EXIT HUP INT TERM
+if test ! -d "$build_dir"; then
+    previous_build=$(find "$output_root/$profile" -mindepth 2 -maxdepth 2 -type d -name Build \
+        ! -path "$build_dir" -print 2>/dev/null | while IFS= read -r candidate; do
+            printf '%s %s\n' "$(stat -f %m "$candidate")" "$candidate"
+        done | sort -nr | sed -n '1s/^[0-9][0-9]* //p')
+    if test -n "$previous_build"; then
+        echo "Seeding incremental Mu build from $(dirname "$previous_build")"
+        cp -cR "$previous_build" "$build_dir"
+        previous_conf=$(dirname "$previous_build")/Conf
+        test ! -d "$previous_conf" || cp -cR "$previous_conf" "$conf_dir"
+    fi
+fi
 mkdir -p "$build_dir" "$conf_dir" "$artifact_dir"
 mkdir -p "$toolchain_dir"
 native_log=$output_dir/native-build.log
