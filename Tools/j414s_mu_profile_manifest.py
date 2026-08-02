@@ -136,7 +136,7 @@ PROFILES = {
         "gpu": True,
         "wireless": True,
         "battery": True,
-        "expected_ffs_count": 88,
+        "expected_ffs_count": 87,
     },
     "ans-gpu-wireless": {
         "profile_abi": "ntasi.j414s.windows.ans-gpu-wireless-battery.v1",
