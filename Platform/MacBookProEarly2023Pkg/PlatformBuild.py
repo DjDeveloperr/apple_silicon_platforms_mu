@@ -190,6 +190,15 @@ class PlatformBuilder( UefiBuilder, BuildSettingsManager):
         profile_values = {
             "baseline": {"ans_acpi": "FALSE", "ans": "FALSE", "gpu": "0", "wireless": "0"},
             "ans": {"ans": "TRUE", "gpu": "0", "wireless": "0", "ans_acpi": "TRUE"},
+            # Firmware-owned internal boot: attach to iBoot's live ANS without
+            # resetting it, publish read-only Block I/O for the ESP, then keep
+            # the live RTKit/SART/reserved-buffer state for AppleNvme's warm
+            # adoption path at ExitBootServices.
+            "internal-storage": {
+                "ans": "TRUE", "gpu": "1", "wireless": "1",
+                "ans_acpi": "TRUE", "ans_dxe": "TRUE",
+                "ans_block_io": "TRUE", "ans_preserve": "TRUE",
+            },
             # Single-variable control for the BUGCODE_USB3_DRIVER 0x144
             # investigation: byte-for-byte the same FFS set as "ans" (the
             # AppleNANDStorageDxe module is still in the FV) but NTAS2003 is
@@ -210,10 +219,14 @@ class PlatformBuilder( UefiBuilder, BuildSettingsManager):
                          "ans_acpi": "TRUE", "battery": "1"},
             "gpu": {"ans_acpi": "FALSE", "ans": "FALSE", "gpu": "1", "wireless": "0"},
             "ans-gpu": {"ans": "TRUE", "gpu": "1", "wireless": "0", "ans_acpi": "TRUE"},
+            "ans-gpu-usb3-dual": {"ans": "TRUE", "gpu": "1", "wireless": "0",
+                                    "ans_acpi": "TRUE", "usb3_pipe_mask": "0x6"},
             "gpu-no-xhc2": {"ans_acpi": "FALSE", "ans": "FALSE", "gpu": "1", "wireless": "0", "xhc2": "0"},
             "ans-gpu-no-xhc2": {"ans": "TRUE", "gpu": "1", "wireless": "0", "ans_acpi": "TRUE", "xhc2": "0"},
             "wireless": {"ans_acpi": "FALSE", "ans": "FALSE", "gpu": "0", "wireless": "1"},
             "gpu-wireless": {"ans_acpi": "FALSE", "ans": "FALSE", "gpu": "1", "wireless": "1"},
+            "gpu-wireless-usb3-dual": {"ans_acpi": "FALSE", "ans": "FALSE", "gpu": "1",
+                                         "wireless": "1", "usb3_pipe_mask": "0x6"},
             "gpu-wireless-no-xhc2": {"ans_acpi": "FALSE", "ans": "FALSE", "gpu": "1", "wireless": "1", "xhc2": "0"},
             # 2026-08-01: gpu_acpi was briefly pinned "0" to isolate the GPU
             # driver, on the belief that AppleAgxGpu 0.6.0.0 had retired the
@@ -227,6 +240,9 @@ class PlatformBuilder( UefiBuilder, BuildSettingsManager):
                                  # Battery (NTAS0053) added 2026-07-31: no GSIV, no memory
                                  # window, read-only SMC access via SMCG's device interface.
                                  "battery": "1"},
+            "ans-gpu-wireless-usb3-dual": {"ans": "TRUE", "gpu": "1", "wireless": "1",
+                                             "ans_acpi": "TRUE", "battery": "1",
+                                             "usb3_pipe_mask": "0x6"},
             "ans-gpu-wireless-no-xhc2": {"ans": "TRUE", "gpu": "1", "wireless": "1", "ans_acpi": "TRUE",
                                            "battery": "1", "xhc2": "0"},
             # 2026-08-02: ans-gpu-wireless with ANS never published to Windows.
@@ -279,6 +295,8 @@ class PlatformBuilder( UefiBuilder, BuildSettingsManager):
             # publication was off while the firmware was built with it on. The
             # two dicts are now key-for-key in step; the test suite pins that.
             "gpu-noacpi": {"ans_acpi": "FALSE", "ans": "FALSE", "gpu": "1", "wireless": "0", "gpu_acpi": "0"},
+            "gpu-usb3-dual": {"ans_acpi": "FALSE", "ans": "FALSE", "gpu": "1",
+                               "wireless": "0", "usb3_pipe_mask": "0x6"},
             "media-gpu": {"ans_acpi": "FALSE", "ans": "FALSE", "gpu": "1", "wireless": "0", "media": "1"},
             # Battery: baseline plus BAT0 (NTAS0053) and nothing else. A single
             # variable on top of the only configuration currently known to boot
@@ -293,7 +311,16 @@ class PlatformBuilder( UefiBuilder, BuildSettingsManager):
         # cannot silently inherit an enabled media publication by omission.
         for values in profile_values.values():
             values.setdefault("xhc2", "1")
+            # Phase 1 isolates the left boot-volume port while XHC2 is hidden.
+            # Preserve the proven right-port semantics for every profile that
+            # still publishes XHC2. The value is also sealed in the manifest.
+            values.setdefault(
+                "usb3_pipe_mask", "0x4" if values["xhc2"] == "1" else "0x2"
+            )
             values.setdefault("media", "0")
+            values.setdefault("ans_dxe", "FALSE")
+            values.setdefault("ans_block_io", "FALSE")
+            values.setdefault("ans_preserve", "FALSE")
             # Same rule for the battery devnode: a profile that does not name
             # it does not get it. Written as a default so a profile added later
             # cannot inherit a battery publication by omission.
@@ -304,6 +331,16 @@ class PlatformBuilder( UefiBuilder, BuildSettingsManager):
             # omission -- and so a future "gpu-noacpi" control can decouple the
             # two by naming gpu_acpi explicitly, exactly as ans-noacpi does.
             values.setdefault("gpu_acpi", values["gpu"])
+            if values["ans_preserve"] == "TRUE" and not (
+                values["ans"] == "TRUE"
+                and values["ans_acpi"] == "TRUE"
+                and values["ans_dxe"] == "TRUE"
+                and values["ans_block_io"] == "TRUE"
+            ):
+                raise ValueError(
+                    "ANS live handoff requires the driver, ACPI publication, "
+                    "DXE bring-up, and Block I/O"
+                )
         if profile not in profile_values:
             raise ValueError(
                 "NTASI_MU_PROFILE must be one of: "
@@ -364,6 +401,21 @@ class PlatformBuilder( UefiBuilder, BuildSettingsManager):
             "Selected by NTASI_MU_PROFILE",
         )
         self.env.SetValue(
+            "BLD_*_NTASI_ANS_DXE_BRINGUP",
+            profile_values[profile]["ans_dxe"],
+            "Selected by NTASI_MU_PROFILE",
+        )
+        self.env.SetValue(
+            "BLD_*_NTASI_ANS_PUBLISH_BLOCK_IO",
+            profile_values[profile]["ans_block_io"],
+            "Selected by NTASI_MU_PROFILE",
+        )
+        self.env.SetValue(
+            "BLD_*_NTASI_ANS_PRESERVE_FOR_OS",
+            profile_values[profile]["ans_preserve"],
+            "Selected by NTASI_MU_PROFILE",
+        )
+        self.env.SetValue(
             "BLD_*_NTASI_J414S_GPU_RESOURCE_PROFILE",
             profile_values[profile]["gpu"],
             "Selected by NTASI_MU_PROFILE",
@@ -401,6 +453,11 @@ class PlatformBuilder( UefiBuilder, BuildSettingsManager):
         self.env.SetValue(
             "BLD_*_NTASI_ENABLE_XHC2",
             profile_values[profile]["xhc2"],
+            "Selected by NTASI_MU_PROFILE",
+        )
+        self.env.SetValue(
+            "BLD_*_NTASI_USB3_PIPE_SWITCH_PORT_MASK",
+            profile_values[profile]["usb3_pipe_mask"],
             "Selected by NTASI_MU_PROFILE",
         )
         # Media publication (MCA0/AOPA/ISP0). Like gpu and wireless this is a

@@ -11,9 +11,8 @@ the rest of Tests/, with no EDK2 build and no hardware involved.
 It pins the 2026-07-30 J414s/T6020 hardware failure in which ANS bring-up
 completed successfully and the ExitBootServices handoff then logged
 "AppleANS: RTKit handoff failed: -25" (NTASI_RTKIT_RUNTIME_ERR_BUFFER),
-caused by (a) rejecting buffer requests that carry a non-zero IOVA, which
-m1n1 adopts without replying, and (b) a 44-bit IOVA mask where m1n1 uses
-GENMASK(41, 0).
+caused by rejecting buffer requests that carry a non-zero IOVA. It also pins
+the current Asahi 44-bit IOVA field and the cold-versus-wake ownership rules.
 """
 
 from __future__ import annotations
@@ -49,8 +48,10 @@ RUNTIME_HEADER = SHARED / "AppleRtkitRuntimeCore.h"
 REQUIRED_ASSERTIONS = (
     "PASS: 2026-07-30 regression: a pre-allocated (non-zero IOVA) buffer request must NOT return -25",
     "PASS: a pre-allocated buffer request sends NO reply (matches m1n1)",
-    "PASS: bit 42 is outside the IOVA field: the request is still AP-allocated",
-    "PASS: bit 41 IS the top IOVA bit: the request is pre-allocated",
+    "PASS: bit 42 is an IOVA bit: the request is pre-allocated",
+    "PASS: bit 43 is the top IOVA bit: the request is pre-allocated",
+    "PASS: WAKE never writes a live coprocessor's CPU_CONTROL",
+    "PASS: COLD sends nothing before the coprocessor's HELLO",
     "PASS: release_shared runs for the AP-allocated buffer only",
     "PASS: the coprocessor run bit is cleared even when the quiesce failed",
     "PASS: a genuine allocation failure is still reported as -25",

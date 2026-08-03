@@ -19,6 +19,10 @@
   PLATFORM_NAME                  = MacBookProEarly2023
   DEFINE NTASI_ENABLE_WIRELESS_DART_HANDOFF = 0
   DEFINE NTASI_ENABLE_XHC2 = 1
+  # The PIPE switch is a firmware capability, selected per sealed profile.
+  # Right-enabled profiles finish port 2; phase-1 no-XHC2 profiles finish only
+  # the left boot-volume port 1. PlatformBuild.py supplies the profile value.
+  DEFINE NTASI_USB3_PIPE_SWITCH_PORT_MASK = 0x4
   DEFINE NTASI_J414S_GPU_RESOURCE_PROFILE = 0
   # Publish NTAS0023 (AppleAgxGpu) from AcpiPlatformDxe. Strictly narrower than
   # NTASI_J414S_GPU_RESOURCE_PROFILE, which only reserves the ADT-derived
@@ -30,6 +34,8 @@
   # does nothing: the whole block is nested inside it.
   DEFINE NTASI_ENABLE_GPU_ACPI_PUBLICATION = 0
   DEFINE NTASI_ANS_DXE_BRINGUP = FALSE
+  DEFINE NTASI_ANS_PUBLISH_BLOCK_IO = FALSE
+  DEFINE NTASI_ANS_PRESERVE_FOR_OS = FALSE
   DEFINE NTASI_ANS_PUBLISH_ACPI = FALSE
   # Media profile: publish MCA0 (NTAS0080), AOPA (NTAS0081) and ISP0
   # (NTAS0090) from AcpiPlatformDxe. OFF by default, and off means
@@ -56,7 +62,7 @@
   # volume microseconds before the OS loader starts, on a machine whose boot disk
   # is USB and whose DEBUG build deadloops on any ASSERT. Turn it on for a
   # deploy-verification boot with
-  #   NTASI_DEPLOY_EVIDENCE_ECHO=1 ./Tools/build-j414s-windows-profile.sh <profile>
+  #   NTASI_DEPLOY_EVIDENCE_ECHO=1 ./Tools/build-j414s-windows-native.sh <profile>
   # and leave it off for every boot whose result is meant to be attributable.
   DEFINE NTASI_DEPLOY_EVIDENCE_ECHO = 0
   PLATFORM_GUID                  = d70b31ca-2cbc-433b-885f-b8bbda409959
@@ -92,13 +98,10 @@
   gAppleSiliconPkgTokenSpaceGuid.PcdSmbiosSystemSku|"MacBook Pro (Early 2023) (Mac14,5/Mac14,6/Mac14,9/Mac14,10)"
   gAppleSiliconPkgTokenSpaceGuid.PcdAppleNumDwc3Controllers|3 # M2 Pro case is hardcoded for now.
   #
-  # Let AppleUsbTypeCBringupDxe finish the deferred USB3 PIPE switch on
-  # usb-drd2 (bit 2), the right-hand port. Gated to that port only: usb-drd1
-  # carries the boot volume, and running ATC PHY bringup on it pre-Mu is a
-  # known hang. The driver still no-ops unless m1n1 actually configured the
-  # PHY, so this is safe to leave on.
-  #
-  gAppleSiliconPkgTokenSpaceGuid.PcdAppleUsb3PipeSwitchPortMask|0x4
+  # Finish exactly the deferred USB3 PIPE selected by the sealed profile:
+  # 0x2 = left boot-volume port for phase-1 no-XHC2 isolation;
+  # 0x4 = right port for right-enabled profiles. Never select both implicitly.
+  gAppleSiliconPkgTokenSpaceGuid.PcdAppleUsb3PipeSwitchPortMask|$(NTASI_USB3_PIPE_SWITCH_PORT_MASK)
   gAppleSiliconPkgTokenSpaceGuid.PcdAppleNumDwc3Darts|6 # M2 Pro case is hardcoded for now.
   # Windows consumes GSIV 38; the AIC2 CSRT translates it to T6020 line 1832.
   gAppleSiliconPkgTokenSpaceGuid.PcdAppleAnsPublishedInterrupt|38
@@ -114,6 +117,8 @@
   # (running), which is the state every booting profile has. Flip
   # NTASI_ANS_DXE_BRINGUP to TRUE and rebuild to restore the full bring-up.
   gAppleSiliconPkgTokenSpaceGuid.PcdAppleAnsPerformDxeBringUp|$(NTASI_ANS_DXE_BRINGUP)
+  gAppleSiliconPkgTokenSpaceGuid.PcdAppleAnsPublishBlockIo|$(NTASI_ANS_PUBLISH_BLOCK_IO)
+  gAppleSiliconPkgTokenSpaceGuid.PcdAppleAnsPreserveForOs|$(NTASI_ANS_PRESERVE_FOR_OS)
   # CORRECTED 2026-07-30 (hardware-confirmed): these four were resolved
   # against the wrong PMGR register block. /arm-io/pmgr's "ps-regs" table
   # has multiple blocks (reg tuples); ANS2/APCIE_ST/APCIE_ST_SYS/

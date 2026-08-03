@@ -29,6 +29,19 @@ enum ntasi_rtkit_power_state {
     NTASI_RTKIT_POWER_INIT = 0x220,
 };
 
+/*
+ * RTKit ownership at entry determines which operations are legal. COLD
+ * releases a reset/stopped core with a plain RUN write and waits for HELLO
+ * without transmitting first. WAKE never writes CPU_CONTROL and sends INIT
+ * to the already-running coprocessor. M1N1 preserves the historical combined
+ * behaviour for existing callers.
+ */
+enum ntasi_rtkit_boot_mode {
+    NTASI_RTKIT_BOOT_MODE_M1N1 = 0,
+    NTASI_RTKIT_BOOT_MODE_COLD = 1,
+    NTASI_RTKIT_BOOT_MODE_WAKE = 2,
+};
+
 enum ntasi_rtkit_runtime_result {
     NTASI_RTKIT_RUNTIME_OK = 0,
     NTASI_RTKIT_RUNTIME_NO_MESSAGE = 1,
@@ -93,6 +106,7 @@ struct ntasi_rtkit_runtime {
     struct ntasi_rtkit_shared_buffer oslog;
     bool booted;
     bool crashed;
+    enum ntasi_rtkit_boot_mode boot_mode;
 };
 
 int ntasi_rtkit_runtime_init(struct ntasi_rtkit_runtime *runtime,

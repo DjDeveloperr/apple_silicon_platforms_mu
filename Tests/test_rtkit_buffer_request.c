@@ -20,11 +20,9 @@
  *      AP where it is; m1n1 adopts the address and sends NO reply (all three
  *      of its pre-allocated branches return before the reply block).
  *
- *   2. The IOVA field mask was 44 bits wide. m1n1's MSG_BUFFER_REQUEST_IOVA
- *      is GENMASK(41, 0) -- 42 bits. Bits 42 and 43 are not address bits, so
- *      any message setting one made a perfectly ordinary
- *      "please allocate this for me" request look like a request for a
- *      specific pre-allocated buffer at a bogus address.
+ *   2. The old local implementations disagreed on the IOVA width. Current
+ *      Asahi defines the field as GENMASK_ULL(43, 0), so bits 42 and 43 are
+ *      address bits and must survive parsing and replies.
  *
  * Separately, every unmodelled system-endpoint message used to return
  * NTASI_RTKIT_RUNTIME_ERR_PROTOCOL (-23) and abort the receive, where m1n1
@@ -274,7 +272,7 @@ static void test_ApAllocatedRequest_Replies(void)
               ((h.asc.sent[0].payload >> BUFREQ_SIZE_SHIFT) & 0xffu) == 4u);
     CHECK("the reply carries the granted device address",
           h.asc.sent_count == 1 &&
-              (h.asc.sent[0].payload & ((1ULL << 42) - 1u)) ==
+              (h.asc.sent[0].payload & ((1ULL << 44) - 1u)) ==
                   h.runtime.syslog.device_address);
     CHECK("the granted buffer is not marked IOP-owned",
           !h.runtime.syslog.iop_owned &&
@@ -310,29 +308,29 @@ static void test_PreallocatedRequest_2026_07_30_regression(void)
           h.runtime.syslog.size == (size_t)4u << 12);
 }
 
-static void test_IovaMaskIs42Bits(void)
+static void test_IovaMaskIs44Bits(void)
 {
     struct harness h;
     int status;
 
-    /* Bit 42 is NOT an address bit (m1n1: MSG_BUFFER_REQUEST_IOVA is
-     * GENMASK(41,0)). With the old 44-bit mask this payload decoded as a
-     * pre-allocated request at 0x40000000000 and was rejected with -25. */
+    /* Current Asahi: MSG_BUFFER_REQUEST_IOVA is GENMASK_ULL(43,0). */
     harness_init(&h);
     fake_queue(&h.asc, NTASI_RTKIT_EP_SYSLOG,
                buffer_request(4, 0) | (1ULL << 42));
     status = ntasi_rtkit_runtime_service(&h.runtime, NULL);
-    CHECK("bit 42 is outside the IOVA field: the request is still AP-allocated",
-          status == NTASI_RTKIT_RUNTIME_OK && h.asc.allocate_calls == 1 &&
-              h.asc.sent_count == 1 && !h.runtime.syslog.iop_owned);
+    CHECK("bit 42 is an IOVA bit: the request is pre-allocated",
+          status == NTASI_RTKIT_RUNTIME_OK && h.asc.allocate_calls == 0 &&
+              h.asc.sent_count == 0 && h.runtime.syslog.iop_owned &&
+              h.runtime.syslog.device_address == (1ULL << 42));
 
     harness_init(&h);
     fake_queue(&h.asc, NTASI_RTKIT_EP_SYSLOG,
                buffer_request(4, 0) | (1ULL << 43));
     status = ntasi_rtkit_runtime_service(&h.runtime, NULL);
-    CHECK("bit 43 is outside the IOVA field: the request is still AP-allocated",
-          status == NTASI_RTKIT_RUNTIME_OK && h.asc.allocate_calls == 1 &&
-              h.asc.sent_count == 1 && !h.runtime.syslog.iop_owned);
+    CHECK("bit 43 is the top IOVA bit: the request is pre-allocated",
+          status == NTASI_RTKIT_RUNTIME_OK && h.asc.allocate_calls == 0 &&
+              h.asc.sent_count == 0 && h.runtime.syslog.iop_owned &&
+              h.runtime.syslog.device_address == (1ULL << 43));
 
     /* Bit 41 IS the top address bit and must be honoured. */
     harness_init(&h);
@@ -343,6 +341,31 @@ static void test_IovaMaskIs42Bits(void)
           status == NTASI_RTKIT_RUNTIME_OK && h.asc.allocate_calls == 0 &&
               h.asc.sent_count == 0 && h.runtime.syslog.iop_owned &&
               h.runtime.syslog.device_address == (1ULL << 41));
+}
+
+static void test_BootModePreservesOwnership(void)
+{
+    struct harness h;
+    int status;
+
+    harness_init(&h);
+    h.asc.cpu_control = NTASI_ASC_CPU_CONTROL_START | 0x80u;
+    h.runtime.boot_mode = NTASI_RTKIT_BOOT_MODE_WAKE;
+    status = ntasi_rtkit_runtime_boot(&h.runtime);
+    CHECK("WAKE never writes a live coprocessor's CPU_CONTROL",
+          status == NTASI_RTKIT_RUNTIME_ERR_TIMEOUT &&
+              h.asc.cpu_control == (NTASI_ASC_CPU_CONTROL_START | 0x80u));
+    CHECK("WAKE sends INIT before waiting for HELLO", h.asc.sent_count == 1);
+
+    harness_init(&h);
+    h.asc.cpu_control = 0x80u;
+    h.runtime.boot_mode = NTASI_RTKIT_BOOT_MODE_COLD;
+    status = ntasi_rtkit_runtime_boot(&h.runtime);
+    CHECK("COLD releases the reset core with an exclusive RUN write",
+          status == NTASI_RTKIT_RUNTIME_ERR_TIMEOUT &&
+              h.asc.cpu_control == NTASI_ASC_CPU_CONTROL_START);
+    CHECK("COLD sends nothing before the coprocessor's HELLO",
+          h.asc.sent_count == 0);
 }
 
 static void test_RepeatRequestIsIdempotent(void)
@@ -533,7 +556,8 @@ int main(void)
 {
     test_ApAllocatedRequest_Replies();
     test_PreallocatedRequest_2026_07_30_regression();
-    test_IovaMaskIs42Bits();
+    test_IovaMaskIs44Bits();
+    test_BootModePreservesOwnership();
     test_RepeatRequestIsIdempotent();
     test_RepeatRequestForLargerBufferIsRefused();
     test_SecondCrashlogRequestMeansCrashed();

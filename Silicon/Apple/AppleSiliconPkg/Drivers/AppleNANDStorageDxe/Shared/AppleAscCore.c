@@ -65,6 +65,13 @@ void ntasi_asc_cpu_start(struct ntasi_asc_transport *transport)
                                value | NTASI_ASC_CPU_CONTROL_START);
 }
 
+void ntasi_asc_cpu_start_exclusive(struct ntasi_asc_transport *transport)
+{
+    /* Linux apple.c cold-reset path writes RUN, rather than preserving bits. */
+    transport->ops.cpu_write32(transport->opaque, NTASI_ASC_CPU_CONTROL,
+                               NTASI_ASC_CPU_CONTROL_START);
+}
+
 void ntasi_asc_cpu_stop(struct ntasi_asc_transport *transport)
 {
     uint32_t value = transport->ops.cpu_read32(transport->opaque,

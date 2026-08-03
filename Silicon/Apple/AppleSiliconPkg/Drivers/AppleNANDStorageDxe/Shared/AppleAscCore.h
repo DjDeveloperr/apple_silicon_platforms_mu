@@ -76,6 +76,7 @@ int ntasi_asc_init_variant(struct ntasi_asc_transport *transport,
                            uint32_t poll_limit);
 
 void ntasi_asc_cpu_start(struct ntasi_asc_transport *transport);
+void ntasi_asc_cpu_start_exclusive(struct ntasi_asc_transport *transport);
 void ntasi_asc_cpu_stop(struct ntasi_asc_transport *transport);
 bool ntasi_asc_cpu_running(struct ntasi_asc_transport *transport);
 bool ntasi_asc_can_send(struct ntasi_asc_transport *transport);

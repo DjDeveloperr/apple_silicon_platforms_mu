@@ -26,6 +26,8 @@
 #include <Library/UefiBootServicesTableLib.h>
 #include <Protocol/BlockIo.h>
 #include <Protocol/DevicePath.h>
+#include <Protocol/PartitionInfo.h>
+#include <Protocol/SimpleFileSystem.h>
 #include <Drivers/AppleAnsHardware.h>
 #if !defined (APPLE_ANS_QEMU_TEST)
 #include <Drivers/AppleAnsPmgrDomain.h>
@@ -41,6 +43,10 @@
 #define APPLE_ANS_MAILBOX_OFFSET  0x8000u
 #define APPLE_ANS_NAMESPACE_ID    1u
 #define APPLE_ANS_POLL_LIMIT      2000000u
+#define APPLE_ANS_MAX_GPT_PARTITIONS  32u
+#define APPLE_ANS_MAX_TRACED_ERRORS   8u
+#define APPLE_ANS_MAX_BCD_BYTES       0x100000u
+#define APPLE_ANS_MAX_SART_RESERVATIONS  64u
 
 #if defined (APPLE_ANS_QEMU_TEST)
 #define APPLE_ANS_QEMU_ASC_SIZE   0x9000u
@@ -124,6 +130,22 @@ typedef struct {
   UINTN                 Size;
 } APPLE_ANS_PAGE_ALLOCATION;
 
+typedef struct {
+  EFI_HANDLE  Handle;
+  UINT32    PartitionNumber;
+  EFI_LBA   StartingLba;
+  EFI_LBA   EndingLba;
+  EFI_GUID  PartitionTypeGuid;
+  EFI_GUID  UniquePartitionGuid;
+  CHAR16    PartitionName[37];
+  BOOLEAN   SystemPartition;
+} APPLE_ANS_GPT_PARTITION;
+
+typedef struct {
+  EFI_PHYSICAL_ADDRESS  Base;
+  EFI_PHYSICAL_ADDRESS  End;
+} APPLE_ANS_PHYSICAL_RANGE;
+
 //
 // 4 RTKit shared buffers (crashlog/syslog/ioreport/oslog) + 6 queue regions +
 // 1 bounce buffer = 11. Sized with headroom; AnsAllocatePages() fails cleanly
@@ -134,6 +156,11 @@ typedef struct {
 typedef struct {
   EFI_HANDLE                        Handle;
   EFI_EVENT                         ExitBootServicesEvent;
+  EFI_EVENT                         ReadyToBootEvent;
+  EFI_EVENT                         PartitionInfoEvent;
+  EFI_EVENT                         SimpleFileSystemEvent;
+  VOID                              *PartitionInfoRegistration;
+  VOID                              *SimpleFileSystemRegistration;
   UINTN                             CpuBase;
   UINTN                             MailboxBase;
   UINTN                             NvmeBase;
@@ -158,6 +185,14 @@ typedef struct {
   EFI_BLOCK_IO_MEDIA                Media;
   EFI_BLOCK_IO_PROTOCOL             BlockIo;
   APPLE_ANS_DEVICE_PATH             DevicePath;
+  APPLE_ANS_GPT_PARTITION           GptPartitions[APPLE_ANS_MAX_GPT_PARTITIONS];
+  UINTN                             GptPartitionCount;
+  UINT32                            PartitionReadSeen;
+  UINT32                            TracedReadErrors;
+  BOOLEAN                           ReadAttributionArmed;
+  BOOLEAN                           ReadyToBootDiagnosticsComplete;
+  BOOLEAN                           InheritedCoprocessor;
+  BOOLEAN                           InheritedSartMemoryReserved;
   BOOLEAN                           Fatal;
   BOOLEAN                           HandedOff;
 } APPLE_ANS_DEVICE;
@@ -636,6 +671,373 @@ SartWrite32 (
   MmioWrite32 (Device->SartBase + Offset, Value);
 }
 
+#if !defined (APPLE_ANS_QEMU_TEST)
+STATIC BOOLEAN
+AnsMemoryTypePersistsIntoOs (
+  IN EFI_MEMORY_TYPE  Type
+  )
+{
+  return (Type == EfiReservedMemoryType) ||
+         (Type == EfiUnusableMemory) ||
+         (Type == EfiRuntimeServicesCode) ||
+         (Type == EfiRuntimeServicesData) ||
+         (Type == EfiACPIMemoryNVS) ||
+         (Type == EfiPalCode);
+}
+
+STATIC EFI_STATUS
+AnsGetMemoryMapSnapshot (
+  OUT EFI_MEMORY_DESCRIPTOR  **MemoryMap,
+  OUT UINTN                  *MemoryMapSize,
+  OUT UINTN                  *DescriptorSize
+  )
+{
+  EFI_STATUS  Status;
+  UINTN       MapKey;
+  UINT32      DescriptorVersion;
+  UINTN       Attempt;
+
+  *MemoryMap      = NULL;
+  *MemoryMapSize  = 0;
+  *DescriptorSize = 0;
+
+  Status = gBS->GetMemoryMap (
+                  MemoryMapSize,
+                  NULL,
+                  &MapKey,
+                  DescriptorSize,
+                  &DescriptorVersion
+                  );
+  if (Status != EFI_BUFFER_TOO_SMALL) {
+    return Status;
+  }
+
+  for (Attempt = 0; Attempt < 4; Attempt++) {
+    EFI_MEMORY_DESCRIPTOR  *Map;
+    UINTN                  Capacity;
+
+    if ((*DescriptorSize == 0) ||
+        (*MemoryMapSize > MAX_UINTN - (2 * *DescriptorSize)))
+    {
+      return EFI_OUT_OF_RESOURCES;
+    }
+
+    Capacity = *MemoryMapSize + (2 * *DescriptorSize);
+    Map      = AllocatePool (Capacity);
+    if (Map == NULL) {
+      return EFI_OUT_OF_RESOURCES;
+    }
+
+    *MemoryMapSize = Capacity;
+    Status         = gBS->GetMemoryMap (
+                            MemoryMapSize,
+                            Map,
+                            &MapKey,
+                            DescriptorSize,
+                            &DescriptorVersion
+                            );
+    if (!EFI_ERROR (Status)) {
+      *MemoryMap = Map;
+      return EFI_SUCCESS;
+    }
+
+    FreePool (Map);
+    if (Status != EFI_BUFFER_TOO_SMALL) {
+      return Status;
+    }
+  }
+
+  return EFI_OUT_OF_RESOURCES;
+}
+
+/**
+  Reserve every inherited SART grant from the OS memory map before attaching
+  to a live ANS coprocessor.
+
+  A live handoff cannot merely preserve the SART register entries.  The five
+  entries measured from iBoot on J414s point at ordinary DRAM, and without a
+  matching UEFI reservation Windows is free to reuse those pages while the
+  still-running coprocessor retains DMA permission to them.  Mu-owned RTKit
+  and queue buffers already use EfiReservedMemoryType; this closes the same
+  ownership gap for buffers allocated before Mu began executing.
+
+  Ranges are rounded to the AArch64 reserved-memory granularity and merged.
+  Conventional-RAM intersections are converted to EfiReservedMemoryType;
+  persistent memory and addresses absent from the UEFI memory map are already
+  unavailable to Windows and need no conversion.  Any intersection with a
+  reclaimable non-conventional allocation fails closed: the EBS callback will
+  take the cold stop-and-revoke path instead of preserving a live DMA master.
+**/
+STATIC EFI_STATUS
+AnsReserveInheritedSartMemory (
+  IN OUT APPLE_ANS_DEVICE  *Device
+  )
+{
+  APPLE_ANS_PHYSICAL_RANGE  Ranges[NTASI_SART_MAX_ENTRIES];
+  APPLE_ANS_PHYSICAL_RANGE  Reservations[APPLE_ANS_MAX_SART_RESERVATIONS];
+  EFI_MEMORY_DESCRIPTOR     *MemoryMap;
+  UINTN                     MemoryMapSize;
+  UINTN                     DescriptorSize;
+  UINTN                     RangeCount;
+  UINTN                     Index;
+  UINTN                     Move;
+  UINTN                     ReservationCount;
+  EFI_STATUS                Status;
+
+  RangeCount = 0;
+  for (Index = 0; Index < NTASI_SART_MAX_ENTRIES; Index++) {
+    EFI_PHYSICAL_ADDRESS  Base;
+    EFI_PHYSICAL_ADDRESS  End;
+    UINT64                Paddr;
+    UINT64                Size;
+    UINT64                Granularity;
+    uint8_t               Flags;
+    int                   Result;
+
+    if ((Device->Sart.protected_entries & (1u << Index)) == 0) {
+      continue;
+    }
+
+    Flags  = 0;
+    Paddr  = 0;
+    Size   = 0;
+    Result = ntasi_sart_runtime_read (
+               &Device->Sart,
+               (unsigned int)Index,
+               &Flags,
+               &Paddr,
+               &Size
+               );
+    Granularity = RUNTIME_PAGE_ALLOCATION_GRANULARITY;
+    if ((Result != NTASI_SART_RUNTIME_OK) || (Flags == 0) || (Size == 0) ||
+        (Granularity == 0) || ((Granularity & (Granularity - 1)) != 0) ||
+        (Paddr > MAX_UINT64 - Size))
+    {
+      ANS_DEBUG ((
+        DEBUG_ERROR,
+        "AppleANS: inherited SART[%Lu] cannot be reserved safely: result=%d flags=0x%x paddr=0x%Lx size=0x%Lx\n",
+        (UINT64)Index,
+        Result,
+        (UINT32)Flags,
+        Paddr,
+        Size
+        ));
+      return EFI_DEVICE_ERROR;
+    }
+
+    Base = Paddr & ~(Granularity - 1);
+    End  = Paddr + Size;
+    if (End > MAX_UINT64 - (Granularity - 1)) {
+      return EFI_DEVICE_ERROR;
+    }
+
+    End = ALIGN_VALUE (End, Granularity);
+    Ranges[RangeCount].Base = Base;
+    Ranges[RangeCount].End  = End;
+    RangeCount++;
+  }
+
+  for (Index = 1; Index < RangeCount; Index++) {
+    APPLE_ANS_PHYSICAL_RANGE  Range;
+    UINTN                     Position;
+
+    Range    = Ranges[Index];
+    Position = Index;
+    while ((Position > 0) && (Ranges[Position - 1].Base > Range.Base)) {
+      Ranges[Position] = Ranges[Position - 1];
+      Position--;
+    }
+
+    Ranges[Position] = Range;
+  }
+
+  for (Index = 1; Index < RangeCount; ) {
+    if (Ranges[Index].Base <= Ranges[Index - 1].End) {
+      if (Ranges[Index].End > Ranges[Index - 1].End) {
+        Ranges[Index - 1].End = Ranges[Index].End;
+      }
+
+      for (Move = Index; Move + 1 < RangeCount; Move++) {
+        Ranges[Move] = Ranges[Move + 1];
+      }
+      RangeCount--;
+      continue;
+    }
+
+    Index++;
+  }
+
+  MemoryMap      = NULL;
+  MemoryMapSize  = 0;
+  DescriptorSize = 0;
+  Status = AnsGetMemoryMapSnapshot (
+             &MemoryMap,
+             &MemoryMapSize,
+             &DescriptorSize
+             );
+  if (EFI_ERROR (Status)) {
+    return Status;
+  }
+
+  ReservationCount = 0;
+  Status           = EFI_SUCCESS;
+  for (Index = 0; Index < RangeCount; Index++) {
+    UINT64  CoveredBytes;
+    UINTN   Offset;
+
+    CoveredBytes = 0;
+    for (Offset = 0; Offset < MemoryMapSize; Offset += DescriptorSize) {
+      CONST EFI_MEMORY_DESCRIPTOR  *Descriptor;
+      EFI_PHYSICAL_ADDRESS         DescriptorEnd;
+      EFI_PHYSICAL_ADDRESS         IntersectionBase;
+      EFI_PHYSICAL_ADDRESS         IntersectionEnd;
+
+      Descriptor = (CONST EFI_MEMORY_DESCRIPTOR *)((CONST UINT8 *)MemoryMap + Offset);
+      if (Descriptor->NumberOfPages >
+          RShiftU64 (MAX_UINT64 - Descriptor->PhysicalStart, EFI_PAGE_SHIFT))
+      {
+        continue;
+      }
+
+      DescriptorEnd = Descriptor->PhysicalStart + EFI_PAGES_TO_SIZE (Descriptor->NumberOfPages);
+      IntersectionBase = (Descriptor->PhysicalStart > Ranges[Index].Base) ?
+                         Descriptor->PhysicalStart : Ranges[Index].Base;
+      IntersectionEnd = (DescriptorEnd < Ranges[Index].End) ?
+                        DescriptorEnd : Ranges[Index].End;
+      if (IntersectionBase >= IntersectionEnd) {
+        continue;
+      }
+
+      CoveredBytes += IntersectionEnd - IntersectionBase;
+      if (AnsMemoryTypePersistsIntoOs ((EFI_MEMORY_TYPE)Descriptor->Type)) {
+        continue;
+      }
+
+      if (Descriptor->Type != EfiConventionalMemory) {
+        ANS_DEBUG ((
+          DEBUG_ERROR,
+          "AppleANS: inherited SART range 0x%Lx..0x%Lx intersects reclaimable memory type %u at 0x%Lx..0x%Lx\n",
+          (UINT64)Ranges[Index].Base,
+          (UINT64)Ranges[Index].End,
+          (UINT32)Descriptor->Type,
+          (UINT64)IntersectionBase,
+          (UINT64)IntersectionEnd
+          ));
+        Status = EFI_ACCESS_DENIED;
+        break;
+      }
+
+      if (ReservationCount >= ARRAY_SIZE (Reservations)) {
+        Status = EFI_OUT_OF_RESOURCES;
+        break;
+      }
+
+      Reservations[ReservationCount].Base = IntersectionBase;
+      Reservations[ReservationCount].End  = IntersectionEnd;
+      ReservationCount++;
+    }
+
+    if (EFI_ERROR (Status)) {
+      break;
+    }
+
+    if (CoveredBytes < (Ranges[Index].End - Ranges[Index].Base)) {
+      ANS_DEBUG ((
+        DEBUG_INFO,
+        "AppleANS: inherited SART range 0x%Lx..0x%Lx includes 0x%Lx byte(s) outside the UEFI RAM map; those addresses are already unavailable to Windows\n",
+        (UINT64)Ranges[Index].Base,
+        (UINT64)Ranges[Index].End,
+        (UINT64)((Ranges[Index].End - Ranges[Index].Base) - CoveredBytes)
+        ));
+    }
+  }
+
+  FreePool (MemoryMap);
+  if (EFI_ERROR (Status)) {
+    ANS_DEBUG ((
+      DEBUG_ERROR,
+      "AppleANS: inherited SART memory reservation failed at range %Lu/%Lu (%r); live RTKit handoff is DISABLED and EBS will stop ANS and revoke all grants\n",
+      (UINT64)Index,
+      (UINT64)RangeCount,
+      Status
+      ));
+    return Status;
+  }
+
+  for (Index = 1; Index < ReservationCount; Index++) {
+    APPLE_ANS_PHYSICAL_RANGE  Range;
+    UINTN                     Position;
+
+    Range    = Reservations[Index];
+    Position = Index;
+    while ((Position > 0) && (Reservations[Position - 1].Base > Range.Base)) {
+      Reservations[Position] = Reservations[Position - 1];
+      Position--;
+    }
+
+    Reservations[Position] = Range;
+  }
+
+  for (Index = 1; Index < ReservationCount; ) {
+    if (Reservations[Index].Base <= Reservations[Index - 1].End) {
+      if (Reservations[Index].End > Reservations[Index - 1].End) {
+        Reservations[Index - 1].End = Reservations[Index].End;
+      }
+
+      for (Move = Index; Move + 1 < ReservationCount; Move++) {
+        Reservations[Move] = Reservations[Move + 1];
+      }
+      ReservationCount--;
+      continue;
+    }
+
+    Index++;
+  }
+
+  for (Index = 0; Index < ReservationCount; Index++) {
+    EFI_PHYSICAL_ADDRESS  Base;
+    UINTN                 Pages;
+
+    Base  = Reservations[Index].Base;
+    Pages = EFI_SIZE_TO_PAGES (Reservations[Index].End - Reservations[Index].Base);
+    Status = gBS->AllocatePages (
+                    AllocateAddress,
+                    EfiReservedMemoryType,
+                    Pages,
+                    &Base
+                    );
+    if (EFI_ERROR (Status) || (Base != Reservations[Index].Base)) {
+      ANS_DEBUG ((
+        DEBUG_ERROR,
+        "AppleANS: inherited SART RAM reservation failed at segment %Lu/%Lu 0x%Lx..0x%Lx (%r)\n",
+        (UINT64)Index,
+        (UINT64)ReservationCount,
+        (UINT64)Reservations[Index].Base,
+        (UINT64)Reservations[Index].End,
+        Status
+        ));
+      return EFI_ERROR (Status) ? Status : EFI_DEVICE_ERROR;
+    }
+
+    ANS_DEBUG ((
+      DEBUG_INFO,
+      "AppleANS: inherited SART RAM RESERVED for live OS handoff: 0x%Lx..0x%Lx (%Lu pages)\n",
+      (UINT64)Reservations[Index].Base,
+      (UINT64)Reservations[Index].End,
+      (UINT64)Pages
+      ));
+  }
+
+  ANS_DEBUG ((
+    DEBUG_INFO,
+    "AppleANS: inherited SART ownership sealed: %Lu merged grant range(s), %Lu RAM reservation(s), all non-reclaimable across ExitBootServices\n",
+    (UINT64)RangeCount,
+    (UINT64)ReservationCount
+    ));
+  return EFI_SUCCESS;
+}
+#endif
+
 //
 // RTKit shared-buffer allocator.
 //
@@ -932,6 +1334,7 @@ AnsReadBlocks (
 {
   EFI_STATUS  Status;
   UINTN       Blocks;
+  UINTN       PartitionIndex;
 
   Status = ValidateBlockRequest (This, MediaId, Lba, BufferSize, Buffer);
   if (EFI_ERROR (Status) || (BufferSize == 0)) {
@@ -939,9 +1342,60 @@ AnsReadBlocks (
   }
 
   Blocks = BufferSize / This->Media->BlockSize;
-  return MapBlockStatus (
-           ntasi_ans_block_read (&mAns->BlockDevice, Lba, Blocks, Buffer, BufferSize)
-           );
+  Status = MapBlockStatus (
+             ntasi_ans_block_read (&mAns->BlockDevice, Lba, Blocks, Buffer, BufferSize)
+             );
+  if (!mAns->ReadAttributionArmed) {
+    return Status;
+  }
+
+  if (EFI_ERROR (Status)) {
+    if (mAns->TracedReadErrors < APPLE_ANS_MAX_TRACED_ERRORS) {
+      mAns->TracedReadErrors++;
+      ANS_DEBUG ((
+        DEBUG_ERROR,
+        "AppleANS ReadyToBoot I/O: read failed LBA=0x%Lx blocks=0x%Lx status=%r (bounded error %u/%u)\n",
+        (UINT64)Lba,
+        (UINT64)Blocks,
+        Status,
+        mAns->TracedReadErrors,
+        APPLE_ANS_MAX_TRACED_ERRORS
+        ));
+    }
+
+    return Status;
+  }
+
+  for (PartitionIndex = 0;
+       PartitionIndex < mAns->GptPartitionCount;
+       PartitionIndex++)
+  {
+    APPLE_ANS_GPT_PARTITION  *Partition;
+    UINT32                   PartitionBit;
+
+    Partition    = &mAns->GptPartitions[PartitionIndex];
+    PartitionBit = (UINT32)(1u << PartitionIndex);
+    if ((Lba < Partition->StartingLba) ||
+        (Lba > Partition->EndingLba) ||
+        ((mAns->PartitionReadSeen & PartitionBit) != 0))
+    {
+      continue;
+    }
+
+    mAns->PartitionReadSeen |= PartitionBit;
+    ANS_DEBUG ((
+      DEBUG_INFO,
+      "AppleANS ReadyToBoot I/O: first successful HD(%u) read LBA=0x%Lx blocks=0x%Lx unique=%g name=\"%s\"\n",
+      Partition->PartitionNumber,
+      (UINT64)Lba,
+      (UINT64)Blocks,
+      &Partition->UniquePartitionGuid,
+      Partition->PartitionName
+      ));
+    break;
+  }
+
+  return Status;
 }
 
 STATIC EFI_STATUS EFIAPI
@@ -996,12 +1450,23 @@ AllocateQueueMemory (
   )
 {
   APPLE_ANS_PAGE_ALLOCATION  *Allocation;
+  EFI_MEMORY_TYPE            MemoryType;
   EFI_STATUS                 Status;
 
+  //
+  // A preserve-for-OS build may reach ExitBootServices with the ANS front
+  // end still enabled if its bounded NVMe shutdown fails.  Windows is then
+  // free to reclaim EfiBootServicesData immediately, so no address the DMA
+  // engine has ever been given may use that type.  Reserved pages turn the
+  // failure case into a bounded leak instead of DMA into arbitrary OS memory.
+  // The ordinary quiesce/reset profile retains BootServicesData semantics.
+  //
+  MemoryType = FixedPcdGetBool (PcdAppleAnsPreserveForOs) ?
+                 EfiReservedMemoryType : EfiBootServicesData;
   Status = AnsAllocatePages (
              Device,
              Purpose,
-             EfiBootServicesData,
+             MemoryType,
              Size,
              NTASI_ANS_QUEUE_ALIGN,
              &Allocation
@@ -1119,6 +1584,604 @@ FreeControllerMemory (
   Device->Bounce           = NULL;
 }
 
+STATIC BOOLEAN
+AnsIsChildDevicePath (
+  IN APPLE_ANS_DEVICE          *Device,
+  IN EFI_DEVICE_PATH_PROTOCOL  *Path
+  )
+{
+  UINTN  ParentPrefixSize;
+  UINTN  PathSize;
+
+  if (Path == NULL) {
+    return FALSE;
+  }
+
+  ParentPrefixSize = GetDevicePathSize ((EFI_DEVICE_PATH_PROTOCOL *)&Device->DevicePath) -
+                     sizeof (EFI_DEVICE_PATH_PROTOCOL);
+  PathSize = GetDevicePathSize (Path);
+  return (PathSize > ParentPrefixSize) &&
+         (CompareMem (Path, &Device->DevicePath, ParentPrefixSize) == 0);
+}
+
+STATIC UINT32
+AnsPartitionNumberFromDevicePath (
+  IN EFI_DEVICE_PATH_PROTOCOL  *Path
+  )
+{
+  EFI_DEVICE_PATH_PROTOCOL  *Node;
+
+  for (Node = Path; !IsDevicePathEnd (Node); Node = NextDevicePathNode (Node)) {
+    if ((DevicePathType (Node) == MEDIA_DEVICE_PATH) &&
+        (DevicePathSubType (Node) == MEDIA_HARDDRIVE_DP))
+    {
+      return ((HARDDRIVE_DEVICE_PATH *)Node)->PartitionNumber;
+    }
+  }
+
+  return 0;
+}
+
+STATIC CONST CHAR8 *
+AnsFileSystemSignature (
+  IN CONST UINT8  *Block,
+  IN UINTN        BlockSize
+  )
+{
+  if ((BlockSize >= 11) && (CompareMem (&Block[3], "NTFS    ", 8) == 0)) {
+    return "NTFS";
+  }
+
+  if ((BlockSize >= 90) &&
+      ((CompareMem (&Block[54], "FAT12   ", 8) == 0) ||
+       (CompareMem (&Block[54], "FAT16   ", 8) == 0) ||
+       (CompareMem (&Block[82], "FAT32   ", 8) == 0)))
+  {
+    return "FAT";
+  }
+
+  if ((BlockSize >= 36) && (CompareMem (&Block[32], "NXSB", 4) == 0)) {
+    return "APFS";
+  }
+
+  return "unknown";
+}
+
+STATIC BOOLEAN
+AnsBufferContains (
+  IN CONST UINT8  *Buffer,
+  IN UINTN        BufferSize,
+  IN CONST VOID   *Pattern,
+  IN UINTN        PatternSize
+  )
+{
+  UINTN  Offset;
+
+  if ((Buffer == NULL) || (Pattern == NULL) || (PatternSize == 0) ||
+      (PatternSize > BufferSize))
+  {
+    return FALSE;
+  }
+
+  for (Offset = 0; Offset <= BufferSize - PatternSize; Offset++) {
+    if (CompareMem (&Buffer[Offset], Pattern, PatternSize) == 0) {
+      return TRUE;
+    }
+  }
+
+  return FALSE;
+}
+
+STATIC UINT8
+AnsAsciiLower (
+  IN UINT8  Character
+  )
+{
+  return ((Character >= 'A') && (Character <= 'Z')) ?
+           (UINT8)(Character - 'A' + 'a') : Character;
+}
+
+STATIC BOOLEAN
+AnsBufferContainsUtf16Ascii (
+  IN CONST UINT8  *Buffer,
+  IN UINTN        BufferSize,
+  IN CONST CHAR8  *Ascii
+  )
+{
+  UINTN  CharacterCount;
+  UINTN  PatternBytes;
+  UINTN  Offset;
+  UINTN  Index;
+
+  if ((Buffer == NULL) || (Ascii == NULL)) {
+    return FALSE;
+  }
+
+  CharacterCount = AsciiStrLen (Ascii);
+  if ((CharacterCount == 0) || (CharacterCount > (MAX_UINTN / sizeof (CHAR16)))) {
+    return FALSE;
+  }
+
+  PatternBytes = CharacterCount * sizeof (CHAR16);
+  if (PatternBytes > BufferSize) {
+    return FALSE;
+  }
+
+  for (Offset = 0; Offset <= BufferSize - PatternBytes; Offset++) {
+    for (Index = 0; Index < CharacterCount; Index++) {
+      UINT16  Value;
+
+      Value = ReadUnaligned16 ((CONST UINT16 *)&Buffer[Offset + Index * 2]);
+      if ((Value > MAX_UINT8) ||
+          (AnsAsciiLower ((UINT8)Value) != AnsAsciiLower ((UINT8)Ascii[Index])))
+      {
+        break;
+      }
+    }
+
+    if (Index == CharacterCount) {
+      return TRUE;
+    }
+  }
+
+  return FALSE;
+}
+
+STATIC VOID
+AnsFindGuidReferences (
+  IN CONST UINT8     *Buffer,
+  IN UINTN           BufferSize,
+  IN CONST EFI_GUID  *Guid,
+  OUT BOOLEAN        *BinaryReference,
+  OUT BOOLEAN        *TextReference
+  )
+{
+  CHAR8  GuidText[37];
+
+  *BinaryReference = AnsBufferContains (
+                       Buffer,
+                       BufferSize,
+                       Guid,
+                       sizeof (*Guid)
+                       );
+  AsciiSPrint (GuidText, sizeof (GuidText), "%g", Guid);
+  *TextReference = AnsBufferContainsUtf16Ascii (
+                     Buffer,
+                     BufferSize,
+                     GuidText
+                     );
+}
+
+STATIC EFI_STATUS
+AnsReadGptDiskGuid (
+  IN APPLE_ANS_DEVICE  *Device,
+  OUT EFI_GUID         *DiskGuid
+  )
+{
+  EFI_PARTITION_TABLE_HEADER  *Header;
+  UINT8                       *Block;
+  EFI_STATUS                  Status;
+
+  ZeroMem (DiskGuid, sizeof (*DiskGuid));
+  Block = AllocatePool (Device->Media.BlockSize);
+  if (Block == NULL) {
+    return EFI_OUT_OF_RESOURCES;
+  }
+
+  Status = Device->BlockIo.ReadBlocks (
+                             &Device->BlockIo,
+                             Device->Media.MediaId,
+                             PRIMARY_PART_HEADER_LBA,
+                             Device->Media.BlockSize,
+                             Block
+                             );
+  if (!EFI_ERROR (Status)) {
+    Header = (EFI_PARTITION_TABLE_HEADER *)Block;
+    if ((Header->Header.Signature != EFI_PTAB_HEADER_ID) ||
+        (Header->Header.HeaderSize < sizeof (EFI_PARTITION_TABLE_HEADER)) ||
+        (Header->MyLBA != PRIMARY_PART_HEADER_LBA))
+    {
+      Status = EFI_COMPROMISED_DATA;
+    } else {
+      *DiskGuid = Header->DiskGUID;
+    }
+  }
+
+  FreePool (Block);
+  return Status;
+}
+
+STATIC EFI_STATUS
+AnsAuditBcdReferences (
+  IN APPLE_ANS_DEVICE  *Device,
+  IN EFI_HANDLE        EspHandle,
+  IN UINT32            EspPartitionNumber,
+  IN CONST EFI_GUID    *DiskGuid,
+  IN BOOLEAN           DiskGuidValid
+  )
+{
+  EFI_SIMPLE_FILE_SYSTEM_PROTOCOL  *FileSystem;
+  EFI_FILE_PROTOCOL                *Root;
+  EFI_FILE_PROTOCOL                *File;
+  UINT8                            *Bcd;
+  UINTN                            ReadSize;
+  UINTN                            ScanSize;
+  UINTN                            Index;
+  EFI_STATUS                       Status;
+  BOOLEAN                          Truncated;
+  BOOLEAN                          HiveValid;
+  BOOLEAN                          WinloadPathPresent;
+  BOOLEAN                          DiskGuidBinary;
+  BOOLEAN                          DiskGuidText;
+
+  FileSystem = NULL;
+  Root       = NULL;
+  File       = NULL;
+  Bcd        = NULL;
+  Status     = gBS->HandleProtocol (
+                      EspHandle,
+                      &gEfiSimpleFileSystemProtocolGuid,
+                      (VOID **)&FileSystem
+                      );
+  if (!EFI_ERROR (Status)) {
+    Status = FileSystem->OpenVolume (FileSystem, &Root);
+  }
+
+  if (!EFI_ERROR (Status)) {
+    Status = Root->Open (
+                     Root,
+                     &File,
+                     L"\\EFI\\Microsoft\\Boot\\BCD",
+                     EFI_FILE_MODE_READ,
+                     0
+                     );
+  }
+
+  if (!EFI_ERROR (Status)) {
+    Bcd = AllocatePool (APPLE_ANS_MAX_BCD_BYTES + 1u);
+    if (Bcd == NULL) {
+      Status = EFI_OUT_OF_RESOURCES;
+    }
+  }
+
+  ReadSize = APPLE_ANS_MAX_BCD_BYTES + 1u;
+  if (!EFI_ERROR (Status)) {
+    Status = File->Read (File, &ReadSize, Bcd);
+  }
+
+  if (EFI_ERROR (Status)) {
+    ANS_DEBUG ((
+      DEBUG_ERROR,
+      "AppleANS ReadyToBoot BCD audit: HD(%u) read-only open/read failed: %r\n",
+      EspPartitionNumber,
+      Status
+      ));
+    goto Done;
+  }
+
+  Truncated = ReadSize > APPLE_ANS_MAX_BCD_BYTES;
+  ScanSize  = Truncated ? APPLE_ANS_MAX_BCD_BYTES : ReadSize;
+  HiveValid = (ScanSize >= 4) && (CompareMem (Bcd, "regf", 4) == 0);
+  WinloadPathPresent = AnsBufferContainsUtf16Ascii (
+                         Bcd,
+                         ScanSize,
+                         "\\WINDOWS\\system32\\winload.efi"
+                         );
+  DiskGuidBinary = FALSE;
+  DiskGuidText   = FALSE;
+  if (DiskGuidValid) {
+    AnsFindGuidReferences (
+      Bcd,
+      ScanSize,
+      DiskGuid,
+      &DiskGuidBinary,
+      &DiskGuidText
+      );
+  }
+  ANS_DEBUG ((
+    DEBUG_INFO,
+    "AppleANS ReadyToBoot BCD audit: HD(%u) read 0x%Lx byte(s)%a; hive=%a winload-path=%a disk-guid-binary=%a disk-guid-text=%a\n",
+    EspPartitionNumber,
+    (UINT64)ScanSize,
+    Truncated ? " (TRUNCATED at hard 1 MiB bound)" : "",
+    HiveValid ? "regf" : "unexpected",
+    WinloadPathPresent ? "present" : "absent",
+    DiskGuidBinary ? "REFERENCED" :
+      (DiskGuidValid ? "absent" : "unavailable"),
+    DiskGuidText ? "REFERENCED" :
+      (DiskGuidValid ? "absent" : "unavailable")
+    ));
+  // QEMU's ANS_DEBUG compiles away completely; retain the read-only scan in
+  // that build so the same code is type-checked without unused warnings.
+  (VOID)HiveValid;
+  (VOID)WinloadPathPresent;
+  (VOID)DiskGuidBinary;
+  (VOID)DiskGuidText;
+
+  for (Index = 0; Index < Device->GptPartitionCount; Index++) {
+    APPLE_ANS_GPT_PARTITION  *Partition;
+    BOOLEAN                  BinaryGuid;
+    BOOLEAN                  TextGuid;
+
+    Partition = &Device->GptPartitions[Index];
+    AnsFindGuidReferences (
+      Bcd,
+      ScanSize,
+      &Partition->UniquePartitionGuid,
+      &BinaryGuid,
+      &TextGuid
+      );
+    ANS_DEBUG ((
+      (BinaryGuid || TextGuid) ? DEBUG_INFO : DEBUG_WARN,
+      "AppleANS ReadyToBoot BCD reference: HD(%u) unique=%g name=\"%s\" system=%a binary-guid=%a text-guid=%a\n",
+      Partition->PartitionNumber,
+      &Partition->UniquePartitionGuid,
+      Partition->PartitionName,
+      Partition->SystemPartition ? "yes" : "no",
+      BinaryGuid ? "REFERENCED" : "absent",
+      TextGuid ? "REFERENCED" : "absent"
+      ));
+    (VOID)BinaryGuid;
+    (VOID)TextGuid;
+  }
+
+Done:
+  if (Bcd != NULL) {
+    FreePool (Bcd);
+  }
+  if (File != NULL) {
+    File->Close (File);
+  }
+  if (Root != NULL) {
+    Root->Close (Root);
+  }
+  return Status;
+}
+
+//
+// PartitionDxe intentionally remains generic.  At the last boot-services
+// boundary before the selected Windows boot application starts, audit only
+// the child handles rooted at this AppleANS vendor device path.  This proves
+// both the exact GPT identity bootmgfw must resolve and that the corresponding
+// child Block I/O can read its first sector.  After the audit, root Block I/O
+// attribution is armed so bootmgfw's first read of every partition is logged.
+//
+STATIC VOID EFIAPI
+AnsReadyToBoot (
+  IN EFI_EVENT  Event,
+  IN VOID       *Context
+  )
+{
+  APPLE_ANS_DEVICE             *Device;
+  EFI_HANDLE                   *Handles;
+  UINTN                        HandleCount;
+  UINTN                        HandleIndex;
+  EFI_STATUS                   Status;
+  EFI_GUID                     DiskGuid;
+  BOOLEAN                      DiskGuidValid;
+  BOOLEAN                      BcdAudited;
+  BOOLEAN                      WindowsPartitionPresent;
+  VOID                         *Interface;
+
+  Device = Context;
+  if (Device->ReadyToBootDiagnosticsComplete || Device->HandedOff) {
+    return;
+  }
+
+  // Advance protocol-notify registrations before doing the global child
+  // scan. ReadyToBoot fires before BDS connects this device on J414s, so the
+  // PartitionInfo and SimpleFS notifications are what make the audit run at
+  // the useful boundary: after PartitionDxe has published the GPT children.
+  if ((Event == Device->PartitionInfoEvent) &&
+      (Device->PartitionInfoRegistration != NULL))
+  {
+    while (!EFI_ERROR (gBS->LocateProtocol (
+                              &gEfiPartitionInfoProtocolGuid,
+                              Device->PartitionInfoRegistration,
+                              &Interface
+                              )))
+    {
+    }
+  } else if ((Event == Device->SimpleFileSystemEvent) &&
+             (Device->SimpleFileSystemRegistration != NULL))
+  {
+    while (!EFI_ERROR (gBS->LocateProtocol (
+                              &gEfiSimpleFileSystemProtocolGuid,
+                              Device->SimpleFileSystemRegistration,
+                              &Interface
+                              )))
+    {
+    }
+  }
+
+  Device->ReadAttributionArmed            = FALSE;
+  Device->GptPartitionCount               = 0;
+  Device->PartitionReadSeen               = 0;
+  Device->TracedReadErrors                = 0;
+  Handles                                 = NULL;
+  HandleCount                             = 0;
+  DiskGuidValid                           = FALSE;
+  BcdAudited                              = FALSE;
+  WindowsPartitionPresent                 = FALSE;
+
+  Status = AnsReadGptDiskGuid (Device, &DiskGuid);
+  if (EFI_ERROR (Status)) {
+    ANS_DEBUG ((
+      DEBUG_ERROR,
+      "AppleANS ReadyToBoot GPT audit: primary disk GUID unavailable (%r)\n",
+      Status
+      ));
+  } else {
+    DiskGuidValid = TRUE;
+    ANS_DEBUG ((
+      DEBUG_INFO,
+      "AppleANS ReadyToBoot GPT: disk unique GUID=%g\n",
+      &DiskGuid
+      ));
+  }
+
+  Status = gBS->LocateHandleBuffer (
+                  ByProtocol,
+                  &gEfiPartitionInfoProtocolGuid,
+                  NULL,
+                  &HandleCount,
+                  &Handles
+                  );
+  if (EFI_ERROR (Status)) {
+    ANS_DEBUG ((
+      DEBUG_ERROR,
+      "AppleANS ReadyToBoot GPT audit: partition handles are not published yet (%r); deferring until PartitionInfo/SimpleFS notification\n",
+      Status
+      ));
+    return;
+  }
+
+  for (HandleIndex = 0;
+       (HandleIndex < HandleCount) &&
+       (Device->GptPartitionCount < APPLE_ANS_MAX_GPT_PARTITIONS);
+       HandleIndex++)
+  {
+    EFI_DEVICE_PATH_PROTOCOL       *Path;
+    EFI_PARTITION_INFO_PROTOCOL   *PartitionInfo;
+    EFI_BLOCK_IO_PROTOCOL         *BlockIo;
+    EFI_PARTITION_ENTRY           *Gpt;
+    APPLE_ANS_GPT_PARTITION       *Record;
+    UINT8                         *BootSector;
+    EFI_STATUS                    ReadStatus;
+    CONST CHAR8                   *FileSystem;
+
+    Path = DevicePathFromHandle (Handles[HandleIndex]);
+    if (!AnsIsChildDevicePath (Device, Path)) {
+      continue;
+    }
+
+    Status = gBS->HandleProtocol (
+                    Handles[HandleIndex],
+                    &gEfiPartitionInfoProtocolGuid,
+                    (VOID **)&PartitionInfo
+                    );
+    if (EFI_ERROR (Status) || (PartitionInfo->Type != PARTITION_TYPE_GPT)) {
+      continue;
+    }
+
+    Gpt    = &PartitionInfo->Info.Gpt;
+    Record = &Device->GptPartitions[Device->GptPartitionCount];
+    ZeroMem (Record, sizeof (*Record));
+    Record->Handle              = Handles[HandleIndex];
+    Record->PartitionNumber     = AnsPartitionNumberFromDevicePath (Path);
+    Record->StartingLba         = Gpt->StartingLBA;
+    Record->EndingLba           = Gpt->EndingLBA;
+    Record->PartitionTypeGuid   = Gpt->PartitionTypeGUID;
+    Record->UniquePartitionGuid = Gpt->UniquePartitionGUID;
+    Record->SystemPartition     = PartitionInfo->System ? TRUE : FALSE;
+    CopyMem (Record->PartitionName, Gpt->PartitionName, sizeof (Gpt->PartitionName));
+    Record->PartitionName[ARRAY_SIZE (Record->PartitionName) - 1] = L'\0';
+    Device->GptPartitionCount++;
+
+    BlockIo    = NULL;
+    BootSector = NULL;
+    FileSystem = "unread";
+    ReadStatus = gBS->HandleProtocol (
+                        Handles[HandleIndex],
+                        &gEfiBlockIoProtocolGuid,
+                        (VOID **)&BlockIo
+                        );
+    if (!EFI_ERROR (ReadStatus) && (BlockIo->Media != NULL) &&
+        (BlockIo->Media->BlockSize != 0))
+    {
+      BootSector = AllocatePool (BlockIo->Media->BlockSize);
+      if (BootSector == NULL) {
+        ReadStatus = EFI_OUT_OF_RESOURCES;
+      } else {
+        ReadStatus = BlockIo->ReadBlocks (
+                                BlockIo,
+                                BlockIo->Media->MediaId,
+                                0,
+                                BlockIo->Media->BlockSize,
+                                BootSector
+                                );
+        if (!EFI_ERROR (ReadStatus)) {
+          FileSystem = AnsFileSystemSignature (
+                         BootSector,
+                         BlockIo->Media->BlockSize
+                         );
+          if (AsciiStrCmp (FileSystem, "NTFS") == 0) {
+            WindowsPartitionPresent = TRUE;
+          }
+        }
+      }
+    }
+
+    ANS_DEBUG ((
+      EFI_ERROR (ReadStatus) ? DEBUG_ERROR : DEBUG_INFO,
+      "AppleANS ReadyToBoot GPT: HD(%u) type=%g unique=%g start=0x%Lx end=0x%Lx attrs=0x%Lx name=\"%s\" boot-sector=%r signature=%a\n",
+      Record->PartitionNumber,
+      &Record->PartitionTypeGuid,
+      &Record->UniquePartitionGuid,
+      (UINT64)Record->StartingLba,
+      (UINT64)Record->EndingLba,
+      Gpt->Attributes,
+      Record->PartitionName,
+      ReadStatus,
+      FileSystem
+      ));
+    if (BootSector != NULL) {
+      FreePool (BootSector);
+    }
+  }
+
+  for (HandleIndex = 0;
+       HandleIndex < Device->GptPartitionCount;
+       HandleIndex++)
+  {
+    EFI_SIMPLE_FILE_SYSTEM_PROTOCOL  *FileSystem;
+    APPLE_ANS_GPT_PARTITION          *Partition;
+
+    Partition = &Device->GptPartitions[HandleIndex];
+    Status = gBS->HandleProtocol (
+                    Partition->Handle,
+                    &gEfiSimpleFileSystemProtocolGuid,
+                    (VOID **)&FileSystem
+                    );
+    if (EFI_ERROR (Status)) {
+      continue;
+    }
+
+    Status = AnsAuditBcdReferences (
+               Device,
+               Partition->Handle,
+               Partition->PartitionNumber,
+               &DiskGuid,
+               DiskGuidValid
+               );
+    if (!EFI_ERROR (Status)) {
+      BcdAudited = TRUE;
+      break;
+    }
+  }
+
+  if (!BcdAudited) {
+    ANS_DEBUG ((
+      DEBUG_ERROR,
+      "AppleANS ReadyToBoot BCD audit: no AppleANS SimpleFS partition contained a readable Microsoft BCD\n"
+      ));
+  }
+
+  FreePool (Handles);
+  ArmDataSynchronizationBarrier ();
+  Device->ReadAttributionArmed = TRUE;
+  Device->ReadyToBootDiagnosticsComplete =
+    BcdAudited && WindowsPartitionPresent;
+  ANS_DEBUG ((
+    Device->ReadyToBootDiagnosticsComplete ? DEBUG_INFO : DEBUG_WARN,
+    "AppleANS ReadyToBoot GPT audit %a: %Lu child partitions; BCD=%a NTFS=%a; bounded bootmgfw I/O attribution armed\n",
+    Device->ReadyToBootDiagnosticsComplete ? "complete" : "partial (waiting for protocol publication)",
+    (UINT64)Device->GptPartitionCount,
+    BcdAudited ? "read" : "unavailable",
+    WindowsPartitionPresent ? "present" : "absent"
+    ));
+}
+
 //
 // Hand the ANS coprocessor to Windows.
 //
@@ -1163,6 +2226,55 @@ AnsExitBootServices (
 
   (VOID)Event;
   Device->HandedOff = TRUE;
+
+  /*
+   * A Mu-booted OS inherits a LIVE RTKit/ASC, not Mu's NVMe queues.  Quiesce
+   * the NVMe front end (delete I/O queues, normal shutdown, CC.EN=0), but do
+   * not sleep RTKit, clear CPU_CONTROL.RUN, revoke SART, or free any buffer.
+   * AppleNvme observes the running coprocessor, takes its WAKE path, and then
+   * programs wholly new admin/I/O queues.
+   *
+   * This is deliberately not "stop ANS before Windows": the coprocessor and
+   * its RTKit shared-buffer grants remain live.  If the bounded controller
+   * stop fails, every queue/TCB/bounce allocation is EfiReservedMemoryType in
+   * this profile, so the still-live DMA master cannot target reclaimed OS
+   * pages.  The Windows driver will disable the inherited controller before
+   * programming its own queues, exactly as its start core already does.
+   */
+  if (FixedPcdGetBool (PcdAppleAnsPreserveForOs) &&
+      Device->InheritedSartMemoryReserved && Device->Rtkit.booted &&
+      ntasi_asc_cpu_running (&Device->Asc))
+  {
+    Result = 0;
+    if (Device->Controller.enabled) {
+      Result = ntasi_ans_controller_stop (&Device->Controller);
+    }
+    ArmDataSynchronizationBarrier ();
+    if (Result == 0) {
+      ANS_DEBUG ((
+        DEBUG_INFO,
+        "AppleANS: OS handoff is NVMe-quiesced/RTKit-live: controller disabled; preserving ASC run state, reserved buffers and SART grants for AppleNvme WAKE adoption\n"
+        ));
+    } else {
+      ANS_DEBUG ((
+        DEBUG_ERROR,
+        "AppleANS: bounded NVMe quiesce failed (%d); preserving live RTKit/SART and reserved queue memory so Windows can disable the inherited controller safely\n",
+        Result
+        ));
+    }
+    return;
+  }
+
+  if (FixedPcdGetBool (PcdAppleAnsPreserveForOs) &&
+      Device->Rtkit.booted && ntasi_asc_cpu_running (&Device->Asc) &&
+      !Device->InheritedSartMemoryReserved)
+  {
+    ANS_DEBUG ((
+      DEBUG_ERROR,
+      "AppleANS: refusing live RTKit handoff: at least one inherited SART DMA range is reclaimable by Windows; taking cold stop-and-revoke path\n"
+      ));
+  }
+
   Result = ntasi_ans_controller_stop (&Device->Controller);
   if (Result != 0) {
     ANS_DEBUG ((DEBUG_ERROR, "AppleANS: controller handoff failed: %d\n", Result));
@@ -1759,6 +2871,18 @@ AppleNANDStorageDxeInitialize (
 #if !defined (APPLE_ANS_QEMU_TEST)
   // Snapshot the filter as iBoot left it, before this driver adds anything.
   DumpSartState (Device, "as-inherited-from-iBoot");
+
+  if (FixedPcdGetBool (PcdAppleAnsPreserveForOs)) {
+    Stage  = "reserve-inherited-sart-memory";
+    Status = AnsReserveInheritedSartMemory (Device);
+    Device->InheritedSartMemoryReserved = EFI_ERROR (Status) ? FALSE : TRUE;
+    if (EFI_ERROR (Status)) {
+      ANS_DEBUG ((
+        DEBUG_ERROR,
+        "AppleANS: live OS ownership handoff is unavailable because inherited SART memory could not be made non-reclaimable; Mu may still use ANS, but ExitBootServices will take the bounded cold stop/revoke path\n"
+        ));
+    }
+  }
 #endif
 
 #if !defined (APPLE_ANS_QEMU_TEST)
@@ -1774,11 +2898,9 @@ AppleNANDStorageDxeInitialize (
   // 0 boots / 3 failures. With no Windows ANS driver loading, the only
   // remaining variable is hardware state Mu's bring-up leaves behind.
   //
-  // Mu's bring-up does two things m1n1 never does:
-  //   1. It hard-stops a LIVE, un-quiesced coprocessor at the "asc-cold-stop-
-  //      check" stage below. iBoot leaves ANS running with its own firmware
-  //      servicing the boot SSD; clearing the run bit underneath that can
-  //      strand an outstanding fabric transaction.
+  // Mu's bring-up previously did two things m1n1 never does:
+  //   1. It hard-stopped a LIVE, un-quiesced coprocessor. That is now replaced
+  //      by the ownership-aware WAKE path below; iBoot's run bit is untouched.
   //   2. It used to end without pmgr_reset(ANS2). That is now fixed (see
   //      AnsExitBootServices), but a reset only helps if bring-up ran at all.
   //
@@ -1893,8 +3015,7 @@ AppleNANDStorageDxeInitialize (
 
   ANS_DEBUG ((
     DEBUG_WARN,
-    "AppleANS: DXE bring-up ENABLED by PcdAppleAnsPerformDxeBringUp -- this firmware will halt "
-    "and reset the ANS coprocessor. Correlated with BUGCODE_USB3_DRIVER 0x144 on 2026-07-30.\n"
+    "AppleANS: DXE bring-up ENABLED by PcdAppleAnsPerformDxeBringUp -- selecting WAKE or COLD from inherited ownership\n"
     ));
 #endif
 
@@ -1912,13 +3033,15 @@ AppleNANDStorageDxeInitialize (
     goto Fail;
   }
 
-  Stage = "asc-cold-stop-check";
-  ANS_DEBUG ((DEBUG_INFO, "AppleANS: stage \"%a\" (bounded at %u polls)\n", Stage, (UINT32)APPLE_ANS_POLL_LIMIT));
-  if (ntasi_asc_cpu_running (&Device->Asc)) {
-    ANS_DEBUG ((DEBUG_WARN, "AppleANS: coprocessor was left running; stopping before boot\n"));
-    ntasi_asc_cpu_stop (&Device->Asc);
-    MicroSecondDelay (1000);
-  }
+  Stage = "asc-ownership-select";
+  Device->InheritedCoprocessor = ntasi_asc_cpu_running (&Device->Asc) ? TRUE : FALSE;
+  ANS_DEBUG ((
+    DEBUG_INFO,
+    "AppleANS: stage \"%a\": inherited coprocessor is %a; selecting %a RTKit ownership path\n",
+    Stage,
+    Device->InheritedCoprocessor ? "running" : "stopped",
+    Device->InheritedCoprocessor ? "WAKE" : "COLD"
+    ));
 
   Stage = "rtkit-init";
   ANS_DEBUG ((DEBUG_INFO, "AppleANS: stage \"%a\"\n", Stage));
@@ -1933,6 +3056,33 @@ AppleNANDStorageDxeInitialize (
     Status = EFI_DEVICE_ERROR;
     goto Fail;
   }
+  Device->Rtkit.boot_mode = Device->InheritedCoprocessor
+                                ? NTASI_RTKIT_BOOT_MODE_WAKE
+                                : NTASI_RTKIT_BOOT_MODE_COLD;
+
+#if !defined (APPLE_ANS_QEMU_TEST)
+  if (!Device->InheritedCoprocessor) {
+    UINT32  ResetFinalValue;
+
+    Stage = "cold-pmgr-reset";
+    ResetFinalValue = 0;
+    Status = AppleAnsPmgrResetDomain (
+               "AppleANS",
+               "ANS2",
+               FixedPcdGet64 (PcdAppleAnsPmgrResetBase),
+               &ResetFinalValue
+               );
+    if (EFI_ERROR (Status)) {
+      ANS_DEBUG ((
+        DEBUG_ERROR,
+        "AppleANS: cold ownership requires a completed ANS2 reset; failed with %r (last 0x%08x)\n",
+        Status,
+        ResetFinalValue
+        ));
+      goto Fail;
+    }
+  }
+#endif
 
   Stage = "allocate-controller-memory";
   ANS_DEBUG ((DEBUG_INFO, "AppleANS: stage \"%a\"\n", Stage));
@@ -2072,6 +3222,77 @@ AppleNANDStorageDxeInitialize (
     if (EFI_ERROR (Status)) {
       goto Fail;
     }
+
+    Status = gBS->CreateEventEx (
+                    EVT_NOTIFY_SIGNAL,
+                    TPL_CALLBACK,
+                    AnsReadyToBoot,
+                    Device,
+                    &gEfiEventReadyToBootGuid,
+                    &Device->ReadyToBootEvent
+                    );
+    if (EFI_ERROR (Status)) {
+      ANS_DEBUG ((
+        DEBUG_ERROR,
+        "AppleANS: ReadyToBoot GPT/I/O diagnostic could not be registered (%r); continuing without it\n",
+        Status
+        ));
+      Device->ReadyToBootEvent = NULL;
+    }
+
+    Status = gBS->CreateEvent (
+                    EVT_NOTIFY_SIGNAL,
+                    TPL_CALLBACK,
+                    AnsReadyToBoot,
+                    Device,
+                    &Device->PartitionInfoEvent
+                    );
+    if (!EFI_ERROR (Status)) {
+      Status = gBS->RegisterProtocolNotify (
+                      &gEfiPartitionInfoProtocolGuid,
+                      Device->PartitionInfoEvent,
+                      &Device->PartitionInfoRegistration
+                      );
+    }
+    if (EFI_ERROR (Status)) {
+      ANS_DEBUG ((
+        DEBUG_ERROR,
+        "AppleANS: PartitionInfo diagnostic notification could not be registered (%r); ReadyToBoot fallback remains active\n",
+        Status
+        ));
+      if (Device->PartitionInfoEvent != NULL) {
+        gBS->CloseEvent (Device->PartitionInfoEvent);
+        Device->PartitionInfoEvent = NULL;
+      }
+      Device->PartitionInfoRegistration = NULL;
+    }
+
+    Status = gBS->CreateEvent (
+                    EVT_NOTIFY_SIGNAL,
+                    TPL_CALLBACK,
+                    AnsReadyToBoot,
+                    Device,
+                    &Device->SimpleFileSystemEvent
+                    );
+    if (!EFI_ERROR (Status)) {
+      Status = gBS->RegisterProtocolNotify (
+                      &gEfiSimpleFileSystemProtocolGuid,
+                      Device->SimpleFileSystemEvent,
+                      &Device->SimpleFileSystemRegistration
+                      );
+    }
+    if (EFI_ERROR (Status)) {
+      ANS_DEBUG ((
+        DEBUG_ERROR,
+        "AppleANS: SimpleFileSystem diagnostic notification could not be registered (%r); ReadyToBoot fallback remains active\n",
+        Status
+        ));
+      if (Device->SimpleFileSystemEvent != NULL) {
+        gBS->CloseEvent (Device->SimpleFileSystemEvent);
+        Device->SimpleFileSystemEvent = NULL;
+      }
+      Device->SimpleFileSystemRegistration = NULL;
+    }
   } else {
     ANS_DEBUG ((
       DEBUG_INFO,
@@ -2106,8 +3327,26 @@ Fail:
   if (Device->ExitBootServicesEvent != NULL) {
     gBS->CloseEvent (Device->ExitBootServicesEvent);
   }
+  if (Device->ReadyToBootEvent != NULL) {
+    gBS->CloseEvent (Device->ReadyToBootEvent);
+  }
+  if (Device->PartitionInfoEvent != NULL) {
+    gBS->CloseEvent (Device->PartitionInfoEvent);
+  }
+  if (Device->SimpleFileSystemEvent != NULL) {
+    gBS->CloseEvent (Device->SimpleFileSystemEvent);
+  }
   if (Device->Controller.enabled) {
     ntasi_ans_controller_stop (&Device->Controller);
+  }
+
+  if (Device->InheritedCoprocessor && !Device->Rtkit.booted) {
+    ANS_DEBUG ((
+      DEBUG_ERROR,
+      "AppleANS: warm attach failed before ownership transferred; preserving inherited coprocessor and SART state\n"
+      ));
+    Device->HandedOff = TRUE;
+    return Status;
   }
 
   //

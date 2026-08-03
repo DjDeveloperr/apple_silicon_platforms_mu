@@ -15,14 +15,9 @@
 #define BUFFER_REQUEST 1u
 #define BUFFER_REQUEST_SIZE_SHIFT 44u
 #define BUFFER_REQUEST_SIZE_MASK (UINT64_C(0xff) << BUFFER_REQUEST_SIZE_SHIFT)
-/*
- * CORRECTED 2026-07-30: this was a 44-bit mask. m1n1's
- * MSG_BUFFER_REQUEST_IOVA is GENMASK(41, 0) (src/rtkit.c) -- 42 bits, not
- * 44. Bits 42 and 43 are not part of the address, so reading them as one
- * made any message that happens to set them look like a request for a
- * specific pre-allocated buffer at a bogus address.
- */
-#define BUFFER_REQUEST_IOVA_MASK ((UINT64_C(1) << 42) - 1u)
+/* Current Asahi RTKit uses GENMASK_ULL(43, 0). Keep all 44 address bits below
+ * the size field: truncating bits 42-43 aliases valid coprocessor IOVAs. */
+#define BUFFER_REQUEST_IOVA_MASK ((UINT64_C(1) << 44) - 1u)
 
 #define SYSLOG_INIT 8u
 #define SYSLOG_LOG 5u
@@ -384,12 +379,19 @@ int ntasi_rtkit_runtime_boot(struct ntasi_rtkit_runtime *runtime)
     runtime->ap_power = NTASI_RTKIT_POWER_OFF;
     runtime->system_endpoints = 0;
 
-    ntasi_asc_cpu_start(runtime->asc);
-    status = send_message(runtime, NTASI_RTKIT_EP_MGMT,
-                          with_type(MGMT_IOP_POWER_STATE) |
-                              NTASI_RTKIT_POWER_INIT);
-    if (status != 0)
-        return status;
+    if (runtime->boot_mode == NTASI_RTKIT_BOOT_MODE_COLD) {
+        ntasi_asc_cpu_start_exclusive(runtime->asc);
+    } else if (runtime->boot_mode == NTASI_RTKIT_BOOT_MODE_M1N1) {
+        ntasi_asc_cpu_start(runtime->asc);
+    }
+
+    if (runtime->boot_mode != NTASI_RTKIT_BOOT_MODE_COLD) {
+        status = send_message(runtime, NTASI_RTKIT_EP_MGMT,
+                              with_type(MGMT_IOP_POWER_STATE) |
+                                  NTASI_RTKIT_POWER_INIT);
+        if (status != 0)
+            return status;
+    }
     status = receive_bounded(runtime, &message);
     if (status != 0)
         return status;

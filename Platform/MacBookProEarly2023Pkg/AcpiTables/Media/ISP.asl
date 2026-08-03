@@ -26,7 +26,7 @@
   the omission is documentary, not functional.
 
   Originally authored as drivers-side specification in
-  apple_silicon_nt_drivers/integration/hardware/m2-pro/isp/ISP.asl.
+  the retained AuroraSilicon M2 Pro ISP evidence.
 
   ==========================================================================
   WHAT THE DRIVER DOES WITH THIS

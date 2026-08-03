@@ -88,23 +88,32 @@ commit=$(git -C "$source_root" rev-parse HEAD)
 if test -n "$(git -C "$source_root" status --porcelain=v1 --untracked-files=all --ignore-submodules=none)"; then
     echo "note: unified Mu tree is dirty; manifest will record clean=false" >&2
 fi
-output_root=${NTASI_MU_OUTPUT_ROOT:-$(dirname "$source_root")/apple_silicon_nt_drivers/build/m2-pro}
+# Keep direct native builds inside the AuroraSilicon main repository.  The
+# legacy variable remains a compatibility fallback for existing automation.
+output_root=${AURORADBG_MU_OUTPUT_ROOT:-${NTASI_MU_OUTPUT_ROOT:-$(dirname "$source_root")/AuroraSilicon/build/m2-pro}}
 output_dir=$output_root/$profile/$commit
 build_dir=$output_dir/Build
 conf_dir=$output_dir/Conf
 artifact_dir=$output_dir/artifacts
 toolchain_dir=$output_dir/native-toolchain
 lock_dir=$output_dir/.build-lock
+source_link_lock_dir=$output_root/.native-source-link-lock
 mkdir -p "$output_dir"
+if ! mkdir "$source_link_lock_dir" 2>/dev/null; then
+    echo "error: another native Mu profile build owns $source_root/Build and Conf" >&2
+    exit 1
+fi
 if ! mkdir "$lock_dir" 2>/dev/null; then
+    rmdir "$source_link_lock_dir" 2>/dev/null || true
     echo "error: profile build is already running: $output_dir" >&2
     exit 1
 fi
 
 cleanup() {
-    test -L "$source_root/Build" && rm "$source_root/Build"
-    test -L "$source_root/Conf" && rm "$source_root/Conf"
+    test "$(readlink "$source_root/Build" 2>/dev/null || true)" != "$build_dir" || rm "$source_root/Build"
+    test "$(readlink "$source_root/Conf" 2>/dev/null || true)" != "$conf_dir" || rm "$source_root/Conf"
     rmdir "$lock_dir" 2>/dev/null || true
+    rmdir "$source_link_lock_dir" 2>/dev/null || true
 }
 trap cleanup EXIT HUP INT TERM
 if test ! -d "$build_dir"; then
@@ -113,10 +122,13 @@ if test ! -d "$build_dir"; then
             printf '%s %s\n' "$(stat -f %m "$candidate")" "$candidate"
         done | sort -nr | sed -n '1s/^[0-9][0-9]* //p')
     if test -n "$previous_build"; then
-        echo "Seeding incremental Mu build from $(dirname "$previous_build")"
+        previous_output=$(dirname "$previous_build")
+        echo "Seeding incremental Mu build from $previous_output"
         cp -cR "$previous_build" "$build_dir"
-        previous_conf=$(dirname "$previous_build")/Conf
+        previous_conf=$previous_output/Conf
         test ! -d "$previous_conf" || cp -cR "$previous_conf" "$conf_dir"
+        previous_basetools=$previous_output/native-basetools
+        test ! -d "$previous_basetools" || cp -cR "$previous_basetools" "$output_dir/native-basetools"
     fi
 fi
 mkdir -p "$build_dir" "$conf_dir" "$artifact_dir"
@@ -155,16 +167,16 @@ base_tools=$source_root/MU_BASECORE/BaseTools
 base_tools_work=$output_dir/native-basetools
 base_tools_bin=$base_tools_work/bin
 base_tools_wrappers=$base_tools/BinWrappers/PosixLike
-if test ! -x "$base_tools_bin/GenFfs" || test ! -x "$base_tools_bin/VfrCompile"; then
-    # Build from an output-local copy. Building in MU_BASECORE/Source/C leaves
-    # object files inside a locked nested gitlink and invalidates the source
-    # provenance hash even though every tracked byte is unchanged.
-    mkdir -p "$base_tools_work"
-    ditto "$base_tools/Source/C" "$base_tools_work"
-    run_logged "Building native EDK2 BaseTools" make -C "$base_tools_work" \
-        EDK2_PATH="$source_root/MU_BASECORE" \
-        -j "${AURORADBG_MU_JOBS:-$(sysctl -n hw.logicalcpu)}"
-fi
+# Build from an output-local copy. Building in MU_BASECORE/Source/C leaves
+# object files inside a locked nested gitlink and invalidates the source
+# provenance hash even though every tracked byte is unchanged. Always invoke
+# make after overlaying current source: it is incremental when unchanged and
+# correctly recompiles BaseTools if a new Mu commit modifies them.
+mkdir -p "$base_tools_work"
+ditto "$base_tools/Source/C" "$base_tools_work"
+run_logged "Updating native EDK2 BaseTools" make -C "$base_tools_work" \
+    EDK2_PATH="$source_root/MU_BASECORE" \
+    -j "${AURORADBG_MU_JOBS:-$(sysctl -n hw.logicalcpu)}"
 # Mu's published BaseTools archive contains Linux and Windows binaries only.
 # Stuart's host-specific dependency resolver still needs a Darwin directory,
 # so point its ignored extdep cache at the C tools we just built from the

@@ -64,13 +64,17 @@
 [Protocols]
   gEfiBlockIoProtocolGuid      ## PRODUCES
   gEfiDevicePathProtocolGuid   ## PRODUCES
+  gEfiPartitionInfoProtocolGuid ## CONSUMES
+  gEfiSimpleFileSystemProtocolGuid ## CONSUMES
 
 [Guids]
   gEfiEventExitBootServicesGuid
+  gEfiEventReadyToBootGuid
 
 [Pcd]
   gAppleSiliconPkgTokenSpaceGuid.PcdAppleAnsPublishBlockIo    ## CONSUMES
   gAppleSiliconPkgTokenSpaceGuid.PcdAppleAnsPerformDxeBringUp ## CONSUMES
+  gAppleSiliconPkgTokenSpaceGuid.PcdAppleAnsPreserveForOs     ## CONSUMES
   # Hardware-confirmed expectations for the four pmgr_east power-state words.
   # Consumed ONLY as a corroboration check against the live-ADT resolution in
   # AppleAnsPmgrReportDomain(); never used as an address to read on their own.

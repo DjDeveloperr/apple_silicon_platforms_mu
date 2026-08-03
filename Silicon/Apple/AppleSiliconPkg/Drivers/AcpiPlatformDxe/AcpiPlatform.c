@@ -1952,7 +1952,7 @@ Exit:
 // the streaming path's resources are already arbitrated and so a grant now is
 // evidence of a grant later -- at the cost that every one of them must be
 // satisfiable for its devnode to start.  See
-// apple_silicon_nt_drivers/docs/j414s-media-gsiv-allocation.md.
+// the J414s media GSIV allocation contract retained in this source tree.
 //
 // _CRS ORDER IS A CONTRACT.  All three drivers match memory descriptors
 // POSITIONALLY by index and fail closed only on a SHORT list -- a REORDERED
@@ -2538,7 +2538,7 @@ NtasiInstallMediaTables (
 // stack CmBatt.sys uses; only the backend differs.
 //
 // WHY THIS IS NOT A PNP0C0A CONTROL-METHOD BATTERY.  Argued in full in
-// apple_silicon_nt_drivers/docs/j414s-battery-power.md section 2.  The short
+// the J414s battery power contract. The short
 // version, in four independent reasons any one of which is sufficient:
 //
 //   1. The SMC is not a register file.  Reading one key is an RTKit

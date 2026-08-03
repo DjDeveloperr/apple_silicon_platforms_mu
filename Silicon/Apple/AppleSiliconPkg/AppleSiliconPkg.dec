@@ -50,11 +50,16 @@
   # 0x144 with the Windows ANS driver DISABLED (Start=4), while `gpu` on the
   # same commit and cable booted -- 6 boots / 0 failures for non-ANS profiles
   # versus 0 / 3 for ANS profiles. With no OS driver loading, hardware state
-  # left behind by this bring-up was the only remaining variable, and the
-  # bring-up hard-stops a live un-quiesced coprocessor that iBoot leaves
-  # running. Nothing needs it: PcdAppleAnsPublishBlockIo is FALSE and the OS
-  # driver brings ANS up itself from a cold ADT state.
+  # left behind by this bring-up was the only remaining variable. That older
+  # implementation hard-stopped a live un-quiesced coprocessor; the default
+  # stays off for existing profiles. PcdAppleAnsPublishBlockIo is FALSE and the OS
+  # driver brings ANS up itself. The dedicated internal-storage profile opts
+  # into the ownership-aware WAKE/COLD implementation and live OS handoff.
   gAppleSiliconPkgTokenSpaceGuid.PcdAppleAnsPerformDxeBringUp|FALSE|BOOLEAN|0x00004721
+  # Keep a successfully booted Mu controller live across ExitBootServices so
+  # AppleNvme can take its explicit warm-adoption path. Only internal-storage
+  # boot profiles may enable this together with DXE bring-up and Block I/O.
+  gAppleSiliconPkgTokenSpaceGuid.PcdAppleAnsPreserveForOs|FALSE|BOOLEAN|0x00004722
   # Exact four-byte PMGR power-state registers, exported to NTAS2003's ACPI
   # _CRS. RETRACTED 2026-07-30: earlier comments here and on Mu's own ANS
   # bring-up code claimed touching ANS/SART/mailbox MMIO before this PMGR

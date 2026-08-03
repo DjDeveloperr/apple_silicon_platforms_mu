@@ -45,7 +45,7 @@ DSC = REPO / "Platform" / "MacBookProEarly2023Pkg" / "MacBookProEarly2023.dsc"
 PLATFORM_BUILD = (
     REPO / "Platform" / "MacBookProEarly2023Pkg" / "PlatformBuild.py"
 )
-BUILDER = REPO / "Tools" / "build-j414s-windows-profile.sh"
+BUILDER = REPO / "Tools" / "build-j414s-windows-native.sh"
 SMCG_ASL = (
     REPO / "Platform" / "MacBookProEarly2023Pkg" / "AcpiTables" / "SMCG.asl"
 )
@@ -318,8 +318,8 @@ class BatteryBuilderAgreesWithTheManifest(unittest.TestCase):
 
     def test_the_wrapper_script_accepts_the_profile(self):
         text = BUILDER.read_text(encoding="utf-8")
-        self.assertIn("    battery) ;;", text)
-        self.assertIn("|battery", text)
+        self.assertIn('profile manifest has no PROFILES table', text)
+        self.assertIn('if sys.argv[2] not in profiles', text)
 
 
 if __name__ == "__main__":

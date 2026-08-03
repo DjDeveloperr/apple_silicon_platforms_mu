@@ -97,6 +97,13 @@
 #define DWC3_GUSB3PIPECTL_SUSPHY  BIT17
 #define DWC3_GUSB2PHYCFG_SUSPHY   BIT6
 
+// Current Asahi dwc3_core_soft_reset() device-side reset contract.
+#define DWC3_DCTL_RUN_STOP         BIT31
+#define DWC3_DCTL_CSFTRST          BIT30
+#define DWC3_DCTL_ULSTCHNGREQ_MASK (0x0F << 5)
+#define DWC3_DCTL_RESET_RETRIES    10
+#define DWC3_DCTL_RESET_POLL_US    (20 * 1000)
+
 //
 // ---------------------------------------------------------------------------
 // Apple ATC PHY register windows, transcribed from m1n1 src/atcphy_core.h,
@@ -110,6 +117,21 @@
 //
 #define ATCPHY_DRD_REG_PIPEHANDLER  3
 #define ATCPHY_ATC_REG_CORE         3
+#define ATCPHY_ATC_REG_USB2PHY      0
+
+#define ATCPHY_USB2PHY_USBCTL                 0x00
+#define ATCPHY_USB2PHY_USBCTL_MODE_MASK       0x7
+#define ATCPHY_USB2PHY_USBCTL_RUN             2
+#define ATCPHY_USB2PHY_CTL                    0x04
+#define ATCPHY_USB2PHY_CTL_RESET              BIT0
+#define ATCPHY_USB2PHY_CTL_PORT_RESET         BIT1
+#define ATCPHY_USB2PHY_CTL_APB_RESET_N        BIT2
+#define ATCPHY_USB2PHY_CTL_SIDDQ              BIT3
+#define ATCPHY_USB2PHY_SIG                    0x08
+#define ATCPHY_USB2PHY_SIG_VBUS               (BIT0 | BIT1 | BIT2 | BIT3)
+#define ATCPHY_USB2PHY_MISCTUNE               0x1C
+#define ATCPHY_USB2PHY_MISCTUNE_APB_GATE_OFF  BIT29
+#define ATCPHY_USB2PHY_MISCTUNE_REF_GATE_OFF  BIT30
 
 #define ATCPHY_PIPEHANDLER_OVERRIDE                 0x00
 #define ATCPHY_PIPEHANDLER_OVERRIDE_RXVALID         BIT0
@@ -131,6 +153,9 @@
 #define ATCPHY_PIPEHANDLER_LOCK_ACK                 0x14
 #define ATCPHY_PIPEHANDLER_LOCK_EN                  BIT0
 #define ATCPHY_PIPEHANDLER_LOCK_TIMEOUT_US          1000
+#define ATCPHY_PIPEHANDLER_AON_GEN                  0x1C
+#define ATCPHY_PIPEHANDLER_AON_DWC3_FORCE_CLAMP_EN  BIT4
+#define ATCPHY_PIPEHANDLER_AON_DWC3_RESET_N         BIT0
 #define ATCPHY_PIPEHANDLER_NONSELECTED_OVERRIDE     0x20
 #define ATCPHY_PIPEHANDLER_NATIVE_POWER_DOWN_MASK   0xF
 #define ATCPHY_PIPEHANDLER_NATIVE_POWER_DOWN_SHIFT  0
@@ -158,6 +183,231 @@
 #define ATCPHY_CORE_POWER_PHY_RESET_N               BIT4
 
 #define ATCPHY_PHY_STAT_TIMEOUT_US                  10000
+
+//
+// USB DART completion contract.  m1n1 keeps each guest DWC3 reset and
+// clamped while AppleDartIoMmuDxe replaces its translation state.  Do not
+// release a controller merely because the DART driver is earlier in the
+// apriori list: prove that both DART instances for this controller have
+// reached all-stream bypass first.
+//
+#define USB_DART_REG_COUNT                    2
+#define USB_DART_PARAMS2                      0x0004
+#define USB_DART_PARAMS2_BYPASS_SUPPORT       BIT0
+#define USB_DART_T8020_NSID                   16
+#define USB_DART_T8020_TCR_BASE               0x0100
+#define USB_DART_T8020_TCR_BYPASS             (BIT8 | BIT12)
+#define USB_DART_T8110_PARAMS4                0x000C
+#define USB_DART_T8110_PARAMS4_NSID_MASK      0x1FF
+#define USB_DART_T8110_TCR_BASE               0x1000
+#define USB_DART_T8110_TCR_BYPASS             (BIT1 | BIT2)
+
+STATIC EFI_STATUS UsbDartVerifyControllerBypass(IN UINT32 PortIndex) {
+  CHAR8      NodeName[31];
+  dt_node_t  *DartNode;
+  CHAR8      *Compatible;
+  UINTN      CompatibleLength;
+  UINT32     Nsid;
+  UINT32     TcrBase;
+  UINT32     ExpectedTcr;
+
+  AsciiSPrint(NodeName, ARRAY_SIZE(NodeName), "dart-usb%d", PortIndex);
+  DartNode = dt_get(NodeName);
+  if (DartNode == NULL) {
+    DEBUG((DEBUG_ERROR, "UsbDartVerifyControllerBypass: missing %a\n", NodeName));
+    return EFI_NOT_FOUND;
+  }
+
+  CompatibleLength = 0;
+  Compatible = dt_node_prop(DartNode, "compatible", &CompatibleLength);
+  if ((Compatible == NULL) || (CompatibleLength == 0)) {
+    DEBUG((DEBUG_ERROR, "UsbDartVerifyControllerBypass: %a has no compatible\n", NodeName));
+    return EFI_COMPROMISED_DATA;
+  }
+
+  if (AsciiStrCmp(Compatible, "dart,t8110") == 0) {
+    TcrBase = USB_DART_T8110_TCR_BASE;
+    ExpectedTcr = USB_DART_T8110_TCR_BYPASS;
+  } else if (AsciiStrCmp(Compatible, "dart,t6000") == 0) {
+    Nsid = USB_DART_T8020_NSID;
+    TcrBase = USB_DART_T8020_TCR_BASE;
+    ExpectedTcr = USB_DART_T8020_TCR_BYPASS;
+  } else {
+    DEBUG((DEBUG_ERROR, "UsbDartVerifyControllerBypass: %a unsupported compatible %a\n",
+           NodeName, Compatible));
+    return EFI_UNSUPPORTED;
+  }
+
+  for (UINT32 Instance = 0; Instance < USB_DART_REG_COUNT; Instance++) {
+    UINT64 DartBase;
+
+    if (dt_node_reg(DartNode, Instance, &DartBase, NULL) < 0) {
+      DEBUG((DEBUG_ERROR, "UsbDartVerifyControllerBypass: %a missing reg[%d]\n",
+             NodeName, Instance));
+      return EFI_COMPROMISED_DATA;
+    }
+    if ((MmioRead32((UINTN)DartBase + USB_DART_PARAMS2) &
+         USB_DART_PARAMS2_BYPASS_SUPPORT) == 0) {
+      DEBUG((DEBUG_ERROR, "UsbDartVerifyControllerBypass: %a reg[%d] lacks bypass\n",
+             NodeName, Instance));
+      return EFI_UNSUPPORTED;
+    }
+
+    if (AsciiStrCmp(Compatible, "dart,t8110") == 0) {
+      Nsid = MmioRead32((UINTN)DartBase + USB_DART_T8110_PARAMS4) &
+             USB_DART_T8110_PARAMS4_NSID_MASK;
+      if (Nsid == 0) {
+        DEBUG((DEBUG_ERROR, "UsbDartVerifyControllerBypass: %a reg[%d] reports zero SIDs\n",
+               NodeName, Instance));
+        return EFI_DEVICE_ERROR;
+      }
+    }
+
+    for (UINT32 Sid = 0; Sid < Nsid; Sid++) {
+      UINT32 Tcr = MmioRead32((UINTN)DartBase + TcrBase + 4 * Sid);
+      if (Tcr != ExpectedTcr) {
+        DEBUG((DEBUG_ERROR, "UsbDartVerifyControllerBypass: %a reg[%d] SID %d "
+                 "TCR=0x%x, expected bypass 0x%x; keeping DWC3 reset\n",
+               NodeName, Instance, Sid, Tcr, ExpectedTcr));
+        return EFI_NOT_READY;
+      }
+    }
+  }
+
+  DEBUG((DEBUG_INFO, "UsbDartVerifyControllerBypass: port %d both DARTs are in "
+                     "all-stream bypass\n", PortIndex));
+  return EFI_SUCCESS;
+}
+
+STATIC VOID AtcPhyHoldDwc3Reset(IN UINTN PipeHandler) {
+  MmioAnd32(PipeHandler + ATCPHY_PIPEHANDLER_AON_GEN,
+            ~(UINT32)ATCPHY_PIPEHANDLER_AON_DWC3_RESET_N);
+  MmioOr32(PipeHandler + ATCPHY_PIPEHANDLER_AON_GEN,
+           ATCPHY_PIPEHANDLER_AON_DWC3_FORCE_CLAMP_EN);
+  MemoryFence();
+}
+
+STATIC EFI_STATUS AtcPhyReleaseDwc3AfterDart(IN UINT32 PortIndex,
+                                             OUT UINTN *PipeHandlerOut,
+                                             OUT UINTN *Usb2PhyOut) {
+  CHAR8      NodeName[31];
+  dt_node_t  *DrdNode;
+  dt_node_t  *PhyNode;
+  UINT64     PipeHandlerBase;
+  UINT64     Usb2PhyBase;
+  UINT32     Aon;
+  EFI_STATUS Status;
+
+  Status = UsbDartVerifyControllerBypass(PortIndex);
+  if (EFI_ERROR(Status)) {
+    return Status;
+  }
+
+  AsciiSPrint(NodeName, ARRAY_SIZE(NodeName), "usb-drd%d", PortIndex);
+  DrdNode = dt_get(NodeName);
+  if ((DrdNode == NULL) ||
+      (dt_node_reg(DrdNode, ATCPHY_DRD_REG_PIPEHANDLER, &PipeHandlerBase, NULL) < 0)) {
+    DEBUG((DEBUG_ERROR, "AtcPhyReleaseDwc3AfterDart: cannot resolve %a pipehandler\n",
+           NodeName));
+    return EFI_NOT_FOUND;
+  }
+
+  AsciiSPrint(NodeName, ARRAY_SIZE(NodeName), "atc-phy%d", PortIndex);
+  PhyNode = dt_get(NodeName);
+  if ((PhyNode == NULL) ||
+      (dt_node_reg(PhyNode, ATCPHY_ATC_REG_USB2PHY, &Usb2PhyBase, NULL) < 0)) {
+    DEBUG((DEBUG_ERROR, "AtcPhyReleaseDwc3AfterDart: cannot resolve %a USB2 PHY\n",
+           NodeName));
+    return EFI_NOT_FOUND;
+  }
+
+  Aon = MmioRead32((UINTN)PipeHandlerBase + ATCPHY_PIPEHANDLER_AON_GEN);
+  if ((Aon & (ATCPHY_PIPEHANDLER_AON_DWC3_FORCE_CLAMP_EN |
+              ATCPHY_PIPEHANDLER_AON_DWC3_RESET_N)) !=
+      ATCPHY_PIPEHANDLER_AON_DWC3_FORCE_CLAMP_EN) {
+    DEBUG((DEBUG_ERROR, "AtcPhyReleaseDwc3AfterDart: port %d did not arrive reset+clamped "
+           "from m1n1 (AON_GEN=0x%x); refusing release\n", PortIndex, Aon));
+    AtcPhyHoldDwc3Reset((UINTN)PipeHandlerBase);
+    return EFI_NOT_READY;
+  }
+
+  if (MmioRead32((UINTN)PipeHandlerBase + ATCPHY_PIPEHANDLER_MUX_CTRL) !=
+      (ATCPHY_PIPEHANDLER_MUX_CLK_DUMMY << ATCPHY_PIPEHANDLER_MUX_CLK_SHIFT |
+       ATCPHY_PIPEHANDLER_MUX_DATA_DUMMY << ATCPHY_PIPEHANDLER_MUX_DATA_SHIFT)) {
+    DEBUG((DEBUG_ERROR, "AtcPhyReleaseDwc3AfterDart: port %d PIPE is not DUMMY; "
+           "refusing release\n", PortIndex));
+    AtcPhyHoldDwc3Reset((UINTN)PipeHandlerBase);
+    return EFI_NOT_READY;
+  }
+
+  // Asahi atcphy_dwc3_reset_deassert(): unclamp first, then release reset.
+  MmioAnd32((UINTN)PipeHandlerBase + ATCPHY_PIPEHANDLER_AON_GEN,
+            ~(UINT32)ATCPHY_PIPEHANDLER_AON_DWC3_FORCE_CLAMP_EN);
+  MmioOr32((UINTN)PipeHandlerBase + ATCPHY_PIPEHANDLER_AON_GEN,
+           ATCPHY_PIPEHANDLER_AON_DWC3_RESET_N);
+  MemoryFence();
+
+  Aon = MmioRead32((UINTN)PipeHandlerBase + ATCPHY_PIPEHANDLER_AON_GEN);
+  if ((Aon & (ATCPHY_PIPEHANDLER_AON_DWC3_FORCE_CLAMP_EN |
+              ATCPHY_PIPEHANDLER_AON_DWC3_RESET_N)) !=
+      ATCPHY_PIPEHANDLER_AON_DWC3_RESET_N) {
+    DEBUG((DEBUG_ERROR, "AtcPhyReleaseDwc3AfterDart: port %d AON release did not stick "
+           "(AON_GEN=0x%x)\n", PortIndex, Aon));
+    AtcPhyHoldDwc3Reset((UINTN)PipeHandlerBase);
+    return EFI_DEVICE_ERROR;
+  }
+
+  *PipeHandlerOut = (UINTN)PipeHandlerBase;
+  *Usb2PhyOut = (UINTN)Usb2PhyBase;
+  DEBUG((DEBUG_INFO, "AtcPhyReleaseDwc3AfterDart: port %d DARTs complete; DWC3 "
+                     "released for core init (AON_GEN=0x%x)\n", PortIndex, Aon));
+  return EFI_SUCCESS;
+}
+
+//
+// Asahi's lifecycle keeps USB2 powered off while the host role is selected
+// and the external DWC3 reset is asserted.  Only after reset deassertion does
+// generic DWC3 bringup power the PHY on.  m1n1 deliberately leaves the PHY in
+// that off/host state; reproduce the power-on half here at the actual consumer
+// boundary so the stateful eUSB2 repeater stays synchronized with DWC3.
+//
+STATIC EFI_STATUS AtcPhyPowerOnUsb2AfterDwc3Release(IN UINT32 PortIndex,
+                                                    IN UINTN Usb2Phy) {
+  UINT32 Ctl;
+
+  MmioOr32(Usb2Phy + ATCPHY_USB2PHY_SIG, ATCPHY_USB2PHY_SIG_VBUS);
+  MicroSecondDelay(10);
+  MmioAnd32(Usb2Phy + ATCPHY_USB2PHY_CTL, ~(UINT32)ATCPHY_USB2PHY_CTL_SIDDQ);
+  MicroSecondDelay(10);
+  MmioAnd32(Usb2Phy + ATCPHY_USB2PHY_CTL, ~(UINT32)ATCPHY_USB2PHY_CTL_RESET);
+  MicroSecondDelay(10);
+  MmioAnd32(Usb2Phy + ATCPHY_USB2PHY_CTL, ~(UINT32)ATCPHY_USB2PHY_CTL_PORT_RESET);
+  MicroSecondDelay(10);
+  MmioOr32(Usb2Phy + ATCPHY_USB2PHY_CTL, ATCPHY_USB2PHY_CTL_APB_RESET_N);
+  MicroSecondDelay(10);
+  MmioAnd32(Usb2Phy + ATCPHY_USB2PHY_MISCTUNE,
+            ~(UINT32)(ATCPHY_USB2PHY_MISCTUNE_APB_GATE_OFF |
+                      ATCPHY_USB2PHY_MISCTUNE_REF_GATE_OFF));
+  MmioWrite32(Usb2Phy + ATCPHY_USB2PHY_USBCTL, ATCPHY_USB2PHY_USBCTL_RUN);
+  MemoryFence();
+
+  Ctl = MmioRead32(Usb2Phy + ATCPHY_USB2PHY_CTL);
+  if (((MmioRead32(Usb2Phy + ATCPHY_USB2PHY_USBCTL) &
+        ATCPHY_USB2PHY_USBCTL_MODE_MASK) != ATCPHY_USB2PHY_USBCTL_RUN) ||
+      ((Ctl & (ATCPHY_USB2PHY_CTL_RESET |
+               ATCPHY_USB2PHY_CTL_PORT_RESET |
+               ATCPHY_USB2PHY_CTL_APB_RESET_N |
+               ATCPHY_USB2PHY_CTL_SIDDQ)) != ATCPHY_USB2PHY_CTL_APB_RESET_N)) {
+    DEBUG((DEBUG_ERROR, "AtcPhyPowerOnUsb2AfterDwc3Release: port %d power-on did not "
+           "stick (USBCTL=0x%x CTL=0x%x)\n", PortIndex,
+           MmioRead32(Usb2Phy + ATCPHY_USB2PHY_USBCTL), Ctl));
+    return EFI_DEVICE_ERROR;
+  }
+
+  DEBUG((DEBUG_INFO, "AtcPhyPowerOnUsb2AfterDwc3Release: port %d USB2 PHY live "
+                     "after DWC3 release (CTL=0x%x)\n", PortIndex, Ctl));
+  return EFI_SUCCESS;
+}
 
 //
 // Poll Addr until (read & Mask) == Target, or TimeoutUs elapses.
@@ -208,10 +458,40 @@ STATIC VOID Dwc3AppleSetupCio(IN UINTN Dwc3ControllerBaseReg) {
 // to properly configure the PHY and switch dwc3's PIPE interface to USB3 PHY."
 // So this MUST run before the PIPE switch below, not after.
 //
+STATIC VOID Dwc3DisableSusphyForCoreInit(IN DWC3_CONTROLLER *Controller) {
+  UINT32 Usb3Before;
+  UINT32 Usb2Before;
+  UINT32 Usb3After;
+  UINT32 Usb2After;
+
+  Usb3Before = MmioRead32((UINTN)&Controller->GUsb3PipeCtl[0]);
+  Usb2Before = MmioRead32((UINTN)&Controller->GUsb2PhyCfg[0]);
+  MmioAnd32((UINTN)&Controller->GUsb3PipeCtl[0],
+            ~(UINT32)DWC3_GUSB3PIPECTL_SUSPHY);
+  MmioAnd32((UINTN)&Controller->GUsb2PhyCfg[0],
+            ~(UINT32)DWC3_GUSB2PHYCFG_SUSPHY);
+  MemoryFence();
+
+  Usb3After = MmioRead32((UINTN)&Controller->GUsb3PipeCtl[0]);
+  Usb2After = MmioRead32((UINTN)&Controller->GUsb2PhyCfg[0]);
+  DEBUG((DEBUG_INFO, "Dwc3DisableSusphyForCoreInit: USB3PIPECTL 0x%x->0x%x, "
+                     "USB2PHYCFG 0x%x->0x%x\n",
+         Usb3Before, Usb3After, Usb2Before, Usb2After));
+}
+
 STATIC VOID Dwc3EnableSusphy(IN DWC3_CONTROLLER *Controller) {
+  UINT32 Usb3Before;
+  UINT32 Usb2Before;
+
+  Usb3Before = MmioRead32((UINTN)&Controller->GUsb3PipeCtl[0]);
+  Usb2Before = MmioRead32((UINTN)&Controller->GUsb2PhyCfg[0]);
   MmioOr32((UINTN)&Controller->GUsb3PipeCtl[0], DWC3_GUSB3PIPECTL_SUSPHY);
   MmioOr32((UINTN)&Controller->GUsb2PhyCfg[0], DWC3_GUSB2PHYCFG_SUSPHY);
   MemoryFence();
+  DEBUG((DEBUG_INFO, "Dwc3EnableSusphy: USB3PIPECTL 0x%x->0x%x, "
+                     "USB2PHYCFG 0x%x->0x%x\n",
+         Usb3Before, MmioRead32((UINTN)&Controller->GUsb3PipeCtl[0]),
+         Usb2Before, MmioRead32((UINTN)&Controller->GUsb2PhyCfg[0])));
 }
 
 //
@@ -245,6 +525,8 @@ STATIC EFI_STATUS AtcPhyPipeSwitchToUsb3(IN UINTN PipeHandler, IN UINTN PhyCore)
   EFI_STATUS Status;
   UINT32     RegVal;
 
+  Status = EFI_SUCCESS;
+
   //
   // atcphy_pipehandler_check, atc.c:956-973: a previous attempt may have left
   // the lock held. Release it before requesting it again, or the request below
@@ -253,8 +535,13 @@ STATIC EFI_STATUS AtcPhyPipeSwitchToUsb3(IN UINTN PipeHandler, IN UINTN PhyCore)
   if (MmioRead32(PipeHandler + ATCPHY_PIPEHANDLER_LOCK_ACK) & ATCPHY_PIPEHANDLER_LOCK_EN) {
     DEBUG((DEBUG_WARN, "AtcPhyPipeSwitchToUsb3: lock already held, clearing first\n"));
     MmioAnd32(PipeHandler + ATCPHY_PIPEHANDLER_LOCK_REQ, ~(UINT32)ATCPHY_PIPEHANDLER_LOCK_EN);
-    AtcPhyPoll32(PipeHandler + ATCPHY_PIPEHANDLER_LOCK_ACK, ATCPHY_PIPEHANDLER_LOCK_EN, 0,
-                 ATCPHY_PIPEHANDLER_LOCK_TIMEOUT_US);
+    Status = AtcPhyPoll32(PipeHandler + ATCPHY_PIPEHANDLER_LOCK_ACK,
+                          ATCPHY_PIPEHANDLER_LOCK_EN, 0,
+                          ATCPHY_PIPEHANDLER_LOCK_TIMEOUT_US);
+    if (EFI_ERROR(Status)) {
+      DEBUG((DEBUG_ERROR, "AtcPhyPipeSwitchToUsb3: stale lock did not clear\n"));
+      goto Unlock;
+    }
   }
 
   //
@@ -274,7 +561,7 @@ STATIC EFI_STATUS AtcPhyPipeSwitchToUsb3(IN UINTN PipeHandler, IN UINTN PhyCore)
                         ATCPHY_PIPEHANDLER_LOCK_EN, ATCPHY_PIPEHANDLER_LOCK_TIMEOUT_US);
   if (EFI_ERROR(Status)) {
     DEBUG((DEBUG_ERROR, "AtcPhyPipeSwitchToUsb3: pipehandler lock not acked, aborting\n"));
-    return Status;
+    goto Unlock;
   }
 
   //
@@ -369,15 +656,24 @@ Unlock:
   // atcphy_pipehandler_unlock, host mode only, atc.c:947-949,1073.
   //
   MmioAnd32(PipeHandler + ATCPHY_PIPEHANDLER_LOCK_REQ, ~(UINT32)ATCPHY_PIPEHANDLER_LOCK_EN);
-  AtcPhyPoll32(PipeHandler + ATCPHY_PIPEHANDLER_LOCK_ACK, ATCPHY_PIPEHANDLER_LOCK_EN, 0,
-               ATCPHY_PIPEHANDLER_LOCK_TIMEOUT_US);
+  if (EFI_ERROR(AtcPhyPoll32(PipeHandler + ATCPHY_PIPEHANDLER_LOCK_ACK,
+                             ATCPHY_PIPEHANDLER_LOCK_EN, 0,
+                             ATCPHY_PIPEHANDLER_LOCK_TIMEOUT_US))) {
+    DEBUG((DEBUG_ERROR, "AtcPhyPipeSwitchToUsb3: pipehandler unlock not acked\n"));
+    Status = EFI_TIMEOUT;
+  }
 
   if (EFI_ERROR(Status)) {
     //
     // A half-switched mux is worse than none: park it back on dummy so the
-    // port degrades to USB2 rather than to an undefined PIPE topology.
+    // port degrades to USB2 rather than to an undefined PIPE topology. Remove
+    // the temporary link-detection overrides even when lock acquisition or a
+    // BIST poll failed before the normal success-path cleanup.
     //
     DEBUG((DEBUG_ERROR, "AtcPhyPipeSwitchToUsb3: FAILED, parking mux back on dummy\n"));
+    MmioAnd32(PipeHandler + ATCPHY_PIPEHANDLER_OVERRIDE,
+              ~(UINT32)(ATCPHY_PIPEHANDLER_OVERRIDE_RXVALID |
+                        ATCPHY_PIPEHANDLER_OVERRIDE_RXDETECT));
     AtcPhyPipeParkDummy(PipeHandler);
   }
 
@@ -392,7 +688,7 @@ Unlock:
 // Asahi's dwc3-apple.c:29 states the ordering rule: the PIPE mux switch has to
 // happen AFTER dwc3 core init. m1n1 cannot satisfy that, because dwc3 core init
 // happens here in Mu, after m1n1 is gone. When m1n1 switched the mux itself, the
-// result was that Dwc3ControllerSoftReset above then asserted
+// result was that the former generic reset path then asserted
 // GUSB3PIPECTL.PHYSOFTRST for 100 ms on an already-live USB3 PIPE -- something no
 // Asahi code path ever does, and a good explanation for SuperSpeed never training
 // on this port despite the PHY reporting itself configured.
@@ -418,6 +714,7 @@ STATIC VOID AtcPhyFinishDeferredUsb3Switch(IN UINT32 PortIndex, IN UINTN Dwc3Con
   UINT64      PipeHandlerBase;
   UINT64      PhyCoreBase;
   UINT32      PowerCtrl;
+  UINT32      MuxCtrl;
   EFI_STATUS  Status;
 
   if ((PcdGet32(PcdAppleUsb3PipeSwitchPortMask) & (1u << PortIndex)) == 0) {
@@ -446,6 +743,16 @@ STATIC VOID AtcPhyFinishDeferredUsb3Switch(IN UINT32 PortIndex, IN UINTN Dwc3Con
       (ATCPHY_CORE_POWER_APB_RESET_N | ATCPHY_CORE_POWER_PHY_RESET_N)) {
     DEBUG((DEBUG_INFO, "AtcPhyFinishDeferredUsb3Switch: port %d ATC PHY not configured "
                        "(POWER_CTRL=0x%x); leaving port on USB2\n", PortIndex, PowerCtrl));
+    return;
+  }
+
+  MuxCtrl = MmioRead32((UINTN)PipeHandlerBase + ATCPHY_PIPEHANDLER_MUX_CTRL);
+  if (MuxCtrl != (ATCPHY_PIPEHANDLER_MUX_CLK_DUMMY << ATCPHY_PIPEHANDLER_MUX_CLK_SHIFT |
+                  ATCPHY_PIPEHANDLER_MUX_DATA_DUMMY << ATCPHY_PIPEHANDLER_MUX_DATA_SHIFT)) {
+    DEBUG((DEBUG_ERROR, "AtcPhyFinishDeferredUsb3Switch: port %d expected deferred DUMMY "
+                        "mux 0x22, got 0x%x; parking DUMMY and refusing ambiguous PIPE state\n",
+           PortIndex, MuxCtrl));
+    AtcPhyPipeParkDummy((UINTN)PipeHandlerBase);
     return;
   }
 
@@ -480,49 +787,39 @@ STATIC VOID Dwc3SetMode(IN DWC3_CONTROLLER *Controller, IN UINT32 Mode) {
   MmioAndThenOr32 ((UINTN)&Controller->GCtl, ~(DWC3_GCTL_PRTCAPDIR (DWC3_GCTL_PRTCAP_OTG)), DWC3_GCTL_PRTCAPDIR (Mode));
 }
 
-
-STATIC VOID Dwc3ControllerSoftReset(IN DWC3_CONTROLLER *Controller) {
-  //
-  // put the core in reset first.
-  //
-  MmioOr32((UINTN)&Controller->GCtl, DWC3_GCTL_CORESOFTRESET);
+STATIC EFI_STATUS Dwc3DeviceSideSoftReset(IN DWC3_CONTROLLER *Controller) {
+  UINT32 Dctl;
 
   //
-  // Assert USB 2 and USB 3 PHY reset here.
-  // There doesn't seem to be Apple-specific carveouts for USB2 or USB3 PHY reset only in u-boot so reset both as per canonical
-  // DWC3 u-boot/NXP EDK2 implementation.
+  // Apple glue invokes core init before selecting HOST PRTCAP, so current
+  // Asahi still performs this device-side DCTL reset. The safe write removes
+  // any stale link-state request, asserts CSFTRST, and clears RUN_STOP. It
+  // deliberately never pulses GCTL.CORESOFTRESET or either PHY reset.
   //
-  MmioOr32((UINTN)&Controller->GUsb3PipeCtl[0], DWC3_GUSB3PIPECTL_PHYSOFTRST);
+  Dctl = MmioRead32((UINTN)&Controller->DCtl);
+  Dctl |= DWC3_DCTL_CSFTRST;
+  Dctl &= ~(UINT32)(DWC3_DCTL_RUN_STOP | DWC3_DCTL_ULSTCHNGREQ_MASK);
+  MmioWrite32((UINTN)&Controller->DCtl, Dctl);
 
-  MmioOr32((UINTN)&Controller->GUsb2PhyCfg, DWC3_GUSB2PHYCFG_PHYSOFTRST);
+  // DWC31 1.90a+ may need slightly over 50 ms. Match Asahi's 20 ms poll,
+  // bounded to ten attempts.
+  for (UINT32 Retry = 0; Retry < DWC3_DCTL_RESET_RETRIES; Retry++) {
+    Dctl = MmioRead32((UINTN)&Controller->DCtl);
+    if ((Dctl & DWC3_DCTL_CSFTRST) == 0) {
+      return EFI_SUCCESS;
+    }
+    MicroSecondDelay(DWC3_DCTL_RESET_POLL_US);
+  }
 
-  MemoryFence();
-
-  MicroSecondDelay(100 * 1000);
-
-  //
-  // Clear USB 2 and USB 3 PHY reset.
-  // Note that this doesn't actually bring up the USB 3 PHY, that's separate ATC setup which we're not doing here for USB 3.
-  //
-
-  MmioAnd32((UINTN)&Controller->GUsb3PipeCtl[0], ~DWC3_GUSB3PIPECTL_PHYSOFTRST);
-
-  MmioAnd32 ((UINTN)&Controller->GUsb2PhyCfg, ~DWC3_GUSB2PHYCFG_PHYSOFTRST);
-
-  MemoryFence();
-
-  MicroSecondDelay(100 * 1000);
-
-  //
-  // PHYs are stable, take core out of reset.
-  //
-
-  MmioAnd32 ((UINTN)&Controller->GCtl, ~DWC3_GCTL_CORESOFTRESET);
-
+  DEBUG((DEBUG_ERROR, "Dwc3DeviceSideSoftReset: DCTL.CSFTRST did not clear "
+         "(DCTL=0x%x)\n", Dctl));
+  return EFI_TIMEOUT;
 }
+
 
 STATIC EFI_STATUS Dwc3XhciCoreInit(IN DWC3_CONTROLLER *Controller)
 {
+  EFI_STATUS Status;
   UINT32 Dwc3Revision;
   UINT32 Dwc3RegVal;
   UINTN Dwc3HwParams1Reg;
@@ -533,10 +830,14 @@ STATIC EFI_STATUS Dwc3XhciCoreInit(IN DWC3_CONTROLLER *Controller)
     return EFI_NOT_FOUND;
   }
 
-  //
-  // soft reset the DWC3 here.
-  //
-  Dwc3ControllerSoftReset(Controller);
+  // Asahi dwc3_phy_setup() clears both SUSPHY bits before core reset/init.
+  // Apple glue re-enables them after init, immediately before USB3 PIPE setup.
+  Dwc3DisableSusphyForCoreInit(Controller);
+
+  Status = Dwc3DeviceSideSoftReset(Controller);
+  if (EFI_ERROR(Status)) {
+    return Status;
+  }
 
   Dwc3HwParams1Reg = MmioRead32((UINTN)&Controller->GHwParams1);
 
@@ -565,23 +866,47 @@ STATIC EFI_STATUS Dwc3XhciCoreInit(IN DWC3_CONTROLLER *Controller)
 // This function actually brings up the DWC3 controller. The PHY is already set up by iBoot so we don't need
 // to deal with that here.
 //
-NON_DISCOVERABLE_DEVICE_INIT 
-EFIAPI 
-AppleUsbTypeCBringupDxeInitializeUsbController(IN UINTN Dwc3ControllerBaseReg)
+STATIC EFI_STATUS
+AppleUsbTypeCBringupDxeInitializeUsbController(IN UINT32 PortIndex,
+                                                IN UINTN Dwc3ControllerBaseReg)
 {
   EFI_STATUS Status;
   DWC3_CONTROLLER *Dwc3Controller;
   UINT32 Usb2PhyCfgReg;
+  UINTN PipeHandler;
+  UINTN Usb2Phy;
   //
   // PHY reset/clock is brought up by iBoot, no need to do it here.
   //
 
   Dwc3Controller = (VOID *)(Dwc3ControllerBaseReg + DWC3_REG_OFFSET);
 
+  //
+  // This is the cross-stage ownership boundary.  m1n1 deliberately left the
+  // Apple AON reset asserted; AppleDartIoMmuDxe must have completed both DART
+  // instances before this helper releases it.  Release happens immediately
+  // before generic DWC3 core init and is reasserted if that init fails.
+  //
+  Status = AtcPhyReleaseDwc3AfterDart(PortIndex, &PipeHandler, &Usb2Phy);
+  if (EFI_ERROR(Status)) {
+    DEBUG((DEBUG_ERROR, "AppleUsbTypeCBringupDxeInitializeUsbController: port %d "
+           "reset/DART handoff failed: %r\n", PortIndex, Status));
+    return Status;
+  }
+
+  Status = AtcPhyPowerOnUsb2AfterDwc3Release(PortIndex, Usb2Phy);
+  if (EFI_ERROR(Status)) {
+    DEBUG((DEBUG_ERROR, "AppleUsbTypeCBringupDxeInitializeUsbController: port %d "
+           "USB2 PHY power-on failed: %r\n", PortIndex, Status));
+    AtcPhyHoldDwc3Reset(PipeHandler);
+    return Status;
+  }
+
   Status = Dwc3XhciCoreInit(Dwc3Controller);
   if(EFI_ERROR(Status)) {
     DEBUG((DEBUG_ERROR, "AppleUsbTypeCBringupDxeInitializeUsbController: USB controller init failed, status %r\n", Status));
-    return (VOID *)EFI_DEVICE_ERROR;
+    AtcPhyHoldDwc3Reset(PipeHandler);
+    return EFI_DEVICE_ERROR;
   }
 
   //
@@ -591,9 +916,7 @@ AppleUsbTypeCBringupDxeInitializeUsbController(IN UINTN Dwc3ControllerBaseReg)
   Usb2PhyCfgReg = MmioRead32((UINTN)&Dwc3Controller->GUsb2PhyCfg[0]);
   MmioWrite32((UINTN)&Dwc3Controller->GUsb2PhyCfg[0], Usb2PhyCfgReg);
 
-  //
-  // Set the DWC3 to host mode.
-  //
+  // Asahi's Apple glue selects HOST only after core init/soft reset.
   Dwc3SetMode(Dwc3Controller, DWC3_GCTL_PRTCAP_HOST);
 
   //
@@ -601,7 +924,7 @@ AppleUsbTypeCBringupDxeInitializeUsbController(IN UINTN Dwc3ControllerBaseReg)
   //
   Dwc3SetFladj(Dwc3Controller, GFLADJ_30MHZ_DEFAULT);
   Dwc3XhciSetBeatBurstLength(Dwc3Controller);
-  return (VOID*)Status;
+  return Status;
   
 }
 
@@ -615,7 +938,6 @@ AppleUsbTypeCBringupDxeBringupCallback(IN EFI_EVENT Event, IN VOID *Context)
   UINT64 Dwc3ControllerBaseAddr;
   CHAR8 Dwc3RegNodeName[31];
   UINT32 Dwc3ControllerRegSize;
-  NON_DISCOVERABLE_DEVICE_INIT DeviceInit;
   //
   // Close the event so that we don't have duplicate events floating around.
   //
@@ -649,7 +971,13 @@ AppleUsbTypeCBringupDxeBringupCallback(IN EFI_EVENT Event, IN VOID *Context)
     // Register the controller as a non-registerable XHCI DMA-coherent controller. (All DMA on Apple systems must be cache-coherent)
     // Note: if this doesn't end up working, change the DMA type to non-coherent as one of the first steps to try.
     //
-    DeviceInit = AppleUsbTypeCBringupDxeInitializeUsbController(Dwc3ControllerBaseAddr);
+    Status = AppleUsbTypeCBringupDxeInitializeUsbController(
+               Dwc3Index, Dwc3ControllerBaseAddr);
+    if (EFI_ERROR(Status)) {
+      DEBUG((DEBUG_ERROR, "AppleUsbTypeCBringupDxeBringupCallback: controller %d "
+             "failed closed before registration: %r\n", Dwc3Index, Status));
+      continue;
+    }
 
     //
     // dwc3 core init has just run (inside the call above) and xhci cannot bind
@@ -665,11 +993,15 @@ AppleUsbTypeCBringupDxeBringupCallback(IN EFI_EVENT Event, IN VOID *Context)
 
     Status = RegisterNonDiscoverableMmioDevice(NonDiscoverableDeviceTypeXhci,
              NonDiscoverableDeviceDmaTypeCoherent,
-             DeviceInit,
+             NULL,
              NULL,
              1,
              Dwc3ControllerBaseAddr,
              Dwc3ControllerRegSize);
+    if (EFI_ERROR(Status)) {
+      DEBUG((DEBUG_ERROR, "AppleUsbTypeCBringupDxeBringupCallback: controller %d "
+             "registration failed: %r\n", Dwc3Index, Status));
+    }
   }
   return;
 } 

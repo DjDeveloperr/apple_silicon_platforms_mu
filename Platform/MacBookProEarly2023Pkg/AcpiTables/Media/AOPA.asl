@@ -17,7 +17,7 @@
   "KNOWN RESOURCE OVERLAP" section of ISP.asl for what the other two hit.
 
   Originally authored as drivers-side specification in
-  apple_silicon_nt_drivers/integration/hardware/m2-pro/aop-audio/AOPA.asl.
+  the retained AuroraSilicon M2 Pro AOP-audio evidence.
 
   AppleAopAudio drives the machine's INTERNAL PDM microphone array, which is
   not on the MCA I2S complex at all: it is a PDM front end owned by the AOP

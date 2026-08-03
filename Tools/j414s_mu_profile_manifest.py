@@ -34,6 +34,17 @@ PROFILES = {
         "gpu": False,
         "expected_ffs_count": 88,
     },
+    "internal-storage": {
+        "profile_abi": "ntasi.j414s.windows.internal-storage-warm-handoff.v3",
+        "ans": True,
+        "ans_acpi": True,
+        "ans_dxe": True,
+        "ans_block_io": True,
+        "ans_preserve": True,
+        "gpu": True,
+        "wireless": True,
+        "expected_ffs_count": 88,
+    },
     # CORRECTED 2026-07-30: the gpu profile used to add its own FFS
     # (GpuAcpiTables.inf compiling a static GPU.asl). That table was NEVER
     # installed -- its FFS GUID was not one of the four
@@ -75,6 +86,13 @@ PROFILES = {
         "profile_abi": "ntasi.j414s.windows.ans-gpu-combined.v1",
         "ans": True,
         "gpu": True,
+        "expected_ffs_count": 88,
+    },
+    "ans-gpu-usb3-dual": {
+        "profile_abi": "aurora.j414s.windows.ans-gpu-usb3-dual.v1",
+        "ans": True,
+        "gpu": True,
+        "usb3_pipe_switch_port_mask": 0x6,
         "expected_ffs_count": 88,
     },
     "gpu-no-xhc2": {
@@ -123,6 +141,14 @@ PROFILES = {
         "ans": False,
         "gpu": True,
         "wireless": True,
+        "expected_ffs_count": 87,
+    },
+    "gpu-wireless-usb3-dual": {
+        "profile_abi": "aurora.j414s.windows.gpu-wireless-usb3-dual.v1",
+        "ans": False,
+        "gpu": True,
+        "wireless": True,
+        "usb3_pipe_switch_port_mask": 0x6,
         "expected_ffs_count": 87,
     },
     "gpu-wireless-no-xhc2": {
@@ -200,6 +226,15 @@ PROFILES = {
         # and gpu-noacpi remains the control that isolates it.
         "expected_ffs_count": 88,
     },
+    "ans-gpu-wireless-usb3-dual": {
+        "profile_abi": "aurora.j414s.windows.ans-gpu-wireless-usb3-dual.v1",
+        "ans": True,
+        "gpu": True,
+        "wireless": True,
+        "battery": True,
+        "usb3_pipe_switch_port_mask": 0x6,
+        "expected_ffs_count": 88,
+    },
     "ans-gpu-wireless-no-xhc2": {
         "profile_abi": "ntasi.j414s.windows.ans-gpu-wireless-no-xhc2.v1",
         "ans": True,
@@ -248,7 +283,7 @@ PROFILES = {
     # entries (37->1274 XHC1, 38->1832 ANS, 39->1292 XHC2), because that table
     # is built unconditionally and no profile flag reaches it. All three
     # drivers reach first light by polling, by design. See
-    # apple_silicon_nt_drivers/docs/j414s-media-gsiv-allocation.md section 3.
+    # J414s media GSIV allocation contract.
     #
     # Deliberately NOT combined with ans/gpu/wireless. Measured on hardware
     # 2026-07-30, baseline and gpu are the configurations that boot Windows and
@@ -313,6 +348,13 @@ PROFILES = {
         "gpu_acpi": False,
         "expected_ffs_count": 87,
     },
+    "gpu-usb3-dual": {
+        "profile_abi": "aurora.j414s.windows.gpu-usb3-dual.v1",
+        "ans": False,
+        "gpu": True,
+        "usb3_pipe_switch_port_mask": 0x6,
+        "expected_ffs_count": 87,
+    },
     # Baseline plus BAT0 (NTAS0053), the devnode AppleSmcBattery.sys binds to,
     # and nothing else. Cheaper than every other experiment in this table: the
     # device publishes an EMPTY _CRS -- no memory window, no interrupt -- so it
@@ -330,6 +372,7 @@ PROFILES = {
 for _profile in PROFILES.values():
     _profile.setdefault("wireless", False)
     _profile.setdefault("xhc2", True)
+    _profile.setdefault("usb3_pipe_switch_port_mask", 0x4 if _profile["xhc2"] else 0x2)
     # Battery publication is opt-in per profile, defaulted here rather than
     # written into every entry so a profile added later cannot inherit an
     # enabled battery publication by omission.
@@ -341,6 +384,13 @@ for _profile in PROFILES.values():
     # NTAS2003 publication defaults to tracking driver presence; only the
     # ans-noacpi control decouples them.
     _profile.setdefault("ans_acpi", _profile["ans"])
+    _profile.setdefault("ans_dxe", False)
+    _profile.setdefault("ans_block_io", False)
+    _profile.setdefault("ans_preserve", False)
+    if _profile["ans_preserve"] and not all(
+        _profile[key] for key in ("ans", "ans_acpi", "ans_dxe", "ans_block_io")
+    ):
+        raise ValueError("ANS live handoff profile is missing an ownership prerequisite")
     # NTAS0023 publication defaults to tracking the GPU carveout profile; only
     # the gpu-noacpi control decouples them. Defaulted rather than written into
     # every entry so a profile added later cannot inherit an enabled GPU
@@ -681,6 +731,8 @@ def profile_policy(profile: str) -> dict[str, Any]:
         "baseline_capabilities": {
             "pcie_pci0_mcfg_generic_host": True,
             "usb_xhci": True,
+            "usb_dwc3_reset_dart_handoff": "m1n1_reset_clamped_mu_dart_bypass_release_v1",
+            "usb3_deferred_pipe_switch_port_mask": selected["usb3_pipe_switch_port_mask"],
             "usb_mass_storage_transport": "BOT_CBI",
             "preboot_uasp": False,
             "native_apple_aic": True,
@@ -703,7 +755,9 @@ def profile_policy(profile: str) -> dict[str, Any]:
         },
         "experimental_features": {
             "ans_publication": selected["ans_acpi"],
-            "ans_block_io": False,
+            "ans_dxe_bringup": selected["ans_dxe"],
+            "ans_block_io": selected["ans_block_io"],
+            "ans_live_os_handoff": selected["ans_preserve"],
             # The gpu profile reserves the ADT-derived, DRAM-bounded GPU
             # carveouts in the GCD. It does NOT publish an ACPI device: see
             # NtasiReportGpuPublicationDecision() in AcpiPlatform.c. Recorded
@@ -824,6 +878,8 @@ def parse_pcd_values(build_report: str) -> dict[str, int]:
         "PcdAppleAnsPublishAcpiDevice",
         "PcdAppleAnsPublishBlockIo",
         "PcdAppleAnsPerformDxeBringUp",
+        "PcdAppleAnsPreserveForOs",
+        "PcdAppleUsb3PipeSwitchPortMask",
         "PcdAppleWirelessDartPageTableBase",
         "PcdAppleWirelessDartPageTableSize",
     )
@@ -979,9 +1035,13 @@ def generate_manifest(args: argparse.Namespace) -> dict[str, Any]:
     expected_defines = {
         "NTASI_ENABLE_ANS": "TRUE" if PROFILES[profile]["ans"] else "FALSE",
         "NTASI_ANS_PUBLISH_ACPI": "TRUE" if PROFILES[profile]["ans_acpi"] else "FALSE",
+        "NTASI_ANS_DXE_BRINGUP": "TRUE" if PROFILES[profile]["ans_dxe"] else "FALSE",
+        "NTASI_ANS_PUBLISH_BLOCK_IO": "TRUE" if PROFILES[profile]["ans_block_io"] else "FALSE",
+        "NTASI_ANS_PRESERVE_FOR_OS": "TRUE" if PROFILES[profile]["ans_preserve"] else "FALSE",
         "NTASI_J414S_GPU_RESOURCE_PROFILE": "1" if PROFILES[profile]["gpu"] else "0",
         "NTASI_ENABLE_WIRELESS_DART_HANDOFF": "1" if PROFILES[profile]["wireless"] else "0",
         "NTASI_ENABLE_XHC2": "1" if PROFILES[profile]["xhc2"] else "0",
+        "NTASI_USB3_PIPE_SWITCH_PORT_MASK": hex(PROFILES[profile]["usb3_pipe_switch_port_mask"]),
         # The only build-time proof that the media SSDT generator compiled in:
         # it adds no FFS and no static table, so this define is to media what
         # NTASI_ENABLE_WIRELESS_DART_HANDOFF is to wireless.
@@ -1035,13 +1095,15 @@ def generate_manifest(args: argparse.Namespace) -> dict[str, Any]:
     # know a value only a real boot's boot_args can produce.
     expected_pcds = {
         "PcdAppleAnsPublishAcpiDevice": 1 if PROFILES[profile]["ans_acpi"] else 0,
-        "PcdAppleAnsPublishBlockIo": 0,
+        "PcdAppleAnsPublishBlockIo": 1 if PROFILES[profile]["ans_block_io"] else 0,
         # Mu-side ANS bring-up is withheld in every shipped profile: it
         # reproduced BUGCODE_USB3_DRIVER 0x144 with the Windows ANS driver
         # disabled, so the hardware state it left behind was the only
         # remaining variable. Recorded here so an artifact states which mode
         # it was built in rather than leaving it to be inferred.
-        "PcdAppleAnsPerformDxeBringUp": 0,
+        "PcdAppleAnsPerformDxeBringUp": 1 if PROFILES[profile]["ans_dxe"] else 0,
+        "PcdAppleAnsPreserveForOs": 1 if PROFILES[profile]["ans_preserve"] else 0,
+        "PcdAppleUsb3PipeSwitchPortMask": PROFILES[profile]["usb3_pipe_switch_port_mask"],
         "PcdAppleWirelessDartPageTableBase": 0,
         "PcdAppleWirelessDartPageTableSize": 0,
     }
@@ -1191,13 +1253,10 @@ def verify_manifest(manifest_path: Path, source_root: Path | None = None) -> dic
     pcds = parse_pcd_values(report_text)
     expected_pcds = {
         "PcdAppleAnsPublishAcpiDevice": 1 if PROFILES[profile]["ans_acpi"] else 0,
-        "PcdAppleAnsPublishBlockIo": 0,
-        # Mu-side ANS bring-up is withheld in every shipped profile: it
-        # reproduced BUGCODE_USB3_DRIVER 0x144 with the Windows ANS driver
-        # disabled, so the hardware state it left behind was the only
-        # remaining variable. Recorded here so an artifact states which mode
-        # it was built in rather than leaving it to be inferred.
-        "PcdAppleAnsPerformDxeBringUp": 0,
+        "PcdAppleAnsPublishBlockIo": 1 if PROFILES[profile]["ans_block_io"] else 0,
+        "PcdAppleAnsPerformDxeBringUp": 1 if PROFILES[profile]["ans_dxe"] else 0,
+        "PcdAppleAnsPreserveForOs": 1 if PROFILES[profile]["ans_preserve"] else 0,
+        "PcdAppleUsb3PipeSwitchPortMask": PROFILES[profile]["usb3_pipe_switch_port_mask"],
         "PcdAppleWirelessDartPageTableBase": 0,
         "PcdAppleWirelessDartPageTableSize": 0,
     }

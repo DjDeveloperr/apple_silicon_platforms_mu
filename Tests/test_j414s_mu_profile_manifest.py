@@ -110,7 +110,27 @@ class ContractShapeTests(unittest.TestCase):
                     "live_validated": False,
                 },
             )
+            self.assertEqual(
+                manifest["profile"]["baseline_capabilities"][
+                    "usb_dwc3_reset_dart_handoff"
+                ],
+                "m1n1_reset_clamped_mu_dart_bypass_release_v1",
+            )
         self.assertEqual(len(abis), len(M.PROFILES))
+
+    def test_internal_storage_profile_pins_live_handoff_prerequisites(self):
+        profile = M.PROFILES["internal-storage"]
+        self.assertTrue(profile["ans"])
+        self.assertTrue(profile["ans_acpi"])
+        self.assertTrue(profile["ans_dxe"])
+        self.assertTrue(profile["ans_block_io"])
+        self.assertTrue(profile["ans_preserve"])
+        self.assertTrue(profile["gpu"])
+        self.assertTrue(profile["wireless"])
+        policy = M.profile_policy("internal-storage")["experimental_features"]
+        self.assertTrue(policy["ans_dxe_bringup"])
+        self.assertTrue(policy["ans_block_io"])
+        self.assertTrue(policy["ans_live_os_handoff"])
 
     def test_unknown_field_is_rejected(self):
         manifest = valid_shape()
@@ -224,11 +244,11 @@ class EvidenceParserTests(unittest.TestCase):
         # MemoryInitPeiLib.c now derives the reservation at PEI runtime from
         # that boot's own boot_args, so the builder takes no manifest and
         # invokes no m1n1-side verifier for any profile, wireless included.
-        wrapper = (REPO / "Tools/build-j414s-windows-profile.sh").read_text()
+        wrapper = (REPO / "Tools/build-j414s-windows-native.sh").read_text()
         self.assertNotIn("j414s-wireless-handoff-manifest.py", wrapper)
         self.assertNotIn("wireless-handoff.json", wrapper)
         self.assertNotIn("wireless_manifest", wrapper)
-        self.assertIn("ans-gpu-wireless", wrapper)
+        self.assertIn("if sys.argv[2] not in profiles", wrapper)
 
     def test_build_evidence_parsers_fail_closed(self):
         log = "Edk2 build parameters are -D NTASI_ENABLE_ANS=FALSE -D NTASI_ENABLE_WIRELESS_DART_HANDOFF=0\n"
@@ -241,6 +261,8 @@ class EvidenceParserTests(unittest.TestCase):
                 ("PcdAppleAnsPublishAcpiDevice", "0"),
                 ("PcdAppleAnsPublishBlockIo", "0"),
                 ("PcdAppleAnsPerformDxeBringUp", "0"),
+                ("PcdAppleAnsPreserveForOs", "0"),
+                ("PcdAppleUsb3PipeSwitchPortMask", "0x2"),
                 ("PcdAppleWirelessDartPageTableBase", "0x0"),
                 ("PcdAppleWirelessDartPageTableSize", "0x0"),
             )
@@ -249,6 +271,8 @@ class EvidenceParserTests(unittest.TestCase):
             "PcdAppleAnsPublishAcpiDevice",
             "PcdAppleAnsPublishBlockIo",
             "PcdAppleAnsPerformDxeBringUp",
+            "PcdAppleAnsPreserveForOs",
+            "PcdAppleUsb3PipeSwitchPortMask",
             "PcdAppleWirelessDartPageTableBase",
             "PcdAppleWirelessDartPageTableSize",
         })

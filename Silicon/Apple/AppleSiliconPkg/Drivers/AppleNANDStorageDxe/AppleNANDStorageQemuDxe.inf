@@ -51,12 +51,16 @@
 [Protocols]
   gEfiBlockIoProtocolGuid      ## PRODUCES
   gEfiDevicePathProtocolGuid   ## PRODUCES
+  gEfiPartitionInfoProtocolGuid ## CONSUMES
+  gEfiSimpleFileSystemProtocolGuid ## CONSUMES
 
 [Guids]
   gEfiEventExitBootServicesGuid
+  gEfiEventReadyToBootGuid
 
 [Pcd]
   gAppleSiliconPkgTokenSpaceGuid.PcdAppleAnsPublishBlockIo    ## CONSUMES
+  gAppleSiliconPkgTokenSpaceGuid.PcdAppleAnsPreserveForOs     ## CONSUMES
 
 [Depex]
   TRUE

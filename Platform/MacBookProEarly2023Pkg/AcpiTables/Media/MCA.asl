@@ -13,7 +13,7 @@
   Tests/test_j414s_media_acpi_contract.py pins this file against that C table.
 
   Originally authored as drivers-side specification in
-  apple_silicon_nt_drivers/integration/hardware/m2-pro/project-mu/MCA.asl.
+  the retained AuroraSilicon M2 Pro hardware evidence.
 
   ==========================================================================
   NINE WINDOWS, NOT TWELVE -- AND THAT IS A LEGAL SHAPE
