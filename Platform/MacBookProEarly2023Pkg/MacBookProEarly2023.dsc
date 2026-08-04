@@ -102,6 +102,7 @@
   # 0x2 = left boot-volume port for phase-1 no-XHC2 isolation;
   # 0x4 = right port for right-enabled profiles. Never select both implicitly.
   gAppleSiliconPkgTokenSpaceGuid.PcdAppleUsb3PipeSwitchPortMask|$(NTASI_USB3_PIPE_SWITCH_PORT_MASK)
+  gAppleSiliconPkgTokenSpaceGuid.PcdAppleUsb4RoutedPipeSwitchPortMask|$(NTASI_USB4_ROUTED_PIPE_SWITCH_PORT_MASK)
   gAppleSiliconPkgTokenSpaceGuid.PcdAppleNumDwc3Darts|6 # M2 Pro case is hardcoded for now.
   # Windows consumes GSIV 38; the AIC2 CSRT translates it to T6020 line 1832.
   gAppleSiliconPkgTokenSpaceGuid.PcdAppleAnsPublishedInterrupt|38

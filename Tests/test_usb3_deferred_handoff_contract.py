@@ -14,6 +14,11 @@ DRIVER = ROOT / (
 PLATFORM_DSC = ROOT / "Platform/MacBookProEarly2023Pkg/MacBookProEarly2023.dsc"
 PLATFORM_BUILD = ROOT / "Platform/MacBookProEarly2023Pkg/PlatformBuild.py"
 MANIFEST_MODULE = ROOT / "Tools/j414s_mu_profile_manifest.py"
+# m1n1 is the authority for what each PHY mode actually programs. Parsed,
+# not transcribed, so the two repositories cannot drift silently.
+M1N1 = ROOT.parent / "m1n1"
+M1N1_ATCPHY_CORE = M1N1 / "src" / "atcphy_core.c"
+M1N1_ATCPHY_HEADER = M1N1 / "src" / "atcphy_core.h"
 SPEC = importlib.util.spec_from_file_location("j414s_mu_profile_manifest_usb3", MANIFEST_MODULE)
 MANIFEST = importlib.util.module_from_spec(SPEC)
 assert SPEC.loader is not None
@@ -236,3 +241,123 @@ class DeferredUsb3HandoffContract(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class CrossbarTransportGateTests(unittest.TestCase):
+    """Mu must READ which transport the lanes carry, not infer it.
+
+    POWER_CTRL (powered, out of reset) + MUX_CTRL == 0x22 is byte-identical
+    between m1n1's USB4/TBT routed prepare and its direct-USB3 deferred
+    prepare. Those checks establish PHY state; the conclusion drawn is
+    transport. Completing a USB3 PIPE switch against USB4-crossbarred lanes is
+    the failure this gate exists to prevent.
+    """
+
+    def setUp(self) -> None:
+        self.driver = DRIVER.read_text(encoding="utf-8")
+        self.finish = function_body(self.driver, "AtcPhyFinishDeferredUsb3Switch")
+
+    def test_the_crossbar_is_read_and_gated_before_any_switch(self) -> None:
+        # Assert on the actual MMIO READ, not on the bare token: the token
+        # `ATCPHY_CORE_ACIOPHY_CROSSBAR` is a substring of
+        # `..._CROSSBAR_PROTOCOL_MASK`, so a version that deleted the read and
+        # hardcoded `Crossbar` still satisfied a token search. That mutant
+        # survived until this was tightened.
+        read = re.search(
+            r"Crossbar\s*=\s*MmioRead32\(\(UINTN\)PhyCoreBase\s*\+\s*"
+            r"ATCPHY_CORE_ACIOPHY_CROSSBAR\)",
+            self.finish,
+        )
+        self.assertIsNotNone(
+            read, "the crossbar must be read from hardware, not assumed"
+        )
+        required = (
+            self.finish.index("ATCPHY_PIPEHANDLER_MUX_CTRL"),
+            read.start(),
+            self.finish.index("Dwc3AppleSetupCio"),
+            self.finish.index("AtcPhyPipeSwitchToUsb3"),
+        )
+        self.assertEqual(
+            required, tuple(sorted(required)),
+            "the crossbar must be read after the mux check and before any "
+            "DWC3/PIPE work",
+        )
+
+    def test_the_gate_is_a_whitelist_of_the_two_usb3_encodings(self) -> None:
+        """`!=` twice joined by `&&` is a whitelist; `==` joined by `||` would
+        be a blacklist that accepts every unrecognised encoding."""
+        self.assertRegex(
+            self.finish,
+            r"Protocol\s*!=\s*ATCPHY_CROSSBAR_PROTOCOL_USB3_DP\s*&&"
+            r"\s*Protocol\s*!=\s*ATCPHY_CROSSBAR_PROTOCOL_USB3_DP_SWAPPED",
+        )
+
+    def test_a_refused_crossbar_parks_dummy_and_returns(self) -> None:
+        gate = self.finish.index("ATCPHY_CORE_ACIOPHY_CROSSBAR")
+        park = self.finish.index("AtcPhyPipeParkDummy((UINTN)PipeHandlerBase)", gate)
+        switch = self.finish.index("AtcPhyPipeSwitchToUsb3")
+        self.assertLess(park, switch, "must park DUMMY before the switch site")
+        self.assertLess(
+            park, self.finish.index("return;", park) + 1,
+        )
+
+    def test_the_usb3_encoding_is_0x10_not_the_constant_named_usb3(self) -> None:
+        """The naming trap, pinned.
+
+        m1n1's `PROTOCOL_USB3` (0x0A) is what ATCPHY_MODE_OFF programs;
+        ATCPHY_MODE_USB3 programs `PROTOCOL_USB3_DP` (0x10). A gate written
+        against the constant whose name says USB3 accepts OFF and refuses real
+        USB3 -- exactly inverted. These values are pinned against m1n1's mode
+        TABLE, not its header.
+        """
+        self.assertRegex(
+            self.driver,
+            r"#define\s+ATCPHY_CROSSBAR_PROTOCOL_USB3_DP\s+0x10\b",
+        )
+        self.assertRegex(
+            self.driver,
+            r"#define\s+ATCPHY_CROSSBAR_PROTOCOL_USB3_DP_SWAPPED\s+0x11\b",
+        )
+        self.assertRegex(
+            self.driver,
+            r"#define\s+ATCPHY_CORE_ACIOPHY_CROSSBAR\s+0x4C\b",
+        )
+        self.assertRegex(
+            self.driver,
+            r"#define\s+ATCPHY_CORE_ACIOPHY_CROSSBAR_PROTOCOL_MASK\s+0x1F\b",
+        )
+        # The trap must stay documented next to the values: deleting the
+        # warning is how the next reader reintroduces the inverted gate.
+        #
+        # Assert the CONTENT, not the label. A heading is easy to reword or
+        # delete in one place while another copy keeps a bare `assertIn`
+        # satisfied; the three facts below are what a reader actually needs.
+        for fact in ("0x0A", "ATCPHY_MODE_OFF", "inverted"):
+            self.assertIn(
+                fact, self.driver,
+                f"the naming-trap explanation lost {fact!r}: without it the "
+                f"next reader writes the gate against the constant whose name "
+                f"says USB3 and inverts it",
+            )
+
+    def test_the_encodings_match_m1n1s_mode_table(self) -> None:
+        """Parsed from m1n1, so the two repositories cannot drift silently."""
+        table = M1N1_ATCPHY_CORE.read_text(encoding="utf-8")
+        usb3 = table.index("[ATCPHY_MODE_USB3] =")
+        end = table.index("[ATCPHY_MODE_", usb3 + 10)
+        body = table[usb3:end]
+        self.assertIn("CROSSBAR_PROTOCOL_USB3_DP,", body)
+        self.assertIn("CROSSBAR_PROTOCOL_USB3_DP_SWAPPED,", body)
+
+        header = M1N1_ATCPHY_HEADER.read_text(encoding="utf-8")
+        self.assertRegex(
+            header, r"CROSSBAR_PROTOCOL_USB3_DP\s+0x10u",
+        )
+        self.assertRegex(
+            header, r"CROSSBAR_PROTOCOL_USB3_DP_SWAPPED\s+0x11u",
+        )
+        # And the trap itself: the constant named USB3 is NOT USB3 mode's.
+        self.assertRegex(header, r"CROSSBAR_PROTOCOL_USB3\s+0x0Au")
+        off = table.index("[ATCPHY_MODE_OFF] =")
+        off_end = table.index("[ATCPHY_MODE_", off + 10)
+        self.assertIn("CROSSBAR_PROTOCOL_USB3,", table[off:off_end])

@@ -143,16 +143,34 @@
 #define ATCPHY_PIPEHANDLER_MUX_DATA_MASK            0x7
 #define ATCPHY_PIPEHANDLER_MUX_DATA_SHIFT           0
 #define ATCPHY_PIPEHANDLER_MUX_DATA_USB3            0
+#define ATCPHY_PIPEHANDLER_MUX_DATA_USB4            1
 #define ATCPHY_PIPEHANDLER_MUX_DATA_DUMMY           2
 #define ATCPHY_PIPEHANDLER_MUX_CLK_MASK             0x38
 #define ATCPHY_PIPEHANDLER_MUX_CLK_SHIFT            3
 #define ATCPHY_PIPEHANDLER_MUX_CLK_OFF              0
 #define ATCPHY_PIPEHANDLER_MUX_CLK_USB3             1
+#define ATCPHY_PIPEHANDLER_MUX_CLK_USB4             2
 #define ATCPHY_PIPEHANDLER_MUX_CLK_DUMMY            4
+//
+// Whole-register mux states, matching m1n1 src/atcphy_core.h:
+//   DUMMY = CLK_DUMMY|DATA_DUMMY = 0x22
+//   USB3  = CLK_USB3 |DATA_USB3  = 0x08
+//   USB4  = CLK_USB4 |DATA_USB4  = 0x11   (routed: producer is the ACIO router)
+//
+#define ATCPHY_PIPEHANDLER_MUX_VALUE_DUMMY          0x22
+#define ATCPHY_PIPEHANDLER_MUX_VALUE_USB4_ROUTED    0x11
 #define ATCPHY_PIPEHANDLER_LOCK_REQ                 0x10
 #define ATCPHY_PIPEHANDLER_LOCK_ACK                 0x14
 #define ATCPHY_PIPEHANDLER_LOCK_EN                  BIT0
 #define ATCPHY_PIPEHANDLER_LOCK_TIMEOUT_US          1000
+//
+// The ROUTED-USB4 mux uses Apple's own macOS budget, not atc.c's 1 ms. Decoded
+// from AppleT8142USBXHCI::setUSB3Mode's USB4 branch (T6050 BootKC
+// com.apple.driver.usb.AppleSynopsysUSB40XHCI): both LOCK_PIPE_IF_ACK polls are
+// clock_interval_to_deadline(6, NSEC_PER_MSEC) = 6 ms. Kept as its own constant
+// so the working USB3 path above keeps its own proven 1 ms verbatim.
+//
+#define ATCPHY_PIPEHANDLER_LOCK_ROUTED_TIMEOUT_US   6000
 #define ATCPHY_PIPEHANDLER_AON_GEN                  0x1C
 #define ATCPHY_PIPEHANDLER_AON_DWC3_FORCE_CLAMP_EN  BIT4
 #define ATCPHY_PIPEHANDLER_AON_DWC3_RESET_N         BIT0
@@ -181,6 +199,51 @@
 #define ATCPHY_CORE_POWER_CTRL                      0x20000
 #define ATCPHY_CORE_POWER_APB_RESET_N               BIT3
 #define ATCPHY_CORE_POWER_PHY_RESET_N               BIT4
+
+//
+// Which transport the PHY lanes are actually programmed for.
+//
+// POWER_CTRL (powered, out of reset) plus MUX_CTRL == 0x22 is BYTE-IDENTICAL
+// between m1n1's USB4/TBT routed prepare and its direct-USB3 deferred prepare:
+// both release APB_RESET_N|PHY_RESET_N and both deliberately park the mux on
+// DUMMY for us to finish.  Those two checks therefore establish what STATE the
+// PHY is in; they say nothing about which TRANSPORT it carries.  Completing a
+// USB3 PIPE switch against lanes crossbarred for USB4 is the failure that
+// distinction exists to prevent.
+//
+// The crossbar protocol field is read-only here and is the discriminator.
+//
+// *** NAMING TRAP -- read this before touching the values below. ***
+// In m1n1's header the constant called PROTOCOL_USB3 (0x0A) is what
+// ATCPHY_MODE_OFF programs.  ATCPHY_MODE_USB3 programs PROTOCOL_USB3_DP
+// (0x10), because USB3/USB3 is unsupported at 20Gbps so the companion lane is
+// programmed as DP.  Writing this gate against the constant whose NAME says
+// "USB3" produces an exactly inverted gate: it accepts the OFF state and
+// refuses real USB3.  These values were read out of atcphy_modes[] in
+// m1n1/src/atcphy_core.c, not out of the header.
+//
+//   0x10 / 0x11  ATCPHY_MODE_USB3 (USB3 + DP companion)  -> ours, proceed
+//   0x00 / 0x01  ATCPHY_MODE_USB4 / ATCPHY_MODE_TBT      -> refuse
+//   0x0A / 0x0B  ATCPHY_MODE_OFF (also parks DUMMY)      -> refuse
+//   0x14         ATCPHY_MODE_DP                          -> refuse
+//
+// This is a WHITELIST.  Any unrecognised encoding refuses, for the same reason
+// as every other gate in this stack: an unknown value is not evidence that the
+// lanes are USB3.
+//
+#define ATCPHY_CORE_ACIOPHY_CROSSBAR                0x4C
+#define ATCPHY_CORE_ACIOPHY_CROSSBAR_PROTOCOL_MASK  0x1F
+#define ATCPHY_CROSSBAR_PROTOCOL_USB3_DP            0x10
+#define ATCPHY_CROSSBAR_PROTOCOL_USB3_DP_SWAPPED    0x11
+//
+// The routed (USB4/TBT) crossbar encodings. These are the values the USB3
+// whitelist above deliberately REFUSES, and they stay refused there: they are
+// accepted only by AtcPhyFinishDeferredUsb4Switch, under its own separate PCD.
+// Same whitelist discipline -- an unrecognised encoding refuses.
+//
+#define ATCPHY_CROSSBAR_PROTOCOL_USB4               0x00
+#define ATCPHY_CROSSBAR_PROTOCOL_USB4_SWAPPED       0x01
+#define ATCPHY_CORE_ACIOPHY_LANE_MODE               0x48
 
 #define ATCPHY_PHY_STAT_TIMEOUT_US                  10000
 
@@ -715,6 +778,8 @@ STATIC VOID AtcPhyFinishDeferredUsb3Switch(IN UINT32 PortIndex, IN UINTN Dwc3Con
   UINT64      PhyCoreBase;
   UINT32      PowerCtrl;
   UINT32      MuxCtrl;
+  UINT32      Crossbar;
+  UINT32      Protocol;
   EFI_STATUS  Status;
 
   if ((PcdGet32(PcdAppleUsb3PipeSwitchPortMask) & (1u << PortIndex)) == 0) {
@@ -756,8 +821,29 @@ STATIC VOID AtcPhyFinishDeferredUsb3Switch(IN UINT32 PortIndex, IN UINTN Dwc3Con
     return;
   }
 
+  //
+  // The lanes must be crossbarred for USB3, not merely powered and parked.
+  // See the NAMING TRAP note beside the constants: 0x10/0x11 is USB3, and the
+  // constant named "PROTOCOL_USB3" is the OFF state.
+  //
+  Crossbar = MmioRead32((UINTN)PhyCoreBase + ATCPHY_CORE_ACIOPHY_CROSSBAR);
+  Protocol = Crossbar & ATCPHY_CORE_ACIOPHY_CROSSBAR_PROTOCOL_MASK;
+  if (Protocol != ATCPHY_CROSSBAR_PROTOCOL_USB3_DP &&
+      Protocol != ATCPHY_CROSSBAR_PROTOCOL_USB3_DP_SWAPPED) {
+    DEBUG((DEBUG_ERROR, "AtcPhyFinishDeferredUsb3Switch: port %d lanes are NOT crossbarred "
+                        "for USB3 (CROSSBAR=0x%x, protocol=0x%x, LANE_MODE=0x%x); refusing "
+                        "to complete a USB3 PIPE switch. DUMMY mux plus a powered PHY is the "
+                        "same state a USB4/TBT routed prepare leaves behind, so it cannot "
+                        "authorise this switch on its own.\n",
+           PortIndex, Crossbar, Protocol,
+           MmioRead32((UINTN)PhyCoreBase + ATCPHY_CORE_ACIOPHY_LANE_MODE)));
+    AtcPhyPipeParkDummy((UINTN)PipeHandlerBase);
+    return;
+  }
+
   DEBUG((DEBUG_INFO, "AtcPhyFinishDeferredUsb3Switch: port %d PHY is configured "
-                     "(POWER_CTRL=0x%x), finishing USB3 handoff\n", PortIndex, PowerCtrl));
+                     "(POWER_CTRL=0x%x, CROSSBAR protocol=0x%x), finishing USB3 handoff\n",
+         PortIndex, PowerCtrl, Protocol));
 
   //
   // P3 then P2 then P1, in dwc3_apple_init's order (dwc3-apple.c:260-272):
@@ -770,6 +856,260 @@ STATIC VOID AtcPhyFinishDeferredUsb3Switch(IN UINT32 PortIndex, IN UINTN Dwc3Con
   DEBUG((DEBUG_INFO, "AtcPhyFinishDeferredUsb3Switch: port %d USB3 PIPE switch %r "
                      "(MUX_CTRL now 0x%x)\n", PortIndex, Status,
                      MmioRead32((UINTN)PipeHandlerBase + ATCPHY_PIPEHANDLER_MUX_CTRL)));
+}
+
+//
+// Move the PIPE mux to the ROUTED USB4 backend (whole-register 0x11).
+//
+// PROVENANCE: this is Apple's own sequence, not a reconstruction. macOS's owner
+// of this mux is the xHCI/dwc3 driver -- AppleT8142USBXHCI::setUSB3Mode (T6050
+// BootKC com.apple.driver.usb.AppleSynopsysUSB40XHCI, fn @0xfffffe000b0a3df8,
+// USB4 branch @0xfffffe000b0a9ea4) -- which drives the pipehandler
+// (mapDeviceMemoryWithIndex(3), i.e. usb-drdN reg[3]) directly. T6050 encodes
+// PIPE_CLK_EN as GENMASK(6,4) and T6020 as GENMASK(5,3); the field VALUES are
+// identical, so Apple's T6050 whole-register 0x21 is this platform's 0x11.
+//
+// It differs from the USB3 path above in three ways, each read off the decode:
+//   1. NO BIST dance. The USB3 branch brings lane 0 of the *native* USB3 PHY up
+//      as a clock source; the routed producer is the ACIO host router, already
+//      running, so Apple does none of it.
+//   2. NO NONSELECTED_OVERRIDE (+0x20) write. Apple's +0x20 RMWs live in the
+//      DUMMY and USB3 branches only; the USB4 branch jumps to the tail.
+//   3. The LOCK_PIPE_IF_ACK polls use the 6 ms routed budget.
+// There is also no fixed settle delay between the three MUX_CTRL writes: Apple
+// issues CLK-off -> DATA -> CLK back-to-back (kc 0xb0a9f34/0xb0aa160/0xb0aa390).
+//
+// PRECONDITION: the ATC PHY is configured for a routed mode and out of reset,
+// and m1n1 has brought the ACIO router and its USB3 tunnel up. This function
+// only moves the mux; it cannot create a tunnel and does not try.
+//
+STATIC EFI_STATUS AtcPhyPipeSwitchToUsb4Routed(IN UINTN PipeHandler) {
+  EFI_STATUS Status;
+  UINT32     RegVal;
+  UINT32     MuxCtrl;
+
+  //
+  // A previous attempt may have left the lock held; release it before
+  // requesting it again, or the request below never completes. Same
+  // precaution as the USB3 path (atc.c:956-973).
+  //
+  if (MmioRead32(PipeHandler + ATCPHY_PIPEHANDLER_LOCK_ACK) & ATCPHY_PIPEHANDLER_LOCK_EN) {
+    DEBUG((DEBUG_WARN, "AtcPhyPipeSwitchToUsb4Routed: lock already held, clearing first\n"));
+    MmioAnd32(PipeHandler + ATCPHY_PIPEHANDLER_LOCK_REQ, ~(UINT32)ATCPHY_PIPEHANDLER_LOCK_EN);
+    Status = AtcPhyPoll32(PipeHandler + ATCPHY_PIPEHANDLER_LOCK_ACK,
+                          ATCPHY_PIPEHANDLER_LOCK_EN, 0,
+                          ATCPHY_PIPEHANDLER_LOCK_ROUTED_TIMEOUT_US);
+    if (EFI_ERROR(Status)) {
+      DEBUG((DEBUG_ERROR, "AtcPhyPipeSwitchToUsb4Routed: stale lock did not clear\n"));
+      return Status;
+    }
+  }
+
+  //
+  // Force the link inputs inactive while the mux moves (kc 0xb0a810c/0xb0a8330).
+  //
+  MmioAnd32(PipeHandler + ATCPHY_PIPEHANDLER_OVERRIDE_VALUES,
+            ~(UINT32)(ATCPHY_PIPEHANDLER_OVERRIDE_VAL_RXDETECT0 |
+                      ATCPHY_PIPEHANDLER_OVERRIDE_VAL_RXDETECT1));
+  MmioOr32(PipeHandler + ATCPHY_PIPEHANDLER_OVERRIDE,
+           ATCPHY_PIPEHANDLER_OVERRIDE_RXVALID | ATCPHY_PIPEHANDLER_OVERRIDE_RXDETECT);
+
+  //
+  // LOCK_PIPE_IF_REQ + 6 ms ACK poll (kc 0xb0a8564 / 0xb0a9550).
+  //
+  MmioOr32(PipeHandler + ATCPHY_PIPEHANDLER_LOCK_REQ, ATCPHY_PIPEHANDLER_LOCK_EN);
+  Status = AtcPhyPoll32(PipeHandler + ATCPHY_PIPEHANDLER_LOCK_ACK, ATCPHY_PIPEHANDLER_LOCK_EN,
+                        ATCPHY_PIPEHANDLER_LOCK_EN, ATCPHY_PIPEHANDLER_LOCK_ROUTED_TIMEOUT_US);
+  if (EFI_ERROR(Status)) {
+    DEBUG((DEBUG_ERROR, "AtcPhyPipeSwitchToUsb4Routed: lock not acked, aborting\n"));
+    goto Unlock;
+  }
+
+  //
+  // The three mux writes, back-to-back (kc 0xb0a9f34 / 0xb0aa160 / 0xb0aa390).
+  //
+  RegVal = MmioRead32(PipeHandler + ATCPHY_PIPEHANDLER_MUX_CTRL);
+  RegVal &= ~(UINT32)ATCPHY_PIPEHANDLER_MUX_CLK_MASK;
+  RegVal |= ATCPHY_PIPEHANDLER_MUX_CLK_OFF << ATCPHY_PIPEHANDLER_MUX_CLK_SHIFT;
+  MmioWrite32(PipeHandler + ATCPHY_PIPEHANDLER_MUX_CTRL, RegVal);
+
+  RegVal &= ~(UINT32)ATCPHY_PIPEHANDLER_MUX_DATA_MASK;
+  RegVal |= ATCPHY_PIPEHANDLER_MUX_DATA_USB4 << ATCPHY_PIPEHANDLER_MUX_DATA_SHIFT;
+  MmioWrite32(PipeHandler + ATCPHY_PIPEHANDLER_MUX_CTRL, RegVal);
+
+  RegVal &= ~(UINT32)ATCPHY_PIPEHANDLER_MUX_CLK_MASK;
+  RegVal |= ATCPHY_PIPEHANDLER_MUX_CLK_USB4 << ATCPHY_PIPEHANDLER_MUX_CLK_SHIFT;
+  MmioWrite32(PipeHandler + ATCPHY_PIPEHANDLER_MUX_CTRL, RegVal);
+  MemoryFence();
+
+  //
+  // Release the link-input overrides (kc 0xb0aa5c0).
+  //
+  MmioAnd32(PipeHandler + ATCPHY_PIPEHANDLER_OVERRIDE,
+            ~(UINT32)(ATCPHY_PIPEHANDLER_OVERRIDE_RXVALID |
+                      ATCPHY_PIPEHANDLER_OVERRIDE_RXDETECT));
+
+Unlock:
+  //
+  // Clear LOCK_PIPE_IF_REQ + 6 ms ACK-clear poll (kc 0xb0aaa0c / 0xb0aac04).
+  //
+  MmioAnd32(PipeHandler + ATCPHY_PIPEHANDLER_LOCK_REQ, ~(UINT32)ATCPHY_PIPEHANDLER_LOCK_EN);
+  if (EFI_ERROR(AtcPhyPoll32(PipeHandler + ATCPHY_PIPEHANDLER_LOCK_ACK,
+                             ATCPHY_PIPEHANDLER_LOCK_EN, 0,
+                             ATCPHY_PIPEHANDLER_LOCK_ROUTED_TIMEOUT_US)) &&
+      !EFI_ERROR(Status)) {
+    DEBUG((DEBUG_ERROR, "AtcPhyPipeSwitchToUsb4Routed: unlock never acked\n"));
+    Status = EFI_TIMEOUT;
+  }
+  if (EFI_ERROR(Status)) {
+    return Status;
+  }
+
+  //
+  // Verify by READBACK, never by assuming the write took. This is the same rule
+  // m1n1 applies on its side; a mux that ACKs is not a mux that switched.
+  //
+  MuxCtrl = MmioRead32(PipeHandler + ATCPHY_PIPEHANDLER_MUX_CTRL);
+  if (MuxCtrl != ATCPHY_PIPEHANDLER_MUX_VALUE_USB4_ROUTED) {
+    DEBUG((DEBUG_ERROR, "AtcPhyPipeSwitchToUsb4Routed: mux read back 0x%x, expected 0x%x; "
+                        "refusing to claim a switch that did not take\n",
+           MuxCtrl, ATCPHY_PIPEHANDLER_MUX_VALUE_USB4_ROUTED));
+    return EFI_DEVICE_ERROR;
+  }
+
+  return EFI_SUCCESS;
+}
+
+//
+// Finish (or re-establish) the ROUTED USB4 PIPE switch for a tunnelled port.
+//
+// WHY THIS EXISTS -- and why m1n1 committing 0x11 is not enough on its own.
+// ----------------------------------------------------------------------
+// m1n1 can bring the ACIO router and its USB3 tunnel up and commit the mux to
+// 0x11, but dwc3 core init happens HERE, after m1n1 is gone, and it resets the
+// PIPE. Worse, before this function existed the only Mu code that looked at the
+// mux was the USB3 finisher, whose contract is "anything that is not DUMMY is
+// ambiguous -- park it back on DUMMY". A port that m1n1 had correctly committed
+// to 0x11 would therefore have been actively RESET to USB2 here, silently.
+//
+// So this runs at the same post-core-init/pre-xhci point as the USB3 finisher
+// and accepts BOTH handoff shapes:
+//   * mux on DUMMY (0x22) -- m1n1 deferred the switch to us, the same split the
+//     USB3 path uses; we perform it.
+//   * mux already 0x11 -- m1n1 committed it; we re-apply after core init, since
+//     the reset in between may have disturbed it. Re-running the sequence on an
+//     already-routed mux is idempotent (it ends in the same three field writes).
+//
+// HOW WE KNOW IT IS OUR TURN -- three conditions, all required:
+//   1. the platform opted this port in via PcdAppleUsb4RoutedPipeSwitchPortMask
+//      (a DIFFERENT PCD from the USB3 one; a port must never be in both);
+//   2. the ATC PHY reports powered and out of reset (POWER_CTRL APB_RESET_N and
+//      PHY_RESET_N), the state m1n1's routed prepare leaves behind;
+//   3. the lanes are crossbarred for a ROUTED mode (USB4/TBT protocol 0x0/0x1).
+//      Condition 2 alone cannot authorise this -- a powered PHY with a DUMMY mux
+//      is also what a USB3 deferred prepare looks like, which is exactly why the
+//      USB3 finisher checks its own crossbar encoding and why this one checks
+//      the complementary pair. The two whitelists are disjoint by construction.
+// If any fails we leave the port exactly as it was. USB2-only is a safe outcome.
+//
+// This function NEVER touches a port whose bit is clear, so with the default
+// PCD value of 0 the entire boot chain behaves exactly as it did before.
+//
+STATIC VOID AtcPhyFinishDeferredUsb4Switch(IN UINT32 PortIndex, IN UINTN Dwc3ControllerBaseReg,
+                                           IN DWC3_CONTROLLER *Dwc3Controller) {
+  CHAR8       NodeName[31];
+  dt_node_t   *DrdNode;
+  dt_node_t   *PhyNode;
+  UINT64      PipeHandlerBase;
+  UINT64      PhyCoreBase;
+  UINT32      PowerCtrl;
+  UINT32      MuxCtrl;
+  UINT32      Crossbar;
+  UINT32      Protocol;
+  EFI_STATUS  Status;
+
+  if ((PcdGet32(PcdAppleUsb4RoutedPipeSwitchPortMask) & (1u << PortIndex)) == 0) {
+    return;
+  }
+
+  AsciiSPrint(NodeName, ARRAY_SIZE(NodeName), "usb-drd%d", PortIndex);
+  DrdNode = dt_get(NodeName);
+  AsciiSPrint(NodeName, ARRAY_SIZE(NodeName), "atc-phy%d", PortIndex);
+  PhyNode = dt_get(NodeName);
+  if (DrdNode == NULL || PhyNode == NULL) {
+    DEBUG((DEBUG_WARN, "AtcPhyFinishDeferredUsb4Switch: port %d missing usb-drd or atc-phy node, "
+                       "skipping routed switch\n", PortIndex));
+    return;
+  }
+
+  if (dt_node_reg(DrdNode, ATCPHY_DRD_REG_PIPEHANDLER, &PipeHandlerBase, NULL) < 0 ||
+      dt_node_reg(PhyNode, ATCPHY_ATC_REG_CORE, &PhyCoreBase, NULL) < 0) {
+    DEBUG((DEBUG_WARN, "AtcPhyFinishDeferredUsb4Switch: port %d missing pipehandler/core reg, "
+                       "skipping routed switch\n", PortIndex));
+    return;
+  }
+
+  PowerCtrl = MmioRead32((UINTN)PhyCoreBase + ATCPHY_CORE_POWER_CTRL);
+  if ((PowerCtrl & (ATCPHY_CORE_POWER_APB_RESET_N | ATCPHY_CORE_POWER_PHY_RESET_N)) !=
+      (ATCPHY_CORE_POWER_APB_RESET_N | ATCPHY_CORE_POWER_PHY_RESET_N)) {
+    DEBUG((DEBUG_INFO, "AtcPhyFinishDeferredUsb4Switch: port %d ATC PHY not configured "
+                       "(POWER_CTRL=0x%x); leaving port on USB2\n", PortIndex, PowerCtrl));
+    return;
+  }
+
+  //
+  // The lanes must be crossbarred for a ROUTED mode. This is the complement of
+  // the USB3 finisher's whitelist and is what makes the two unambiguous.
+  //
+  Crossbar = MmioRead32((UINTN)PhyCoreBase + ATCPHY_CORE_ACIOPHY_CROSSBAR);
+  Protocol = Crossbar & ATCPHY_CORE_ACIOPHY_CROSSBAR_PROTOCOL_MASK;
+  if (Protocol != ATCPHY_CROSSBAR_PROTOCOL_USB4 &&
+      Protocol != ATCPHY_CROSSBAR_PROTOCOL_USB4_SWAPPED) {
+    DEBUG((DEBUG_ERROR, "AtcPhyFinishDeferredUsb4Switch: port %d lanes are NOT crossbarred for "
+                        "USB4/TBT (CROSSBAR=0x%x, protocol=0x%x, LANE_MODE=0x%x); refusing the "
+                        "routed PIPE switch\n",
+           PortIndex, Crossbar, Protocol,
+           MmioRead32((UINTN)PhyCoreBase + ATCPHY_CORE_ACIOPHY_LANE_MODE)));
+    return;
+  }
+
+  //
+  // Accept only the two handoff shapes we understand. Anything else is an
+  // ambiguous PIPE state and is left strictly alone -- note we deliberately do
+  // NOT park DUMMY here: on a routed port the mux may legitimately already be
+  // live, and parking it would be the very destruction this function exists to
+  // prevent.
+  //
+  MuxCtrl = MmioRead32((UINTN)PipeHandlerBase + ATCPHY_PIPEHANDLER_MUX_CTRL);
+  if (MuxCtrl != ATCPHY_PIPEHANDLER_MUX_VALUE_DUMMY &&
+      MuxCtrl != ATCPHY_PIPEHANDLER_MUX_VALUE_USB4_ROUTED) {
+    DEBUG((DEBUG_ERROR, "AtcPhyFinishDeferredUsb4Switch: port %d unexpected mux 0x%x (expected "
+                        "DUMMY 0x%x or already-routed 0x%x); leaving it untouched\n",
+           PortIndex, MuxCtrl, ATCPHY_PIPEHANDLER_MUX_VALUE_DUMMY,
+           ATCPHY_PIPEHANDLER_MUX_VALUE_USB4_ROUTED));
+    return;
+  }
+
+  DEBUG((DEBUG_INFO, "AtcPhyFinishDeferredUsb4Switch: port %d routed PHY is configured "
+                     "(POWER_CTRL=0x%x, protocol=0x%x, mux=0x%x -> %a), finishing routed "
+                     "USB4 handoff\n",
+         PortIndex, PowerCtrl, Protocol, MuxCtrl,
+         MuxCtrl == ATCPHY_PIPEHANDLER_MUX_VALUE_USB4_ROUTED ? "re-applying m1n1's commit"
+                                                             : "performing deferred switch"));
+
+  //
+  // Same ordering as the USB3 path (dwc3-apple.c:260-272): CIO regs, PRTCAP
+  // (already set by our caller), SUSPHY, then the mux.
+  //
+  Dwc3AppleSetupCio(Dwc3ControllerBaseReg);
+  Dwc3EnableSusphy(Dwc3Controller);
+
+  Status = AtcPhyPipeSwitchToUsb4Routed((UINTN)PipeHandlerBase);
+  DEBUG((DEBUG_INFO, "AtcPhyFinishDeferredUsb4Switch: port %d routed USB4 PIPE switch %r "
+                     "(MUX_CTRL now 0x%x). NOTE this only means the mux reads 0x11 -- it is "
+                     "NOT a claim that any tunnelled device enumerated.\n",
+         PortIndex, Status,
+         MmioRead32((UINTN)PipeHandlerBase + ATCPHY_PIPEHANDLER_MUX_CTRL)));
 }
 
 STATIC VOID Dwc3XhciSetBeatBurstLength(IN DWC3_CONTROLLER *Controller) {
@@ -987,6 +1327,18 @@ AppleUsbTypeCBringupDxeBringupCallback(IN EFI_EVENT Event, IN VOID *Context)
     // m1n1 configured this port's PHY and deferred the switch to us.
     //
     AtcPhyFinishDeferredUsb3Switch(
+      Dwc3Index,
+      (UINTN)Dwc3ControllerBaseAddr,
+      (DWC3_CONTROLLER *)(UINTN)(Dwc3ControllerBaseAddr + DWC3_REG_OFFSET));
+
+    //
+    // Same window, same ordering rule, for a port carrying a USB4 tunnel
+    // instead of direct USB3. Gated by its own PCD and its own crossbar
+    // whitelist, so it is a strict no-op for every port the USB3 path owns and
+    // for every port not explicitly opted in. A port must never appear in both
+    // masks -- they are different PIPE mux values on one PHY.
+    //
+    AtcPhyFinishDeferredUsb4Switch(
       Dwc3Index,
       (UINTN)Dwc3ControllerBaseAddr,
       (DWC3_CONTROLLER *)(UINTN)(Dwc3ControllerBaseAddr + DWC3_REG_OFFSET));

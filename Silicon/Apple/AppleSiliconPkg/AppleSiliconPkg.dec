@@ -120,6 +120,20 @@
   # Default 0: no port opts in, behaviour identical to before this existed.
   #
   gAppleSiliconPkgTokenSpaceGuid.PcdAppleUsb3PipeSwitchPortMask|0x00000000|UINT32|0x00004704
+
+  #
+  # Bitmask of ATC ports whose ROUTED (USB4/Thunderbolt) PIPE mux
+  # AppleUsbTypeCBringupDxe may switch to 0x11 after dwc3 core init.
+  #
+  # Deliberately a SEPARATE token from PcdAppleUsb3PipeSwitchPortMask: direct
+  # USB3 (0x08) and a routed USB4 tunnel (0x11) are different mux values on the
+  # same PHY, so a port must never appear in both masks. Setting a bit here does
+  # NOT force a switch -- the driver additionally requires the PHY to report
+  # itself powered/out-of-reset AND the lanes to be crossbarred for USB4/TBT.
+  #
+  # Default 0: no port opts in, behaviour identical to before this existed.
+  #
+  gAppleSiliconPkgTokenSpaceGuid.PcdAppleUsb4RoutedPipeSwitchPortMask|0x00000000|UINT32|0x00004705
   #File name GUID for frontpage app
   gAppleSiliconPkgTokenSpaceGuid.PcdUIApplicationFile|{ 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00 }|VOID*|0x00004408
 

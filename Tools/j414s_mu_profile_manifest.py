@@ -45,6 +45,45 @@ PROFILES = {
         "wireless": True,
         "expected_ffs_count": 88,
     },
+    # Exact internal-storage handoff, with one deliberate edit: omit the
+    # runtime NTAS0023 ACPI publication. The GPU carveout/resource path still
+    # runs and ANS/wireless remain identical, but Windows never receives the
+    # AppleAgxGpu devnode while the known-good driver is being repaired.
+    "internal-storage-gpu-noacpi": {
+        "profile_abi": "ntasi.j414s.windows.internal-storage-gpu-no-acpi-control.v1",
+        "ans": True,
+        "ans_acpi": True,
+        "ans_dxe": True,
+        "ans_block_io": True,
+        "ans_preserve": True,
+        "gpu": True,
+        "gpu_acpi": False,
+        "wireless": True,
+        "expected_ffs_count": 88,
+    },
+    # Same sealed shape as `internal-storage` -- the profile that boots Windows
+    # off the internal NVMe today -- plus the routed USB4 PIPE opt-in for ATC
+    # port 1 (the left-front receptacle, mask bit 1 = 0x2). Nothing else differs:
+    # same FFS set, same ANS/GPU/wireless policy, same expected_ffs_count, and
+    # the direct-USB3 mask stays at its default 0x4 (right port), which is the
+    # link carrying Ethernet and SSH and must not move.
+    #
+    # Enabling the bit does NOT by itself switch anything: AtcPhyFinishDeferred-
+    # Usb4Switch additionally requires a powered/out-of-reset PHY and USB4/TBT
+    # crossbar lanes, so on a boot where m1n1 never brought a tunnel up this
+    # profile behaves exactly like `internal-storage`.
+    "internal-storage-usb4": {
+        "profile_abi": "ntasi.j414s.windows.internal-storage-usb4-routed.v1",
+        "ans": True,
+        "ans_acpi": True,
+        "ans_dxe": True,
+        "ans_block_io": True,
+        "ans_preserve": True,
+        "gpu": True,
+        "wireless": True,
+        "usb4_routed_pipe_switch_port_mask": 0x2,
+        "expected_ffs_count": 88,
+    },
     # CORRECTED 2026-07-30: the gpu profile used to add its own FFS
     # (GpuAcpiTables.inf compiling a static GPU.asl). That table was NEVER
     # installed -- its FFS GUID was not one of the four
@@ -223,7 +262,7 @@ PROFILES = {
         # deadlooping on AArch64 reserved memory, not the publication itself;
         # see NtasiGpuAllocatePlaceholderHandoff() in AcpiPlatform.c. With that
         # fixed there is no reason to withhold publication from this profile,
-        # and gpu-noacpi remains the control that isolates it.
+        # and the *-gpu-noacpi profiles remain the controls that isolate it.
         "expected_ffs_count": 88,
     },
     "ans-gpu-wireless-usb3-dual": {
@@ -340,7 +379,9 @@ PROFILES = {
     # device is never published, so Windows never builds a devnode for it and
     # its PnP arbiter never allocates the eight memory ranges or GSIV 46.
     # This is what isolates "the ACPI device and its resources" from "the GPU
-    # carveout reservation" if a GPU-profile boot regresses.
+    # carveout reservation" if a GPU-profile boot regresses. The
+    # internal-storage-gpu-noacpi profile applies the same one-variable edit
+    # to the internal-NVMe handoff profile.
     "gpu-noacpi": {
         "profile_abi": "ntasi.j414s.windows.gpu-resource-no-acpi-control.v1",
         "ans": False,
@@ -373,6 +414,22 @@ for _profile in PROFILES.values():
     _profile.setdefault("wireless", False)
     _profile.setdefault("xhc2", True)
     _profile.setdefault("usb3_pipe_switch_port_mask", 0x4 if _profile["xhc2"] else 0x2)
+    # Routed (USB4/Thunderbolt) PIPE switch. Opt-in per profile and defaulted to
+    # 0 here rather than derived from anything: a routed switch is only correct
+    # on a port m1n1 has actually brought a tunnel up on, and 0 means the Mu
+    # driver is a strict no-op. Never overlaps usb3_pipe_switch_port_mask --
+    # asserted below, because they are different mux values on one PHY.
+    _profile.setdefault("usb4_routed_pipe_switch_port_mask", 0x0)
+    # Direct USB3 (mux 0x08) and a routed USB4 tunnel (mux 0x11) are different
+    # values of the SAME pipehandler mux, so no port may be claimed by both.
+    # Enforced here, at profile-definition time, rather than left to whoever
+    # edits a mask later: overlapping masks would have the two Mu finishers
+    # fight over one register, and the losing one parks the port on DUMMY.
+    if _profile["usb3_pipe_switch_port_mask"] & _profile["usb4_routed_pipe_switch_port_mask"]:
+        raise ValueError(
+            "a profile claims the same ATC port for both direct USB3 and a "
+            "routed USB4 tunnel; they are different PIPE mux values on one PHY"
+        )
     # Battery publication is opt-in per profile, defaulted here rather than
     # written into every entry so a profile added later cannot inherit an
     # enabled battery publication by omission.
@@ -733,6 +790,9 @@ def profile_policy(profile: str) -> dict[str, Any]:
             "usb_xhci": True,
             "usb_dwc3_reset_dart_handoff": "m1n1_reset_clamped_mu_dart_bypass_release_v1",
             "usb3_deferred_pipe_switch_port_mask": selected["usb3_pipe_switch_port_mask"],
+            "usb4_routed_pipe_switch_port_mask": selected[
+                "usb4_routed_pipe_switch_port_mask"
+            ],
             "usb_mass_storage_transport": "BOT_CBI",
             "preboot_uasp": False,
             "native_apple_aic": True,
@@ -873,6 +933,26 @@ def profile_policy(profile: str) -> dict[str, Any]:
     }
 
 
+# PCDs introduced after artifacts were already sealed, mapped to the value that
+# is TRUE of a build predating them -- not a convenience default.
+#
+# A firmware built before routed USB4 existed supports no routed ports, so its
+# mask is 0. Requiring the name outright made every previously sealed artifact
+# unbootable the moment the PCD was added -- including the pinned known-good
+# fallback, which is precisely the artifact you need when a new one misbehaves.
+# "Name absent" and "mask 0" describe the same firmware; only one of them
+# strands you.
+#
+# This is applied on BOTH sides of the evidence comparison: to the values
+# parsed out of a build report, and to the pcds recorded in an older manifest.
+# Normalising only one side would make every pre-existing artifact fail the
+# equality check instead of the presence check -- the same outage, one line
+# further down.
+OPTIONAL_PCD_DEFAULTS = {
+    "PcdAppleUsb4RoutedPipeSwitchPortMask": 0,
+}
+
+
 def parse_pcd_values(build_report: str) -> dict[str, int]:
     names = (
         "PcdAppleAnsPublishAcpiDevice",
@@ -883,12 +963,16 @@ def parse_pcd_values(build_report: str) -> dict[str, int]:
         "PcdAppleWirelessDartPageTableBase",
         "PcdAppleWirelessDartPageTableSize",
     )
+    optional = OPTIONAL_PCD_DEFAULTS
     result: dict[str, int] = {}
     for name in names:
         match = re.search(rf"\b{name}\b[^\n]*=\s+(0x[0-9A-Fa-f]+|[0-9]+)", build_report)
         if not match:
             raise ManifestError(f"build report omits {name}")
         result[name] = int(match.group(1), 0)
+    for name, absent_value in optional.items():
+        match = re.search(rf"\b{name}\b[^\n]*=\s+(0x[0-9A-Fa-f]+|[0-9]+)", build_report)
+        result[name] = int(match.group(1), 0) if match else absent_value
     return result
 
 
@@ -1042,6 +1126,9 @@ def generate_manifest(args: argparse.Namespace) -> dict[str, Any]:
         "NTASI_ENABLE_WIRELESS_DART_HANDOFF": "1" if PROFILES[profile]["wireless"] else "0",
         "NTASI_ENABLE_XHC2": "1" if PROFILES[profile]["xhc2"] else "0",
         "NTASI_USB3_PIPE_SWITCH_PORT_MASK": hex(PROFILES[profile]["usb3_pipe_switch_port_mask"]),
+        "NTASI_USB4_ROUTED_PIPE_SWITCH_PORT_MASK": hex(
+            PROFILES[profile]["usb4_routed_pipe_switch_port_mask"]
+        ),
         # The only build-time proof that the media SSDT generator compiled in:
         # it adds no FFS and no static table, so this define is to media what
         # NTASI_ENABLE_WIRELESS_DART_HANDOFF is to wireless.
@@ -1104,6 +1191,9 @@ def generate_manifest(args: argparse.Namespace) -> dict[str, Any]:
         "PcdAppleAnsPerformDxeBringUp": 1 if PROFILES[profile]["ans_dxe"] else 0,
         "PcdAppleAnsPreserveForOs": 1 if PROFILES[profile]["ans_preserve"] else 0,
         "PcdAppleUsb3PipeSwitchPortMask": PROFILES[profile]["usb3_pipe_switch_port_mask"],
+        "PcdAppleUsb4RoutedPipeSwitchPortMask": PROFILES[profile][
+            "usb4_routed_pipe_switch_port_mask"
+        ],
         "PcdAppleWirelessDartPageTableBase": 0,
         "PcdAppleWirelessDartPageTableSize": 0,
     }
@@ -1257,10 +1347,16 @@ def verify_manifest(manifest_path: Path, source_root: Path | None = None) -> dic
         "PcdAppleAnsPerformDxeBringUp": 1 if PROFILES[profile]["ans_dxe"] else 0,
         "PcdAppleAnsPreserveForOs": 1 if PROFILES[profile]["ans_preserve"] else 0,
         "PcdAppleUsb3PipeSwitchPortMask": PROFILES[profile]["usb3_pipe_switch_port_mask"],
+        "PcdAppleUsb4RoutedPipeSwitchPortMask": PROFILES[profile][
+            "usb4_routed_pipe_switch_port_mask"
+        ],
         "PcdAppleWirelessDartPageTableBase": 0,
         "PcdAppleWirelessDartPageTableSize": 0,
     }
-    if manifest["build"].get("pcds") != pcds or pcds != expected_pcds:
+    recorded_pcds = dict(manifest["build"].get("pcds") or {})
+    for name, absent_value in OPTIONAL_PCD_DEFAULTS.items():
+        recorded_pcds.setdefault(name, absent_value)
+    if recorded_pcds != pcds or pcds != expected_pcds:
         raise ManifestError("recorded PCD evidence violates profile policy")
 
     validate_builder(manifest["builder"])

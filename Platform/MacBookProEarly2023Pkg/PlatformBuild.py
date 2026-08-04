@@ -199,6 +199,34 @@ class PlatformBuilder( UefiBuilder, BuildSettingsManager):
                 "ans_acpi": "TRUE", "ans_dxe": "TRUE",
                 "ans_block_io": "TRUE", "ans_preserve": "TRUE",
             },
+            # Exact copy of internal-storage except NTAS0023 publication is
+            # hard-disabled. Keep ANS live handoff, Block I/O, wireless, GPU
+            # carveout reservation, and the power sequence unchanged; only
+            # the Windows-visible AppleAgxGpu devnode is omitted.
+            "internal-storage-gpu-noacpi": {
+                "ans": "TRUE", "gpu": "1", "wireless": "1",
+                "ans_acpi": "TRUE", "ans_dxe": "TRUE",
+                "ans_block_io": "TRUE", "ans_preserve": "TRUE",
+                "gpu_acpi": "0",
+            },
+            # `internal-storage` plus the ROUTED USB4 PIPE opt-in for ATC
+            # port 1 (the left-front receptacle, mask bit 1 = 0x2). Everything
+            # else is identical, including usb3_pipe_mask, which stays at its
+            # 0x4 default -- the right-port direct-USB3 link carries this
+            # machine's Ethernet and SSH and must not move.
+            #
+            # The two masks address the SAME pipehandler register with
+            # different values (0x08 direct USB3 vs 0x11 routed), so they must
+            # never claim the same port; the manifest asserts that for every
+            # profile. Setting the bit does not by itself switch anything:
+            # AtcPhyFinishDeferredUsb4Switch additionally requires a
+            # powered/out-of-reset PHY and USB4/TBT-crossbarred lanes.
+            "internal-storage-usb4": {
+                "ans": "TRUE", "gpu": "1", "wireless": "1",
+                "ans_acpi": "TRUE", "ans_dxe": "TRUE",
+                "ans_block_io": "TRUE", "ans_preserve": "TRUE",
+                "usb4_routed_pipe_mask": "0x2",
+            },
             # Single-variable control for the BUGCODE_USB3_DRIVER 0x144
             # investigation: byte-for-byte the same FFS set as "ans" (the
             # AppleNANDStorageDxe module is still in the FV) but NTAS2003 is
@@ -317,6 +345,12 @@ class PlatformBuilder( UefiBuilder, BuildSettingsManager):
             values.setdefault(
                 "usb3_pipe_mask", "0x4" if values["xhc2"] == "1" else "0x2"
             )
+            # Routed (USB4/Thunderbolt) PIPE switch. Defaulted OFF rather than
+            # derived from anything: a routed switch is only ever correct on a
+            # port m1n1 has actually brought a tunnel up on, and 0x0 makes the
+            # Mu driver a strict no-op, so a profile added later cannot inherit
+            # a routed mux switch by omission.
+            values.setdefault("usb4_routed_pipe_mask", "0x0")
             values.setdefault("media", "0")
             values.setdefault("ans_dxe", "FALSE")
             values.setdefault("ans_block_io", "FALSE")
@@ -458,6 +492,11 @@ class PlatformBuilder( UefiBuilder, BuildSettingsManager):
         self.env.SetValue(
             "BLD_*_NTASI_USB3_PIPE_SWITCH_PORT_MASK",
             profile_values[profile]["usb3_pipe_mask"],
+            "Selected by NTASI_MU_PROFILE",
+        )
+        self.env.SetValue(
+            "BLD_*_NTASI_USB4_ROUTED_PIPE_SWITCH_PORT_MASK",
+            profile_values[profile]["usb4_routed_pipe_mask"],
             "Selected by NTASI_MU_PROFILE",
         )
         # Media publication (MCA0/AOPA/ISP0). Like gpu and wireless this is a

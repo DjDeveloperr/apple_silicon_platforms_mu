@@ -458,6 +458,19 @@ class GpuProfilePolicy(unittest.TestCase):
         for key in ("ans", "wireless", "media"):
             self.assertEqual(control[key], gpu[key])
 
+    def test_internal_storage_gpu_noacpi_only_removes_gpu_publication(self):
+        """The quarantine profile must remain a real internal-NVMe profile."""
+        base = M.PROFILES["internal-storage"]
+        control = M.PROFILES["internal-storage-gpu-noacpi"]
+        self.assertTrue(control["gpu"])
+        self.assertFalse(control["gpu_acpi"])
+        for key in (
+            "ans", "ans_acpi", "ans_dxe", "ans_block_io", "ans_preserve",
+            "wireless", "expected_ffs_count", "xhc2",
+            "usb3_pipe_switch_port_mask", "usb4_routed_pipe_switch_port_mask",
+        ):
+            self.assertEqual(control[key], base[key], key)
+
     def test_published_gsiv_set_is_pinned_in_both_directions(self):
         for profile, entry in M.PROFILES.items():
             with self.subTest(profile=profile):
@@ -502,6 +515,10 @@ class GpuProfilePolicy(unittest.TestCase):
         self.assertRegex(
             source,
             r'"gpu-noacpi":\s*\{[^}]*"gpu":\s*"1"[^}]*"gpu_acpi":\s*"0"',
+        )
+        self.assertRegex(
+            source,
+            r'"internal-storage-gpu-noacpi":\s*\{[^}]*"gpu":\s*"1"[^}]*"gpu_acpi":\s*"0"',
         )
 
     def test_media_and_gpu_can_now_be_selected_together(self):

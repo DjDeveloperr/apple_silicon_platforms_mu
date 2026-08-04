@@ -132,6 +132,15 @@ class ContractShapeTests(unittest.TestCase):
         self.assertTrue(policy["ans_block_io"])
         self.assertTrue(policy["ans_live_os_handoff"])
 
+    def test_internal_storage_gpu_noacpi_preserves_handoff_and_hides_gpu(self):
+        profile = M.PROFILES["internal-storage-gpu-noacpi"]
+        for key in ("ans", "ans_acpi", "ans_dxe", "ans_block_io", "ans_preserve", "gpu", "wireless"):
+            self.assertTrue(profile[key], key)
+        self.assertFalse(profile["gpu_acpi"])
+        base = M.PROFILES["internal-storage"]
+        for key in ("ans", "ans_acpi", "ans_dxe", "ans_block_io", "ans_preserve", "gpu", "wireless", "expected_ffs_count"):
+            self.assertEqual(profile[key], base[key], key)
+
     def test_unknown_field_is_rejected(self):
         manifest = valid_shape()
         manifest["untrusted"] = True
@@ -263,6 +272,7 @@ class EvidenceParserTests(unittest.TestCase):
                 ("PcdAppleAnsPerformDxeBringUp", "0"),
                 ("PcdAppleAnsPreserveForOs", "0"),
                 ("PcdAppleUsb3PipeSwitchPortMask", "0x2"),
+                ("PcdAppleUsb4RoutedPipeSwitchPortMask", "0x0"),
                 ("PcdAppleWirelessDartPageTableBase", "0x0"),
                 ("PcdAppleWirelessDartPageTableSize", "0x0"),
             )
@@ -273,6 +283,7 @@ class EvidenceParserTests(unittest.TestCase):
             "PcdAppleAnsPerformDxeBringUp",
             "PcdAppleAnsPreserveForOs",
             "PcdAppleUsb3PipeSwitchPortMask",
+            "PcdAppleUsb4RoutedPipeSwitchPortMask",
             "PcdAppleWirelessDartPageTableBase",
             "PcdAppleWirelessDartPageTableSize",
         })
