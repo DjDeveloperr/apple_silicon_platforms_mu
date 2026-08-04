@@ -8,6 +8,7 @@ SPDX-License-Identifier: BSD-2-Clause-Patent
 
 #include <Uefi.h>
 
+#include <Guid/GlobalVariable.h>
 #include <Protocol/FirmwareVolume2.h>
 #include <Protocol/LoadedImage.h>
 
@@ -19,6 +20,7 @@ SPDX-License-Identifier: BSD-2-Clause-Patent
 #include <Library/PcdLib.h>
 #include <Library/UefiBootManagerLib.h>
 #include <Library/UefiBootServicesTableLib.h>
+#include <Library/UefiRuntimeServicesTableLib.h>
 #include <Library/UefiLib.h>
 
 #define INTERNAL_UEFI_SHELL_NAME  L"Internal UEFI Shell 2.0"
@@ -402,6 +404,106 @@ RegisterFvBootOption (
 }
 
 /**
+  Move the internal-storage option ahead of the USB option in BootOrder.
+
+  RegisterFvBootOption() intentionally reuses an existing Boot#### variable.
+  That means changing the registration call order alone does not repair a
+  BootOrder created by an older USB-first build.  Preserve every other entry
+  and only move Internal Storage across USB Storage when the latter is ahead.
+
+  @param InternalOptionNumber  Boot#### number for Internal Storage.
+  @param UsbOptionNumber       Boot#### number for USB Storage.
+
+  @retval EFI_SUCCESS          Order already correct or was repaired.
+  @retval Other                BootOrder could not be read or written.
+**/
+STATIC
+EFI_STATUS
+PreferInternalStorageBeforeUsb (
+  IN UINTN  InternalOptionNumber,
+  IN UINTN  UsbOptionNumber
+  )
+{
+  EFI_STATUS  Status;
+  UINT16      *BootOrder;
+  UINTN       BootOrderSize;
+  UINTN       BootOrderCount;
+  UINTN       InternalIndex;
+  UINTN       UsbIndex;
+  UINTN       Index;
+  UINT16      InternalOption;
+
+  if ((InternalOptionNumber >= LoadOptionNumberMax) ||
+      (UsbOptionNumber >= LoadOptionNumberMax))
+  {
+    return EFI_INVALID_PARAMETER;
+  }
+
+  BootOrder     = NULL;
+  BootOrderSize = 0;
+  Status        = GetEfiGlobalVariable2 (L"BootOrder", (VOID **)&BootOrder, &BootOrderSize);
+  if (EFI_ERROR (Status)) {
+    return Status;
+  }
+
+  if ((BootOrder == NULL) ||
+      (BootOrderSize == 0) ||
+      ((BootOrderSize % sizeof (UINT16)) != 0))
+  {
+    if (BootOrder != NULL) {
+      FreePool (BootOrder);
+    }
+
+    return EFI_COMPROMISED_DATA;
+  }
+
+  BootOrderCount = BootOrderSize / sizeof (UINT16);
+  InternalIndex  = BootOrderCount;
+  UsbIndex       = BootOrderCount;
+  for (Index = 0; Index < BootOrderCount; Index++) {
+    if (BootOrder[Index] == (UINT16)InternalOptionNumber) {
+      InternalIndex = Index;
+    }
+
+    if (BootOrder[Index] == (UINT16)UsbOptionNumber) {
+      UsbIndex = Index;
+    }
+  }
+
+  if ((InternalIndex == BootOrderCount) ||
+      (UsbIndex == BootOrderCount) ||
+      (InternalIndex < UsbIndex))
+  {
+    FreePool (BootOrder);
+    return EFI_SUCCESS;
+  }
+
+  InternalOption = BootOrder[InternalIndex];
+  for (Index = InternalIndex; Index > UsbIndex; Index--) {
+    BootOrder[Index] = BootOrder[Index - 1];
+  }
+
+  BootOrder[UsbIndex] = InternalOption;
+  Status = gRT->SetVariable (
+                  L"BootOrder",
+                  &gEfiGlobalVariableGuid,
+                  EFI_VARIABLE_BOOTSERVICE_ACCESS |
+                  EFI_VARIABLE_RUNTIME_ACCESS |
+                  EFI_VARIABLE_NON_VOLATILE,
+                  BootOrderSize,
+                  BootOrder
+                  );
+  if (EFI_ERROR (Status)) {
+    DEBUG ((DEBUG_WARN, "%a: unable to move Internal Storage before USB Storage: %r\n", __FUNCTION__, Status));
+  } else {
+    DEBUG ((DEBUG_INFO, "%a: repaired persisted BootOrder (%04x before %04x)\n", __FUNCTION__, (UINT16)InternalOptionNumber, (UINT16)UsbOptionNumber));
+  }
+
+  FreePool (BootOrder);
+  return Status;
+}
+
+/**
  * Register Default Boot Options
  *
  * @param
@@ -414,8 +516,20 @@ MsBootOptionsLibRegisterDefaultBootOptions (
   VOID
   )
 {
-  RegisterFvBootOption (&gMsBootPolicyFileGuid, MS_USB_BOOT, (UINTN)-1, LOAD_OPTION_ACTIVE, (UINT8 *)MS_USB_BOOT_PARM, sizeof (MS_USB_BOOT_PARM));
-  RegisterFvBootOption (&gMsBootPolicyFileGuid, MS_SDD_BOOT, (UINTN)-1, LOAD_OPTION_ACTIVE, (UINT8 *)MS_SDD_BOOT_PARM, sizeof (MS_SDD_BOOT_PARM));
+  EFI_STATUS  Status;
+  UINTN       SddBootOption;
+  UINTN       UsbBootOption;
+
+  // Internal storage is the normal J414s Windows target. Keep USB available
+  // as an explicit boot option, but do not probe it before ANS: the USB-first
+  // policy can leave the external controller in a different state before the
+  // internal boot manager starts its first AppleANS read.
+  SddBootOption = RegisterFvBootOption (&gMsBootPolicyFileGuid, MS_SDD_BOOT, (UINTN)-1, LOAD_OPTION_ACTIVE, (UINT8 *)MS_SDD_BOOT_PARM, sizeof (MS_SDD_BOOT_PARM));
+  UsbBootOption = RegisterFvBootOption (&gMsBootPolicyFileGuid, MS_USB_BOOT, (UINTN)-1, LOAD_OPTION_ACTIVE, (UINT8 *)MS_USB_BOOT_PARM, sizeof (MS_USB_BOOT_PARM));
+  Status = PreferInternalStorageBeforeUsb (SddBootOption, UsbBootOption);
+  if (EFI_ERROR (Status) && (Status != EFI_NOT_FOUND)) {
+    DEBUG ((DEBUG_WARN, "%a: BootOrder repair was not applied: %r\n", __FUNCTION__, Status));
+  }
   //RegisterFvBootOption (PcdGetPtr (PcdShellFile), INTERNAL_UEFI_SHELL_NAME, (UINTN)-1, LOAD_OPTION_ACTIVE, NULL, 0);
   RegisterFvBootOption (&gMsBootPolicyFileGuid, MS_PXE_BOOT, (UINTN)-1, LOAD_OPTION_ACTIVE, (UINT8 *)MS_PXE_BOOT_PARM, sizeof (MS_PXE_BOOT_PARM));
   //RegisterFvBootOption (PcdGetPtr (PcdUIApplicationFile), INTERNAL_UEFI_FP_NAME, (UINTN)-1, LOAD_OPTION_ACTIVE, NULL, 0);
@@ -446,8 +560,8 @@ MsBootOptionsLibGetDefaultOptions (
     return NULL;
   }
 
-  Status  = CreateFvBootOption (&gMsBootPolicyFileGuid, MS_USB_BOOT, &Option[0], LOAD_OPTION_ACTIVE, (UINT8 *)MS_USB_BOOT_PARM, sizeof (MS_USB_BOOT_PARM));
-  Status |= CreateFvBootOption (&gMsBootPolicyFileGuid, MS_SDD_BOOT, &Option[1], LOAD_OPTION_ACTIVE, (UINT8 *)MS_SDD_BOOT_PARM, sizeof (MS_SDD_BOOT_PARM));
+  Status  = CreateFvBootOption (&gMsBootPolicyFileGuid, MS_SDD_BOOT, &Option[0], LOAD_OPTION_ACTIVE, (UINT8 *)MS_SDD_BOOT_PARM, sizeof (MS_SDD_BOOT_PARM));
+  Status |= CreateFvBootOption (&gMsBootPolicyFileGuid, MS_USB_BOOT, &Option[1], LOAD_OPTION_ACTIVE, (UINT8 *)MS_USB_BOOT_PARM, sizeof (MS_USB_BOOT_PARM));
   Status |= CreateFvBootOption (&gMsBootPolicyFileGuid, MS_PXE_BOOT, &Option[2], LOAD_OPTION_ACTIVE, (UINT8 *)MS_PXE_BOOT_PARM, sizeof (MS_PXE_BOOT_PARM));
 
   //Status2 = CreateFvBootOption (PcdGetPtr (PcdShellFile), INTERNAL_UEFI_SHELL_NAME, &Option[3], LOAD_OPTION_ACTIVE, NULL, 0);

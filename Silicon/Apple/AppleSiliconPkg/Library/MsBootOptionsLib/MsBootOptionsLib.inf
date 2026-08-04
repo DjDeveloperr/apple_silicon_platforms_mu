@@ -36,9 +36,11 @@
   PcdLib
   UefiBootManagerLib
   UefiBootServicesTableLib
+  UefiRuntimeServicesTableLib
   UefiLib
 
 [Guids]
+  gEfiGlobalVariableGuid
   gMsBootPolicyFileGuid
   gEfiVirtualCdGuid
   gEfiVirtualDiskGuid
