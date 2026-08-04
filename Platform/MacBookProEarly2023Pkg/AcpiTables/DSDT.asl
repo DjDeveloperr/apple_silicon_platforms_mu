@@ -360,6 +360,8 @@
                 Device(CPU0) {
                     Name(_HID, "ACPI0007")
                     Name(_UID, 0)
+                    Name(_STR, Unicode ("Apple M2 Pro Efficiency Core 0"))
+                    Name(_DDN, "Apple M2 Pro Efficiency Core 0")
                     // Method (_LPI, 0, NotSerialized) {
                     // return(PLPI)
                     // }
@@ -373,6 +375,8 @@
                 Device(CPU1) {
                     Name(_HID, "ACPI0007")
                     Name(_UID, 1)
+                    Name(_STR, Unicode ("Apple M2 Pro Efficiency Core 1"))
+                    Name(_DDN, "Apple M2 Pro Efficiency Core 1")
                     // Method (_LPI, 0, NotSerialized) {
                     // return(PLPI)
                     // }
@@ -386,6 +390,8 @@
                 Device(CPU2) {
                     Name(_HID, "ACPI0007")
                     Name(_UID, 2)
+                    Name(_STR, Unicode ("Apple M2 Pro Efficiency Core 2"))
+                    Name(_DDN, "Apple M2 Pro Efficiency Core 2")
                     // Method (_LPI, 0, NotSerialized) {
                     // return(PLPI)
                     // }
@@ -399,6 +405,8 @@
                 Device(CPU3) {
                     Name(_HID, "ACPI0007")
                     Name(_UID, 3)
+                    Name(_STR, Unicode ("Apple M2 Pro Efficiency Core 3"))
+                    Name(_DDN, "Apple M2 Pro Efficiency Core 3")
                     // Method (_LPI, 0, NotSerialized) {
                     // return(PLPI)
                     // }
@@ -422,6 +430,8 @@
                 Device(CPU4) {
                     Name(_HID, "ACPI0007")
                     Name(_UID, 0x4)
+                    Name(_STR, Unicode ("Apple M2 Pro Performance Core 0"))
+                    Name(_DDN, "Apple M2 Pro Performance Core 0")
                     // Method (_LPI, 0, NotSerialized) {
                     // return(PLPI)
                     // }
@@ -432,6 +442,8 @@
                 Device(CPU5) {
                     Name(_HID, "ACPI0007")
                     Name(_UID, 0x5)
+                    Name(_STR, Unicode ("Apple M2 Pro Performance Core 1"))
+                    Name(_DDN, "Apple M2 Pro Performance Core 1")
                     // Method (_LPI, 0, NotSerialized) {
                     // return(PLPI)
                     // }
@@ -442,6 +454,8 @@
                 Device(CPU6) {
                     Name(_HID, "ACPI0007")
                     Name(_UID, 0x6)
+                    Name(_STR, Unicode ("Apple M2 Pro Performance Core 2"))
+                    Name(_DDN, "Apple M2 Pro Performance Core 2")
                     // Method (_LPI, 0, NotSerialized) {
                     // return(PLPI)
                     // }
@@ -465,6 +479,8 @@
                 Device(CPU7) {
                     Name(_HID, "ACPI0007")
                     Name(_UID, 0x7)
+                    Name(_STR, Unicode ("Apple M2 Pro Performance Core 3"))
+                    Name(_DDN, "Apple M2 Pro Performance Core 3")
                     // Method (_LPI, 0, NotSerialized) {
                     // return(PLPI)
                     // }
@@ -475,6 +491,8 @@
                 Device(CPU8) {
                     Name(_HID, "ACPI0007")
                     Name(_UID, 0x8)
+                    Name(_STR, Unicode ("Apple M2 Pro Performance Core 4"))
+                    Name(_DDN, "Apple M2 Pro Performance Core 4")
                     // Method (_LPI, 0, NotSerialized) {
                     // return(PLPI)
                     // }
@@ -485,6 +503,8 @@
                 Device(CPU9) {
                     Name(_HID, "ACPI0007")
                     Name(_UID, 0x9)
+                    Name(_STR, Unicode ("Apple M2 Pro Performance Core 5"))
+                    Name(_DDN, "Apple M2 Pro Performance Core 5")
                     // Method (_LPI, 0, NotSerialized) {
                     // return(PLPI)
                     // }
