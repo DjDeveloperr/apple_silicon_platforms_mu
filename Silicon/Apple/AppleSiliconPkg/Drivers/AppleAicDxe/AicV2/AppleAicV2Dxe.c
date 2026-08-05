@@ -29,8 +29,6 @@ STATIC UINT64 mAicV2SoftwareClearRegOffset, mAicV2IrqMaskSetOffset;
 STATIC UINT64 mAicV2IrqMaskClearOffset, mAicV2HwStateOffset;
 STATIC UINT64 mAicV2EventReg;
 STATIC APPLE_AIC_VERSION mAicVersion;
-STATIC UINT32 mDeferredTimerPhysInterrupt = MAX_UINT32;
-STATIC UINT32 mDeferredTimerVirtInterrupt = MAX_UINT32;
 
 STATIC EFI_STATUS EFIAPI AppleAicV2CalculateRegisterOffsets(IN VOID);
 
@@ -66,23 +64,18 @@ AppleAicV2ClearSoftwareInterrupt (
 }
 
 VOID
-AppleAicV2ReplayDeferredTimerInterrupt (
+AppleAicV2PrepareTimerInterrupt (
     IN HARDWARE_INTERRUPT_SOURCE Source
     )
 {
-    UINT32 DeferredInterrupt;
     UINT32 Interrupt;
     UINT32 RangeStart;
     UINT32 RangeEnd;
 
     if (Source == 17) {
-        DeferredInterrupt = mDeferredTimerPhysInterrupt;
-        mDeferredTimerPhysInterrupt = MAX_UINT32;
         RangeStart = AicInfoStruct->NumIrqs - (2 * AIC_TIMER_REFLECT_CPU_SLOTS);
         RangeEnd = AicInfoStruct->NumIrqs - AIC_TIMER_REFLECT_CPU_SLOTS;
     } else if (Source == 18) {
-        DeferredInterrupt = mDeferredTimerVirtInterrupt;
-        mDeferredTimerVirtInterrupt = MAX_UINT32;
         RangeStart = AicInfoStruct->NumIrqs - AIC_TIMER_REFLECT_CPU_SLOTS;
         RangeEnd = AicInfoStruct->NumIrqs;
     } else {
@@ -93,30 +86,21 @@ AppleAicV2ReplayDeferredTimerInterrupt (
         return;
     }
 
-    // Reading AIC_EVENT acknowledges and masks a source. A reflected tick can
-    // therefore be left SW-pending but masked if it arrived before this timer
-    // callback was registered (including before our CPU handler owned FIQ/IRQ).
-    // Registration is the synchronization point at which the entire per-CPU
-    // reflection block is safe to expose.
+    // TimerDxe registers sources 17 and 18 before it initializes mTimerTicks or
+    // enables the architectural timer.  Start each reflection block from an
+    // empty state at that registration boundary, then unmask it.  A software
+    // event retained across a resident-m1n1 chainload is stale; replaying or
+    // synthesizing it here can enter TimerInterruptHandler with mTimerTicks ==
+    // 0 and make its CompareValue catch-up loop non-terminating.
+    //
+    // m1n1 holds timer FIQ reflection until TimerDxe's final ENABLE=1 control
+    // write, so clearing these slots cannot discard a valid post-arm tick.
     for (Interrupt = RangeStart; Interrupt < RangeEnd; Interrupt++) {
+        AppleAicV2ClearSoftwareInterrupt (Interrupt);
         AppleAicUnmaskInterrupt (
             AicV2Base,
             Interrupt,
             mAicV2IrqMaskClearOffset
-            );
-    }
-
-    if ((DeferredInterrupt == MAX_UINT32) && (Source == 17)) {
-        // Boot currently starts on CPU0. Give the newly registered physical
-        // timer consumer one deterministic handshake even if AIC reset/init
-        // discarded the pre-DXE reflected edge.
-        DeferredInterrupt = RangeStart;
-    }
-
-    if (DeferredInterrupt != MAX_UINT32) {
-        MmioWrite32 (
-            AicV2Base + mAicV2SoftwareSetRegOffset + AIC_MASK_REG (DeferredInterrupt),
-            AIC_MASK_BIT (DeferredInterrupt)
             );
     }
 }
@@ -372,8 +356,6 @@ STATIC VOID EFIAPI AppleAicV2InterruptHandler(
                     AicInterrupt,
                     mAicV2IrqMaskClearOffset
                     );
-            } else {
-                mDeferredTimerPhysInterrupt = AicInterrupt;
             }
             return;
         }
@@ -389,8 +371,6 @@ STATIC VOID EFIAPI AppleAicV2InterruptHandler(
                     AicInterrupt,
                     mAicV2IrqMaskClearOffset
                     );
-            } else {
-                mDeferredTimerVirtInterrupt = AicInterrupt;
             }
             return;
         }
@@ -686,20 +666,6 @@ EFI_STATUS AppleAicV2DxeInit(IN EFI_HANDLE ImageHandle, IN EFI_SYSTEM_TABLE *Sys
     for(InterruptIndex = 0; InterruptIndex < AicV2NumInterrupts; InterruptIndex++)
     {
         AppleAicV2MaskInterrupt(&gHardwareInterruptAicV2Protocol, InterruptIndex);
-    }
-
-    // m1n1 posts reflected CNTP/CNTV ticks into the top two MAX_CPUS-sized
-    // blocks of the implemented IRQ namespace. The blanket mask above must
-    // not leave that hypervisor/firmware ABI disabled.
-    if (AicV2NumInterrupts > (2 * AIC_TIMER_REFLECT_CPU_SLOTS)) {
-        for (
-            InterruptIndex = AicV2NumInterrupts - (2 * AIC_TIMER_REFLECT_CPU_SLOTS);
-            InterruptIndex < AicV2NumInterrupts;
-            InterruptIndex++
-            )
-        {
-            AppleAicV2UnmaskInterrupt (&gHardwareInterruptAicV2Protocol, InterruptIndex);
-        }
     }
 
     /**

@@ -72,10 +72,10 @@ RegisterInterruptSource (
   } else {
     Status = This->EnableInterruptSource (This, Source);
     if (!EFI_ERROR (Status)) {
-      // A reflected timer can arrive while DXE dispatch is coming up, before
-      // TimerDxe has installed its logical source 17/18 callback. Replay that
-      // one deferred event now that its consumer is guaranteed to exist.
-      AppleAicV2ReplayDeferredTimerInterrupt (Source);
+      // AIC reset/init keeps m1n1's private timer-reflection slots masked.
+      // Source 17/18 registration is the first point at which their callback
+      // exists, so clear stale software state and expose the matching block.
+      AppleAicV2PrepareTimerInterrupt (Source);
     }
     return Status;
   }
