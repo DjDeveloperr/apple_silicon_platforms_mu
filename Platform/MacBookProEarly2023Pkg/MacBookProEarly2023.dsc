@@ -57,6 +57,21 @@
   # cannot collide with SMCG's exclusive claim on the SMC ASC and SRAM
   # windows. See NtasiInstallBatteryTable() in AcpiPlatform.c.
   DEFINE NTASI_ENABLE_BATTERY_PUBLICATION = 0
+  # Display interrupts: add the five AIC lines the DCP path needs -- the ASC
+  # mailbox quad 932-935 and the shared DART fault line 911 -- to DISP.asl's
+  # _CRS. OFF by default, and off means preprocessor-excluded, so a profile
+  # without it produces byte-identical firmware. The device itself (NTAS0070,
+  # its six MMIO windows and its _DSD) is published unconditionally and is
+  # unaffected by this switch.
+  #
+  # OFF is not timidity. Publishing a resource is a promise PnP must keep: if
+  # any one of the five cannot be routed, NTAS0070 does not start at all, and
+  # the AppleDisplay driver's entire design rule is that every failure leaves
+  # BasicDisplay owning the panel. Without interrupts the driver selects
+  # bounded polling and still works; with an unroutable line it does not start.
+  # Turn this on only for a boot whose purpose is to test interrupt delivery,
+  # and expect to lose the display if the answer is no.
+  DEFINE NTASI_ENABLE_DISPLAY_INTERRUPTS = 0
   # WinPE deploy-verdict echo (BootRamdiskHelperDxe). OFF by default: it adds a
   # participant to the ReadyToBoot event group and opens every attached FAT
   # volume microseconds before the OS loader starts, on a machine whose boot disk
@@ -84,7 +99,7 @@
 [BuildOptions.common]
   GCC:*_*_AARCH64_CC_FLAGS = -DSILICON_PLATFORM=6020
   *_*_*_CC_FLAGS = -D DISABLE_NEW_DEPRECATED_INTERFACES -D HAS_MEMCPY_INTRINSICS -DNTASI_T6020_J414S_HOMOGENEOUS_EFFICIENCY=$(NTASI_T6020_J414S_HOMOGENEOUS_EFFICIENCY) -DNTASI_ENABLE_WIRELESS_DART_HANDOFF=$(NTASI_ENABLE_WIRELESS_DART_HANDOFF) -DNTASI_J414S_GPU_RESOURCE_PROFILE=$(NTASI_J414S_GPU_RESOURCE_PROFILE) -DNTASI_ENABLE_GPU_ACPI_PUBLICATION=$(NTASI_ENABLE_GPU_ACPI_PUBLICATION) -DNTASI_ENABLE_MEDIA_PUBLICATION=$(NTASI_ENABLE_MEDIA_PUBLICATION) -DNTASI_ENABLE_BATTERY_PUBLICATION=$(NTASI_ENABLE_BATTERY_PUBLICATION) -DNTASI_DEPLOY_EVIDENCE_ECHO=$(NTASI_DEPLOY_EVIDENCE_ECHO)
-  *_*_*_ASLPP_FLAGS = -DNTASI_ENABLE_XHC2=$(NTASI_ENABLE_XHC2)
+  *_*_*_ASLPP_FLAGS = -DNTASI_ENABLE_XHC2=$(NTASI_ENABLE_XHC2) -DNTASI_ENABLE_DISPLAY_INTERRUPTS=$(NTASI_ENABLE_DISPLAY_INTERRUPTS)
 
 
 

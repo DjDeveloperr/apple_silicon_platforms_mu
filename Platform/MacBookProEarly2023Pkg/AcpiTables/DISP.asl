@@ -21,13 +21,52 @@
   validates it before mapping anything.
 
   The _DSD properties are the pinned J414s geometry, provided ONLY as a
-  cross-check for the driver and for offline verification tooling; none is a
-  resource and the driver treats DxgkCbAcquirePostDisplayOwnership as
-  authoritative. Interrupts are deliberately absent for the first DCP
-  bring-up: physical AIC lines 932-935/911 have not yet been proven as usable
-  Windows GSIVs. The driver therefore selects bounded polling. A later ACPI
-  revision must publish the complete five-line set atomically; the driver
-  rejects partial or unexpected interrupt inventories.
+  cross-check for offline verification tooling. NOTE: as of this revision the
+  AppleDisplay driver reads NONE of them -- it treats
+  DxgkCbAcquirePostDisplayOwnership as authoritative and derives geometry from
+  AppleDisplayModeCore. They are kept because the verification tooling and a
+  human reading the SSDT both benefit, but no code path depends on them, and
+  the earlier claim that they were "a cross-check for the driver" overstated
+  what the driver does.
+
+  INTERRUPTS ARE GATED, AND OFF BY DEFAULT.
+
+  The five AIC lines the display path needs are the DCP ASC mailbox quad
+  932-935 (send-empty, send-not-empty, recv-empty, recv-not-empty) and the
+  DART fault line 911, which dcp_dart and disp0_dart share. All five are
+  below the GIC carrier's 1019 limit, so each is a legal plain GSIV needing no
+  CSRT ALI2 alias -- the same property AppleIsp relies on for AIC 569. None is
+  claimed by any other ACPI device on this platform.
+
+  They are nonetheless behind NTASI_ENABLE_DISPLAY_INTERRUPTS, off by default,
+  because publishing a resource is a PROMISE PnP must be able to keep. If any
+  one of the five cannot be routed, the device does not start AT ALL -- and
+  that would cost the working rung-(a) path, whose whole design rule is that
+  every failure leaves BasicDisplay owning the panel. Turning interrupts on to
+  chase lower present latency, and losing the display in exchange, is a bad
+  trade to make by default. MCA.asl documents the same hazard for its own five
+  lines.
+
+  Off means preprocessor-excluded, so a profile without it produces
+  byte-identical firmware rather than merely equivalent firmware, and adds no
+  GSIV allocation and no CSRT byte.
+
+  The set is published atomically because the driver's inventory validator is
+  all-or-none: zero interrupts selects bounded polling, exactly
+  {911,932,933,934,935} enables the ISR path, and anything else is rejected
+  (drivers/AppleDisplay/AppleDisplayDcpResourceCore.c). Partial publication
+  cannot be expressed here and must not be attempted.
+
+  The driver additionally requires each descriptor to be Level-triggered,
+  ActiveHigh and Exclusive, and rejects message-signalled or latched
+  descriptors, so the Interrupt() flags below are a contract, not a style
+  choice. Level/ActiveHigh matches the device tree, which declares all five
+  IRQ_TYPE_LEVEL_HIGH.
+
+  UNPROVEN, and only hardware can settle it: that GSIV 935 is the line AIC
+  actually raises for an inbound DCP message, and that a level-triggered AIC
+  line routed to a display-only miniport is delivered at all under this HAL.
+  Publishing them is necessary for that experiment and is not itself evidence.
 
   Provenance:
     Pinned scanout geometry 3024x1964 BGRA32 stride 12096: WIP.md display
@@ -112,6 +151,28 @@ DefinitionBlock ("DISP.aml", "SSDT", 0x02, "Apple", "J414DSP", 0x00000002)
                     0x0000000000000000,
                     0x0000000000800000
                     )
+#if NTASI_ENABLE_DISPLAY_INTERRUPTS
+                //
+                // DART fault (911, shared by dcp_dart and disp0_dart) and the
+                // DCP ASC mailbox quad: 932 send-empty, 933 send-not-empty,
+                // 934 recv-empty, 935 recv-not-empty.  Inbound DCP traffic --
+                // including the D589 swap-complete callback that is this
+                // platform's only present-completion signal -- arrives on 935.
+                //
+                // Published as ONE descriptor with five vectors, which the
+                // ACPI driver expands into five CmResourceTypeInterrupt
+                // partial descriptors.  Order is irrelevant: the driver
+                // normalises by value, not by position.
+                //
+                Interrupt (ResourceConsumer, Level, ActiveHigh, Exclusive, , , )
+                {
+                    911,
+                    932,
+                    933,
+                    934,
+                    935
+                }
+#endif
             })
 
             //
